@@ -1,0 +1,39 @@
+# Exemple de configuration nginx pour exposer restconfd (RFC 8040 / RFC 8527)
+# via FastCGI. A adapter (TLS, auth, chemins) avant tout usage reel :
+# RFC 8040 SS2 impose HTTPS/TLS comme transport obligatoire.
+#
+# Point important : fastcgi_split_path_info doit isoler la racine
+# {+restconf} (ici "/restconf") dans SCRIPT_NAME et le reste du chemin
+# dans PATH_INFO, car c'est PATH_INFO que lit restconfd (src/http.c).
+
+server {
+    listen 443 ssl;
+    server_name example.com;
+
+    ssl_certificate     /etc/ssl/certs/example.com.crt;
+    ssl_certificate_key /etc/ssl/private/example.com.key;
+
+    # Decouverte de la racine RESTCONF (RFC 8040 SS3.1).
+    location = /.well-known/host-meta {
+        include fastcgi_params;
+        fastcgi_param SCRIPT_NAME "";
+        fastcgi_param PATH_INFO   "/.well-known/host-meta";
+        fastcgi_pass  unix:/run/restconfd.sock;
+    }
+
+    location /restconf {
+        # Isole "/restconf" (SCRIPT_NAME) du reste (PATH_INFO).
+        fastcgi_split_path_info ^(/restconf)(/.*)?$;
+
+        include fastcgi_params;
+        fastcgi_param SCRIPT_NAME  $fastcgi_script_name;
+        fastcgi_param PATH_INFO    $fastcgi_path_info;
+        fastcgi_param QUERY_STRING $query_string;
+
+        fastcgi_pass unix:/run/restconfd.sock;
+
+        # RESTCONF n'utilise pas le cache HTTP standard (RFC 8040 SS5.5) ;
+        # le serveur applicatif emet deja Cache-Control: no-cache.
+        fastcgi_hide_header X-Powered-By;
+    }
+}
