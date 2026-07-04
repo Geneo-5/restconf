@@ -129,4 +129,30 @@ int sysrepo_backend_write(int sr_ds, const struct restconf_path_segment *segment
 int sysrepo_backend_delete(int sr_ds, const struct restconf_path_segment *segments,
                            size_t nsegments, struct restconf_error *err);
 
+/* Invoque l'operation RPC RESTCONF designee par 'segments'/'nsegments'
+ * (RFC 8040 SS3.6/SS4.4.2) via sr_rpc_send_tree(). 'segments' doit
+ * decrire exactement le chemin {+restconf}/operations/<module>:<rpc>,
+ * c.-a-d. un unique segment qualifie par un module et sans cle
+ * ('nsegments' != 1 ou segment avec cles -> "invalid-value").
+ *
+ * 'body_json'/'body_len' est le corps de requete optionnel (RFC 8040
+ * SS3.6.1, enveloppe "module:input") ; peut etre NULL/0 si le "rpc" n'a
+ * pas de section input mandatory. Notez que ceci ne gere que les RPC de
+ * haut niveau (statement YANG "rpc"), pas les actions ("action",
+ * invoquees via {+restconf}/data/<...>/<action>, RFC 8040 SS3.6) : ce
+ * squelette ne route pas encore les actions, cf. feuille de route.
+ *
+ * En cas de succes, *json_out recoit soit NULL (pas de section "output"
+ * -> l'appelant doit repondre 204 No Content, RFC 8040 SS4.4.2), soit le
+ * corps JSON "module:output" deja enveloppe (alloue, RFC 8040 SS3.6.2)
+ * -> l'appelant doit repondre 200 OK avec ce corps.
+ *
+ * Retourne 0 en cas de succes. En cas d'echec, retourne -1 et remplit
+ * *err ("invalid-value" si le chemin ne designe pas une operation RPC
+ * connue ou si le corps ne correspond pas au schema "input" attendu,
+ * "access-denied"/"operation-failed" selon le code sysrepo). */
+int sysrepo_backend_rpc_invoke(const struct restconf_path_segment *segments, size_t nsegments,
+                               const char *body_json, size_t body_len, char **json_out,
+                               struct restconf_error *err);
+
 #endif /* RESTCONFD_SYSREPO_BACKEND_H */

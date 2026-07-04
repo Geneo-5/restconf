@@ -695,10 +695,56 @@ static void handle_datastore(const struct http_request *req, struct http_respons
     handle_data_like(req, resp, sr_ds, path);
 }
 
+static void handle_operation_invoke(const struct http_request *req, struct http_response *resp,
+                                     const struct restconf_request_path *path)
+{
+    /* RFC 8040 SS3.6 : {+restconf}/operations/<op> ne designe qu'une
+     * operation RPC de haut niveau (un unique segment qualifie par un
+     * module) ; les actions (invoquees sous {+restconf}/data/<...>) ne
+     * sont pas routees ici. On rejette explicitement toute autre forme
+     * plutot que de laisser sysrepo_backend_rpc_invoke() le faire, pour
+     * renvoyer un message d'erreur plus precis a ce niveau. */
+    if (path->nsegments != 1 || path->segments[0].nkeys != 0) {
+        send_error_status(resp, 400, "protocol", "invalid-value",
+                           "chemin d'operation invalide : attendu "
+                           "{+restconf}/operations/<module>:<rpc-name>");
+        return;
+    }
+
+    /* RFC 8040 SS3.6.1 : un corps de requete n'est requis que si le RPC a
+     * une section 'input' avec des noeuds mandatoires ; on ne peut pas le
+     * savoir sans consulter le schema, donc on n'exige pas de corps ici.
+     * En revanche, si un corps EST fourni, il doit etre au bon format. */
+    if (req->body && req->body_len > 0 && require_yang_json_content_type(req, resp) != 0) {
+        return;
+    }
+
+    char *json_out = NULL;
+    struct restconf_error err;
+    memset(&err, 0, sizeof(err));
+    int rc = sysrepo_backend_rpc_invoke(path->segments, path->nsegments, req->body,
+                                         req->body_len, &json_out, &err);
+    if (rc != 0) {
+        send_restconf_error(resp, &err, 0);
+        return;
+    }
+
+    if (json_out) {
+        /* RFC 8040 SS4.4.2 : "200 OK" avec un corps si l'operation a une
+         * sortie ('output', RFC 8040 SS3.6.2). */
+        http_response_set_status(resp, 200, "OK");
+        http_response_set_body(resp, "application/yang-data+json", json_out, strlen(json_out));
+    } else {
+        /* RFC 8040 SS4.4.2 : "204 No Content" si l'operation n'a pas de
+         * message-body de sortie. */
+        http_response_set_status(resp, 204, "No Content");
+        http_response_set_body(resp, NULL, NULL, 0);
+    }
+}
+
 static void handle_operations(const struct http_request *req, struct http_response *resp,
                                const struct restconf_request_path *path)
 {
-    (void)path;
     const char *allow = "POST, OPTIONS";
     if (is_options(req->method)) {
         send_options(resp, allow);
@@ -714,10 +760,16 @@ static void handle_operations(const struct http_request *req, struct http_respon
         if (validate_no_query_params(req, resp) != 0) {
             return;
         }
-        /* L'invocation de RPC/action (POST) sera ajoutee dans une phase
-         * ulterieure via sr_rpc_send_tree(). */
-        send_error_status(resp, 501, "application", "operation-not-supported",
-                           "invocation de RPC/action non encore implementee (squelette phase 1)");
+        if (path->nsegments == 0) {
+            /* POST sur {+restconf}/operations lui-meme (sans operation
+             * ciblee) : RFC 8040 SS3.3.2 n'en fait qu'un conteneur de
+             * decouverte (GET), pas une ressource invocable. */
+            send_error_status(resp, 400, "protocol", "invalid-value",
+                               "aucune operation ciblee : POST attendu sur "
+                               "{+restconf}/operations/<module>:<rpc-name>");
+            return;
+        }
+        handle_operation_invoke(req, resp, path);
         return;
     }
 

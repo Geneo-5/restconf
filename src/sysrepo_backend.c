@@ -840,3 +840,186 @@ int sysrepo_backend_yang_library_version(char **json_out, struct restconf_error 
     *json_out = buf;
     return 0;
 }
+
+/* --------------------------------------------------------------------
+ * RPC (RFC 8040 SS3.6/SS4.4.2) -- invocation de {+restconf}/operations/<op>
+ * -------------------------------------------------------------------- */
+
+int sysrepo_backend_rpc_invoke(const struct restconf_path_segment *segments, size_t nsegments,
+                               const char *body_json, size_t body_len, char **json_out,
+                               struct restconf_error *err)
+{
+    *json_out = NULL;
+    memset(err, 0, sizeof(*err));
+
+    /* RFC 8040 SS3.6 : le chemin d'une operation RPC est
+     * {+restconf}/operations/<module>:<rpc-name> -- un unique segment
+     * qualifie par un module, sans valeurs de cle (les RPC ne sont pas
+     * des listes). Les actions (statement YANG "action", invoquees via
+     * {+restconf}/data/<...>/<action>) ne sont pas gerees ici : le
+     * routage actuel de restconf_handler.c n'aiguille vers cette
+     * fonction que depuis RESTCONF_RES_OPERATIONS. */
+    if (nsegments != 1 || segments[0].nkeys != 0) {
+        err->error_type = strdup("protocol");
+        err->error_tag = strdup("invalid-value");
+        err->error_message = strdup("chemin d'operation RESTCONF invalide (attendu : "
+                                     "{+restconf}/operations/<module>:<rpc>)");
+        return -1;
+    }
+    if (!segments[0].module) {
+        err->error_type = strdup("protocol");
+        err->error_tag = strdup("invalid-value");
+        err->error_message = strdup("le nom de l'operation doit etre qualifie par un module "
+                                     "(module:rpc-name)");
+        return -1;
+    }
+
+    char rpc_path[512];
+    snprintf(rpc_path, sizeof(rpc_path), "/%s:%s", segments[0].module, segments[0].name);
+
+    /* sr_rpc_send_tree() n'est pas lie a une datastore particuliere ;
+     * n'importe quelle sr_datastore_t convient pour ouvrir la session
+     * (on choisit <operational>, coherent avec le fait qu'une invocation
+     * RPC n'edite pas directement une configuration). */
+    sr_session_ctx_t *session = NULL;
+    int rc = sr_session_start(g_conn, SR_DS_OPERATIONAL, &session);
+    if (rc != SR_ERR_OK) {
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup(sr_strerror(rc));
+        return -1;
+    }
+
+    const struct ly_ctx *ctx = sr_acquire_context(g_conn);
+    if (!ctx) {
+        sr_session_stop(session);
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("contexte libyang indisponible");
+        return -1;
+    }
+
+    /* Verifie que le chemin designe bien une operation RPC de haut
+     * niveau (et pas, par exemple, un conteneur/liste ordinaire ou une
+     * action) avant d'aller plus loin. */
+    const struct lysc_node *rpc_snode = lys_find_path(ctx, NULL, rpc_path, 0);
+    if (!rpc_snode || rpc_snode->nodetype != LYS_RPC) {
+        sr_release_context(g_conn);
+        sr_session_stop(session);
+        err->error_type = strdup("protocol");
+        err->error_tag = strdup("invalid-value");
+        err->error_message = strdup("aucune operation RPC ne correspond a ce chemin");
+        return -1;
+    }
+
+    /* Construit le noeud racine "rpc" lui-meme (sans donnees d'entree) :
+     * c'est ce noeud, avec le corps JSON de la requete analyse comme
+     * enfant direct (l'enveloppe "module:input", RFC 8040 SS3.6.1), qui
+     * doit etre passe tel quel a sr_rpc_send_tree(). */
+    struct lyd_node *rpc_node = NULL;
+    LY_ERR lyrc = lyd_new_path(NULL, ctx, rpc_path, NULL, 0, &rpc_node);
+    if (lyrc != LY_SUCCESS || !rpc_node) {
+        sr_release_context(g_conn);
+        sr_session_stop(session);
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("impossible de construire le noeud d'operation RPC");
+        return -1;
+    }
+
+    if (body_json && body_len > 0) {
+        struct ly_in *in = NULL;
+        if (ly_in_new_memory(body_json, &in) != LY_SUCCESS) {
+            lyd_free_tree(rpc_node);
+            sr_release_context(g_conn);
+            sr_session_stop(session);
+            err->error_type = strdup("application");
+            err->error_tag = strdup("operation-failed");
+            err->error_message = strdup("echec d'allocation pour l'analyse du corps JSON");
+            return -1;
+        }
+
+        struct lyd_node *parsed = NULL;
+        lyrc = lyd_parse_data(ctx, rpc_node, in, LYD_JSON, LYD_PARSE_ONLY | LYD_PARSE_NO_STATE, 0,
+                               &parsed);
+        ly_in_free(in, 0);
+
+        if (lyrc != LY_SUCCESS) {
+            lyd_free_tree(rpc_node);
+            sr_release_context(g_conn);
+            sr_session_stop(session);
+            err->error_type = strdup("protocol");
+            err->error_tag = strdup("malformed-message");
+            err->error_message = strdup("corps de requete JSON non conforme au schema 'input' "
+                                         "de cette operation RPC (RFC 7951)");
+            return -1;
+        }
+    }
+
+    /* XXX-SR-API : sr_rpc_send_tree() prend ici directement le noeud RPC
+     * (avec son eventuel enfant 'input' deja attache) et renvoie, via
+     * 'output', l'arbre de sortie correspondant. Verifiez cette
+     * signature exacte (ordre des parametres, unite du timeout) dans
+     * votre sysrepo.h installe : elle a legerement varie entre versions
+     * de sysrepo 2.x. */
+    struct lyd_node *output = NULL;
+    rc = sr_rpc_send_tree(session, rpc_node, 0, &output);
+
+    lyd_free_tree(rpc_node);
+    sr_release_context(g_conn);
+    sr_session_stop(session);
+
+    if (rc != SR_ERR_OK) {
+        err->error_type = strdup("application");
+        err->error_tag = strdup(rc == SR_ERR_UNAUTHORIZED
+                                     ? "access-denied"
+                                     : (rc == SR_ERR_INVAL_ARG ? "invalid-value"
+                                                                : "operation-failed"));
+        err->error_message = strdup(sr_strerror(rc));
+        return -1;
+    }
+
+    if (!output) {
+        /* Pas de sortie -> 204 No Content (RFC 8040 SS4.4.2). */
+        return 0;
+    }
+
+    /* 'output' est l'arbre RPC renvoye par sysrepo ; le conteneur
+     * schema special "output" (nodetype LYS_OUTPUT) peut se trouver a la
+     * racine ou comme enfant selon la version de sysrepo/libyang -- on
+     * le recherche explicitement plutot que de supposer sa position
+     * (meme prudence que XXX-LY-API ailleurs dans ce fichier). */
+    struct lyd_node *out_node = output;
+    if (!out_node->schema || out_node->schema->nodetype != LYS_OUTPUT) {
+        struct lyd_node *child = lyd_child(out_node);
+        out_node = NULL;
+        for (; child; child = child->next) {
+            if (child->schema && child->schema->nodetype == LYS_OUTPUT) {
+                out_node = child;
+                break;
+            }
+        }
+    }
+
+    if (!out_node || !lyd_child(out_node)) {
+        /* Section 'output' absente ou vide -> pas de corps de reponse. */
+        lyd_free_all(output);
+        return 0;
+    }
+
+    char *raw = NULL;
+    if (lyd_print_mem(&raw, out_node, LYD_JSON, LYD_PRINT_SHRINK) != 0) {
+        lyd_free_all(output);
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("echec de serialisation JSON de la sortie RPC");
+        return -1;
+    }
+    lyd_free_all(output);
+
+    /* RFC 8040 SS3.6.2 : la sortie est enveloppee dans un objet "output"
+     * qualifie par le module -- ce qu'imprime deja lyd_print_mem() pour
+     * ce noeud cible unique ("module:output": {...}). */
+    *json_out = raw;
+    return 0;
+}
