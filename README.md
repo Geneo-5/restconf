@@ -256,7 +256,7 @@ curl -s http://localhost/restconf/ds/ietf-datastores:operational | jq
 ```
 
 ## Feuille de route (phase 2 et suivantes, a prioriser ensemble)
--- **Plugin sysrepo** : Convertir l'implémentation de ietf-restconf-monitoring, ietf-restconf sous forme de plugin sysrepo.
+- **Plugin sysrepo** : Convertir l'implémentation de ietf-restconf-monitoring, ietf-restconf sous forme de plugin sysrepo.
 - ~~**Ecritures** : POST (creation), PUT (remplacement), PATCH (fusion "plain patch"), DELETE~~ ->
   fait (voir "Ecritures" ci-dessus), a l'exception du remplacement/fusion complet de la datastore
   via PUT/PATCH directement sur `{+restconf}/data`/`{+restconf}/ds/<name>` (RFC 8040 SS4.5
@@ -299,6 +299,9 @@ curl -s http://localhost/restconf/ds/ietf-datastores:operational | jq
   serveur RESTCONF~~ -> fait (`ietf-yang-library`, `ietf-datastores`, `ietf-restconf`,
   `ietf-restconf-monitoring`, `ietf-netconf`). L'installation automatique via `sysrepoctl` reste
   volontairement hors du daemon.
+- **Librairie** : Créé une librairie Resconf/sysrepo indépendant du frontend Fastcgi2.
+- **Frama-C** : Ajouter une instrumentation du code pour le prouver formellement avec Frama-C
+- **Fuzzing** : Ajouter un programme de fuzzing avec AFL++ qui valide la librairie.
 
 ## Arborescence
 
