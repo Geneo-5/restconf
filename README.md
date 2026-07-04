@@ -267,7 +267,7 @@ curl -s http://localhost/restconf/ds/ietf-datastores:operational | jq
   parametres non supportes sont maintenant rejetes explicitement en `400 invalid-value`.
 - **ETag / Last-Modified** pour collision detection: ~1-2 jours (RFC 8040 SS3.4.1/3.5.1-2).
 - **Authentification/autorisation** : TLS + NACM (`sr_session_set_user`, `SR_SESS_ENABLE_NACM`): ~6-10 jours et NACM
-  cote sysrepo (`sr_session_set_user`/`SR_SESS_ENABLE_NACM` a etudier).
+  cote sysrepo (`sr_session_set_user`/`SR_SESS_ENABLE_NACM` a etudier). l'authentification est géré par un programme externe. l'utilisateur fournie un cookie JWT (RFC7519, RFC8725 et RFC7797) contenant le nom de l'utilisateur. La clef de vérification du JWT est stocké dans le keyring kernel.   
 - **Support XML** en plus de JSON: ~4-6 jours (encoder/decoder + Accept negotiation) `Accept`/`Content-Type` existe maintenant pour
   refuser proprement les representations non supportees, mais seul JSON est encode/decode pour
   l'instant.
@@ -293,4 +293,5 @@ src/
   restconf_handler.c   dispatcher HTTP -> sysrepo selon le type de ressource
 etc/
   nginx-restconf.conf.example
+yang/                restconf yang schema
 ```
