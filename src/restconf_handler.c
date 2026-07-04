@@ -281,10 +281,13 @@ static char *build_location(const struct http_request *req, const char *child_se
 }
 
 static int parse_get_options(const struct http_request *req, struct restconf_get_options *options,
-                              struct http_response *resp)
+                              int is_operational_ds, struct http_response *resp)
 {
     options->content = RESTCONF_CONTENT_ALL;
     options->depth = 0;
+    options->fields = NULL;
+    options->with_defaults = RESTCONF_WD_UNSET;
+    options->with_origin = 0;
 
     const char *v = http_request_get_param(req, "content");
     if (v) {
@@ -323,6 +326,53 @@ static int parse_get_options(const struct http_request *req, struct restconf_get
             }
             options->depth = (unsigned int)depth;
         }
+    }
+
+    /* "fields" (RFC 8040 SS4.8.3) : la valeur brute (deja percent-decodee
+     * par http.c) est transmise telle quelle a sysrepo_backend_get(), qui
+     * l'analyse (grammaire fields-expr complete, y compris sous-selecteurs
+     * parentheses) et l'applique a l'arbre libyang recupere, avant
+     * serialisation JSON. Pas de validation de grammaire ici : une
+     * expression malformee sera rejetee cote sysrepo_backend.c avec
+     * "invalid-value". */
+    options->fields = http_request_get_param(req, "fields");
+
+    /* "with-defaults" (RFC 8040 SS4.8.9, table SS4.8.9 ; RFC 8527 SS3.2.1
+     * pour le cas particulier de la datastore operational). Seules les 4
+     * valeurs normalisees sont acceptees ; toute autre valeur est rejetee
+     * explicitement (le serveur n'annonce pas "also-supported", RFC 8040
+     * SS4.8.9 dernier paragraphe). */
+    v = http_request_get_param(req, "with-defaults");
+    if (v) {
+        if (strcmp(v, "report-all") == 0) {
+            options->with_defaults = RESTCONF_WD_REPORT_ALL;
+        } else if (strcmp(v, "trim") == 0) {
+            options->with_defaults = RESTCONF_WD_TRIM;
+        } else if (strcmp(v, "explicit") == 0) {
+            options->with_defaults = RESTCONF_WD_EXPLICIT;
+        } else if (strcmp(v, "report-all-tagged") == 0) {
+            options->with_defaults = RESTCONF_WD_REPORT_ALL_TAGGED;
+        } else {
+            send_error_status(resp, 400, "protocol", "invalid-value",
+                               "valeur invalide pour le parametre with-defaults");
+            return -1;
+        }
+    }
+
+    /* "with-origin" (RFC 8527 SS3.2.2) : booleen (present => demande),
+     * valide uniquement sur {+restconf}/ds/ietf-datastores:operational (ou
+     * toute datastore derivee de l'identite "operational" -- ce squelette
+     * n'en expose pas d'autre). Ailleurs : 400 invalid-value, exactement
+     * comme le prescrit la RFC. */
+    v = http_request_get_param(req, "with-origin");
+    if (v) {
+        if (!is_operational_ds) {
+            send_error_status(resp, 400, "protocol", "invalid-value",
+                               "le parametre with-origin n'est valide que sur "
+                               "{+restconf}/ds/ietf-datastores:operational (RFC 8527 SS3.2.2)");
+            return -1;
+        }
+        options->with_origin = 1;
     }
 
     return 0;
@@ -376,9 +426,18 @@ static void handle_restconf_monitoring_capabilities(const struct http_request *r
         return;
     }
 
+    /* RFC 8040 SS9.1.1 (depth, fields, with-defaults) + RFC 8527 SS3.2.1/
+     * SS3.2.2 (with-operational-defaults, with-origin) : n'annoncer que ce
+     * qui est reellement applique par sysrepo_backend_get() (cf.
+     * "Parametres de requete" dans README.md). filter/start-time/stop-time
+     * restent non implementes et donc non annonces. */
     const char *capabilities =
         "\"urn:ietf:params:restconf:capability:defaults:1.0?basic-mode=explicit\","
-        "\"urn:ietf:params:restconf:capability:depth:1.0\"";
+        "\"urn:ietf:params:restconf:capability:depth:1.0\","
+        "\"urn:ietf:params:restconf:capability:fields:1.0\","
+        "\"urn:ietf:params:restconf:capability:with-defaults:1.0\","
+        "\"urn:ietf:params:restconf:capability:with-operational-defaults:1.0\","
+        "\"urn:ietf:params:restconf:capability:with-origin:1.0\"";
     const char *fmt = NULL;
     if (path->nsegments == 1) {
         fmt = "{\"ietf-restconf-monitoring:restconf-state\":{\"capabilities\":"
@@ -476,9 +535,10 @@ static void handle_yang_library_version(const struct http_request *req, struct h
 }
 
 static void handle_data_get(const struct http_request *req, struct http_response *resp, int sr_ds,
-                             const struct restconf_request_path *path)
+                             const struct restconf_request_path *path, int is_operational_ds)
 {
-    static const char *const allowed_params[] = { "content", "depth" };
+    static const char *const allowed_params[] = { "content", "depth", "fields", "with-defaults",
+                                                   "with-origin" };
 
     if (validate_query_params(req, resp, allowed_params,
                                sizeof(allowed_params) / sizeof(allowed_params[0])) != 0) {
@@ -489,7 +549,7 @@ static void handle_data_get(const struct http_request *req, struct http_response
     }
 
     struct restconf_get_options options;
-    if (parse_get_options(req, &options, resp) != 0) {
+    if (parse_get_options(req, &options, is_operational_ds, resp) != 0) {
         return;
     }
 
@@ -658,7 +718,7 @@ static void handle_data_like(const struct http_request *req, struct http_respons
     if (is_options(req->method)) {
         send_options(resp, allow);
     } else if (is_get_or_head(req->method)) {
-        handle_data_get(req, resp, sr_ds, path);
+        handle_data_get(req, resp, sr_ds, path, is_operational_ds);
     } else if (strcmp(req->method, "POST") == 0) {
         if (validate_no_query_params(req, resp) != 0) {
             return;

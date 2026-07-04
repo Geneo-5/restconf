@@ -12,9 +12,40 @@ enum restconf_content_mode {
     RESTCONF_CONTENT_NONCONFIG,
 };
 
+/* Valeurs possibles du parametre de requete "with-defaults" (RFC 8040
+ * SS4.8.9, table SS4.8.9 ; RFC 8527 SS3.2.1 pour le cas particulier de
+ * la datastore operational). Correspondent directement aux options
+ * d'impression LYD_PRINT_WD_* de libyang (cf. sysrepo_backend.c). */
+enum restconf_with_defaults_mode {
+    RESTCONF_WD_UNSET = 0,     /* parametre absent : bascule sur le basic-mode
+                               * annonce par le serveur (RFC 8040 SS9.1.2),
+                               * ici "explicit" -> LYD_PRINT_WD_EXPLICIT */
+    RESTCONF_WD_REPORT_ALL,
+    RESTCONF_WD_TRIM,
+    RESTCONF_WD_EXPLICIT,
+    RESTCONF_WD_REPORT_ALL_TAGGED,
+};
+
 struct restconf_get_options {
     enum restconf_content_mode content;
-    unsigned int depth; /* 0 = profondeur non bornee (RFC 8040 "unbounded"). */
+    unsigned int depth;            /* 0 = profondeur non bornée */
+    const char *fields;            /* valeur brute du parametre "fields" (RFC
+                                   * 8040 SS4.8.3), NULL si absent ; analysee
+                                   * par sysrepo_backend.c a l'aide du schema
+                                   * compile libyang (grammaire fields-expr
+                                   * complete, y compris sous-selecteurs
+                                   * parentheses). Pointeur non possede (duree
+                                   * de vie liee a la struct http_request de
+                                   * l'appelant). */
+    enum restconf_with_defaults_mode with_defaults; /* RFC 8040 SS4.8.9 */
+    int with_origin;               /* RFC 8527 SS3.2.2 : 1 si "with-origin"
+                                   * demande. L'appelant DOIT avoir deja
+                                   * verifie que la datastore ciblee est bien
+                                   * "operational" (ou derivee), sinon 400
+                                   * invalid-value -- cf. restconf_handler.c ;
+                                   * sysrepo_backend.c l'ignore silencieusement
+                                   * en dehors de operational par prudence
+                                   * supplementaire. */
 };
 
 /* Connexion sysrepo partagee par tous les threads/requetes (un seul
@@ -47,9 +78,19 @@ int sysrepo_backend_datastore_from_identityref(const char *identityref, int *sr_
  * {+restconf}/data lui-meme) ; peut etre NULL si la cible est un noeud
  * unique bien identifie.
  *
+ * 'options->fields' (RFC 8040 SS4.8.3), si non NULL, est analyse (grammaire
+ * fields-expr complete, y compris sous-selecteurs parentheses et chemins
+ * '/') puis applique par elagage de l'arbre libyang recupere, avant
+ * serialisation ; une expression malformee renvoie "invalid-value".
+ * 'options->with_defaults' (RFC 8040 SS4.8.9) est traduit en option
+ * d'impression LYD_PRINT_WD_* de libyang. 'options->with_origin' (RFC 8527
+ * SS3.2.2) demande les metadata d'origine aupres de sysrepo (uniquement
+ * honore si sr_ds correspond a la datastore operational).
+ *
  * Retourne 0 en cas de succes. En cas d'echec, retourne -1 et remplit
  * *err (error-tag adapte : "invalid-value" si le chemin ne correspond a
- * aucun noeud du schema, "operation-failed" en cas d'erreur sysrepo). */
+ * aucun noeud du schema ou si 'fields' est malforme, "operation-failed"
+ * en cas d'erreur sysrepo). */
 int sysrepo_backend_get(int sr_ds, const struct restconf_path_segment *segments,
                          size_t nsegments, const struct restconf_get_options *options,
                          char **json_out, struct restconf_error *err);

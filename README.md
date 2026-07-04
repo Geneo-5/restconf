@@ -24,7 +24,10 @@ Squelette **phase 2 (lecture + ecriture de base)** d'un serveur RESTCONF s'appuy
 | idem | DELETE | OK sur une ressource de donnees ; non defini sur la racine de la datastore (RFC 8040 SS4.7) |
 | Parametre `content` | GET | Partiel (voir plus bas) |
 | Parametre `depth` | GET/HEAD | OK (`unbounded` ou entier positif, via `sr_get_data(..., max_depth, ...)`) |
-| Parametres non supportes | toutes methodes | Rejet explicite `400 invalid-value` au lieu d'une ignorance silencieuse |
+| Parametre `fields` | GET/HEAD | OK (grammaire complete, voir "Parametres de requete" ci-dessous) |
+| Parametre `with-defaults` | GET/HEAD | OK (les 4 valeurs RFC 8040 SS4.8.9, voir "Parametres de requete" ci-dessous) |
+| Parametre `with-origin` (RFC 8527 SS3.2.2) | GET/HEAD | OK, uniquement sur `{+restconf}/ds/ietf-datastores:operational` |
+| Parametres non supportes (`insert`, `point`, `filter`, `start-time`, `stop-time`) | toutes methodes | Rejet explicite `400 invalid-value` au lieu d'une ignorance silencieuse |
 | Negociation `Accept` / `Content-Type` | GET/HEAD/POST/PUT/PATCH | JSON RESTCONF uniquement : `application/yang-data+json` |
 | `OPTIONS` / en-tete `Allow` | OPTIONS + erreurs 405 | OK pour les ressources RESTCONF exposees |
 | `{+restconf}/operations/<module>:<rpc>` (RPC de haut niveau, RFC 8040 SS3.6) | POST | OK (voir "RPC" ci-dessous) |

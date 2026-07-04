@@ -288,8 +288,17 @@ static int fetch_tree(sr_session_ctx_t *session, const char *xpath, int whole_da
     int rc;
     unsigned int depth = options ? options->depth : 0;
     enum restconf_content_mode content = options ? options->content : RESTCONF_CONTENT_ALL;
+    int with_origin = options ? options->with_origin : 0;
 
-    if (whole_datastore || depth > 0) {
+    /* RFC 8527 SS3.2.2 : "with-origin" necessite le drapeau sysrepo
+     * SR_OPER_WITH_ORIGIN, qui n'est disponible que sur le chemin
+     * sr_get_data() (sr_get_subtree() ne prend pas de drapeaux
+     * sr_get_oper_flag_t) -- on force donc ce chemin des que with-origin
+     * est demande, meme sans depth explicite. restconf_handler.c a deja
+     * verifie que with-origin n'est utilise que sur la datastore
+     * operational ; on le reverifie ici (sr_ds == SR_DS_OPERATIONAL) par
+     * prudence supplementaire avant de poser le drapeau. */
+    if (whole_datastore || depth > 0 || with_origin) {
         uint32_t opts = 0;
         /* Le filtrage config/nonconfig via des drapeaux sr_get_data
          * n'a de sens que pour la datastore <operational> chez sysrepo
@@ -301,6 +310,13 @@ static int fetch_tree(sr_session_ctx_t *session, const char *xpath, int whole_da
                 opts |= SR_OPER_NO_STATE;
             } else if (content == RESTCONF_CONTENT_NONCONFIG) {
                 opts |= SR_OPER_NO_CONFIG;
+            }
+            if (with_origin) {
+                /* XXX-SR-API : nom exact du drapeau a verifier dans votre
+                 * sysrepo.h (enum sr_get_oper_flag_t) ; il peut differer
+                 * selon la version de sysrepo installee, comme
+                 * SR_OPER_NO_STATE/SR_OPER_NO_CONFIG ci-dessus. */
+                opts |= SR_OPER_WITH_ORIGIN;
             }
         }
         rc = sr_get_data(session, xpath, depth, 0, opts, &out->sr_data);
@@ -325,6 +341,292 @@ static void fetch_result_release(struct fetch_result *r)
         sr_release_data(r->sr_data);
     }
     memset(r, 0, sizeof(*r));
+}
+
+/* --------------------------------------------------------------------
+ * Parametre de requete "with-defaults" (RFC 8040 SS4.8.9)
+ * -------------------------------------------------------------------- */
+
+/* Traduit le mode "with-defaults" RESTCONF vers l'option d'impression
+ * libyang correspondante (LYD_PRINT_WD_*), qui implemente directement la
+ * meme semantique (RFC 6243 SS3.1-3.4, dont la RFC 8040 SS4.8.9 reprend
+ * les renvois section par section). RESTCONF_WD_UNSET (parametre absent)
+ * applique le basic-mode annonce par ce serveur dans la capacite
+ * "defaults" (RFC 8040 SS9.1.2) -- ici "explicit", cf.
+ * handle_restconf_monitoring_capabilities() dans restconf_handler.c.
+ *
+ * XXX-LY-API : verifiez ces noms de constantes dans votre
+ * libyang/printer_data.h installe (LYD_PRINT_WD_EXPLICIT/TRIM/ALL/
+ * ALL_TAG), comme pour les autres marqueurs XXX-LY-API de ce fichier. */
+static int with_defaults_print_flag(enum restconf_with_defaults_mode mode)
+{
+    switch (mode) {
+    case RESTCONF_WD_REPORT_ALL:
+        return LYD_PRINT_WD_ALL;
+    case RESTCONF_WD_TRIM:
+        return LYD_PRINT_WD_TRIM;
+    case RESTCONF_WD_REPORT_ALL_TAGGED:
+        return LYD_PRINT_WD_ALL_TAG;
+    case RESTCONF_WD_EXPLICIT:
+    case RESTCONF_WD_UNSET:
+    default:
+        return LYD_PRINT_WD_EXPLICIT;
+    }
+}
+
+/* --------------------------------------------------------------------
+ * Parametre de requete "fields" (RFC 8040 SS4.8.3)
+ * -------------------------------------------------------------------- */
+
+/* Noeud d'une selection "fields" deja analysee : correspond a un
+ * "api-identifier" du chemin, avec ses enfants explicitement selectionnes
+ * ('children' non-NULL, cas d'un sous-selecteur parenthese ou d'un
+ * segment de chemin suivant un '/') ou NULL, ce qui signifie "tout le
+ * sous-arbre de ce noeud est selectionne" (cf. exemple RFC 8040 SS4.8.3
+ * "fields=genre;year" : chaque terme sans parenthese est retenu en
+ * entier). 'next' chaine les termes separes par ';' au meme niveau. */
+struct field_node {
+    char *module; /* NULL si le terme n'est pas qualifie par un module */
+    char *name;
+    struct field_node *children;
+    struct field_node *next;
+};
+
+static void field_node_list_free(struct field_node *n)
+{
+    while (n) {
+        struct field_node *next = n->next;
+        field_node_list_free(n->children);
+        free(n->module);
+        free(n->name);
+        free(n);
+        n = next;
+    }
+}
+
+struct field_parser {
+    const char *s;
+    size_t len;
+    size_t pos;
+};
+
+static int fp_peek(const struct field_parser *p)
+{
+    return p->pos < p->len ? (unsigned char)p->s[p->pos] : -1;
+}
+
+/* Grammaire "identifier" de la RFC 8040 SS3.5.3.1 (reutilisee telle
+ * quelle par "api-identifier" dans la grammaire "fields-expr", SS4.8.3):
+ * (ALPHA / "_") *(ALPHA / DIGIT / "_" / "-" / ".") -- simplifie ici en
+ * acceptant alnum/_/-/. partout (pas de verification stricte du premier
+ * caractere), ce qui est legerement plus permissif que la RFC mais
+ * suffisant en pratique. */
+static int fp_is_ident_char(int c)
+{
+    return c == '_' || c == '-' || c == '.' || isalnum(c);
+}
+
+/* Analyse un "api-identifier" ([module-name ":"] identifier). Renvoie 0
+ * et remplit *module_out (eventuellement NULL)/*name_out (chaines
+ * allouees) en cas de succes ; -1 sinon (identifiant vide). */
+static int fp_parse_identifier(struct field_parser *p, char **module_out, char **name_out)
+{
+    size_t start = p->pos;
+    while (p->pos < p->len && fp_is_ident_char(fp_peek(p))) {
+        p->pos++;
+    }
+    if (p->pos == start) {
+        return -1;
+    }
+    char *id1 = strndup(p->s + start, p->pos - start);
+    if (!id1) {
+        return -1;
+    }
+
+    if (fp_peek(p) == ':') {
+        p->pos++;
+        size_t start2 = p->pos;
+        while (p->pos < p->len && fp_is_ident_char(fp_peek(p))) {
+            p->pos++;
+        }
+        if (p->pos == start2) {
+            free(id1);
+            return -1;
+        }
+        char *id2 = strndup(p->s + start2, p->pos - start2);
+        if (!id2) {
+            free(id1);
+            return -1;
+        }
+        *module_out = id1;
+        *name_out = id2;
+    } else {
+        *module_out = NULL;
+        *name_out = id1;
+    }
+    return 0;
+}
+
+static struct field_node *fp_parse_expr(struct field_parser *p);
+
+/* Analyse "path" = api-identifier ["/" path] en une chaine de field_node
+ * a un seul enfant chacun (le dernier ayant 'children' a NULL, sauf si un
+ * sous-selecteur parenthese est attache ensuite par fp_parse_term()).
+ * *tail_out recoit le dernier (plus profond) noeud de la chaine, pour
+ * permettre a l'appelant d'y accrocher un sous-selecteur. */
+static struct field_node *fp_parse_path(struct field_parser *p, struct field_node **tail_out)
+{
+    char *module = NULL, *name = NULL;
+    if (fp_parse_identifier(p, &module, &name) != 0) {
+        return NULL;
+    }
+    struct field_node *node = calloc(1, sizeof(*node));
+    if (!node) {
+        free(module);
+        free(name);
+        return NULL;
+    }
+    node->module = module;
+    node->name = name;
+
+    if (fp_peek(p) == '/') {
+        p->pos++;
+        struct field_node *child_tail = NULL;
+        struct field_node *child = fp_parse_path(p, &child_tail);
+        if (!child) {
+            field_node_list_free(node);
+            return NULL;
+        }
+        node->children = child;
+        *tail_out = child_tail;
+    } else {
+        *tail_out = node;
+    }
+    return node;
+}
+
+/* Analyse un "terme" = path ["(" fields-expr ")"]. */
+static struct field_node *fp_parse_term(struct field_parser *p)
+{
+    struct field_node *tail = NULL;
+    struct field_node *head = fp_parse_path(p, &tail);
+    if (!head) {
+        return NULL;
+    }
+    if (fp_peek(p) == '(') {
+        p->pos++;
+        struct field_node *sub = fp_parse_expr(p);
+        if (!sub) {
+            field_node_list_free(head);
+            return NULL;
+        }
+        if (fp_peek(p) != ')') {
+            field_node_list_free(head);
+            field_node_list_free(sub);
+            return NULL;
+        }
+        p->pos++;
+        tail->children = sub;
+    }
+    return head;
+}
+
+/* Analyse "fields-expr" = terme (";" terme)*. */
+static struct field_node *fp_parse_expr(struct field_parser *p)
+{
+    struct field_node *head = fp_parse_term(p);
+    if (!head) {
+        return NULL;
+    }
+    struct field_node *last = head;
+    while (fp_peek(p) == ';') {
+        p->pos++;
+        struct field_node *next_term = fp_parse_term(p);
+        if (!next_term) {
+            field_node_list_free(head);
+            return NULL;
+        }
+        last->next = next_term;
+        last = next_term;
+    }
+    return head;
+}
+
+/* Point d'entree : analyse la valeur brute (deja percent-decodee par
+ * http.c) du parametre "fields". Renvoie NULL si l'expression est
+ * malformee ou vide (l'appelant doit alors renvoyer "invalid-value"). */
+static struct field_node *parse_fields_param(const char *value)
+{
+    if (!value || !*value) {
+        return NULL;
+    }
+    struct field_parser p;
+    p.s = value;
+    p.len = strlen(value);
+    p.pos = 0;
+    struct field_node *result = fp_parse_expr(&p);
+    if (!result) {
+        return NULL;
+    }
+    if (p.pos != p.len) {
+        /* caracteres en trop non consommes par la grammaire */
+        field_node_list_free(result);
+        return NULL;
+    }
+    return result;
+}
+
+/* Applique une selection "fields" deja analysee a une liste de freres
+ * lyd_node (*tree_head), en elaguant (lyd_free_tree()) tout noeud non
+ * mentionne dans 'selection'. Un noeud mentionne SANS enfants explicites
+ * dans 'selection' est conserve integralement (tout son sous-arbre,
+ * conformement a l'exemple RFC 8040 SS4.8.3 "fields=genre;year") ; un
+ * noeud mentionne AVEC des enfants explicites (sous-selecteur parenthese
+ * ou chemin "/") voit son propre sous-arbre recursivement filtre de la
+ * meme maniere. *tree_head est mis a jour si le tout premier frere de la
+ * liste est elague.
+ *
+ * Un terme non qualifie par un module correspond a n'importe quel noeud
+ * du meme nom local, quel que soit son module reel -- legerement plus
+ * permissif que la RFC (qui suppose le module herite du contexte
+ * ascendant), mais sans consequence pratique tant que les noms ne sont
+ * pas ambigus entre modules a un meme niveau.
+ *
+ * XXX-LY-API : suppose que lyd_free_tree() unlink correctement le noeud
+ * de la liste de ses freres (et met a jour le pointeur 'child' du parent
+ * si necessaire), comme documente pour libyang 2.x ; verifiez ce
+ * comportement dans votre libyang/tree_data.h si l'elagage produit un
+ * arbre incoherent. */
+static void apply_fields_filter(struct lyd_node **tree_head, const struct field_node *selection)
+{
+    struct lyd_node *n = tree_head ? *tree_head : NULL;
+    while (n) {
+        struct lyd_node *next = n->next;
+        const struct field_node *match = NULL;
+        if (n->schema) {
+            for (const struct field_node *f = selection; f; f = f->next) {
+                if (strcmp(f->name, n->schema->name) != 0) {
+                    continue;
+                }
+                if (f->module && (!n->schema->module ||
+                                   strcmp(f->module, n->schema->module->name) != 0)) {
+                    continue;
+                }
+                match = f;
+                break;
+            }
+        }
+        if (!match) {
+            if (n == *tree_head) {
+                *tree_head = next;
+            }
+            lyd_free_tree(n);
+        } else if (match->children) {
+            struct lyd_node *child = lyd_child(n);
+            apply_fields_filter(&child, match->children);
+        }
+        n = next;
+    }
 }
 
 int sysrepo_backend_get(int sr_ds, const struct restconf_path_segment *segments,
@@ -365,17 +667,44 @@ int sysrepo_backend_get(int sr_ds, const struct restconf_path_segment *segments,
     struct fetch_result fr;
     int frc = fetch_tree(session, xpath, whole, options, sr_ds, &fr, err);
     free(xpath);
-    sr_release_context(g_conn);
     sr_session_stop(session);
 
     if (frc != 0) {
+        sr_release_context(g_conn);
         return -1;
     }
 
+    /* "fields" (RFC 8040 SS4.8.3) : applique AVANT serialisation, tant que
+     * le contexte libyang (schema) est encore acquis -- necessaire pour
+     * comparer les noms de module des noeuds retournes a ceux de la
+     * selection demandee. sr_data_t->tree est mis a jour en meme temps
+     * que fr.tree pour que fetch_result_release()/sr_release_data() reste
+     * coherent si le tout premier noeud de haut niveau a ete elague. */
+    if (options && options->fields && fr.tree) {
+        struct field_node *selection = parse_fields_param(options->fields);
+        if (!selection) {
+            fetch_result_release(&fr);
+            sr_release_context(g_conn);
+            err->error_type = strdup("protocol");
+            err->error_tag = strdup("invalid-value");
+            err->error_message = strdup("expression 'fields' malformee (RFC 8040 SS4.8.3)");
+            return -1;
+        }
+        apply_fields_filter(&fr.tree, selection);
+        if (fr.sr_data) {
+            fr.sr_data->tree = fr.tree;
+        }
+        field_node_list_free(selection);
+    }
+
+    int wd_flag = with_defaults_print_flag(options ? options->with_defaults : RESTCONF_WD_UNSET);
+
     char *raw = NULL;
     if (fr.tree) {
-        if (lyd_print_mem(&raw, fr.tree, LYD_JSON, LYD_PRINT_WITHSIBLINGS | LYD_PRINT_SHRINK) != 0) {
+        if (lyd_print_mem(&raw, fr.tree, LYD_JSON,
+                          LYD_PRINT_WITHSIBLINGS | LYD_PRINT_SHRINK | wd_flag) != 0) {
             fetch_result_release(&fr);
+            sr_release_context(g_conn);
             err->error_type = strdup("application");
             err->error_tag = strdup("operation-failed");
             err->error_message = strdup("echec de serialisation JSON (lyd_print_mem)");
@@ -383,6 +712,7 @@ int sysrepo_backend_get(int sr_ds, const struct restconf_path_segment *segments,
         }
     }
     fetch_result_release(&fr);
+    sr_release_context(g_conn);
 
     if (!raw) {
         if (!whole) {
