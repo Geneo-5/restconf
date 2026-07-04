@@ -21,7 +21,11 @@ struct restconf_get_options {
  * sr_connect() pour tout le processus, cf. doc sysrepo : "It is safe to
  * use a single connection by multiple threads"). A initialiser une fois
  * au demarrage avec sysrepo_backend_init(), a liberer avec
- * sysrepo_backend_destroy(). */
+ * sysrepo_backend_destroy().
+ *
+ * L'initialisation verifie aussi que les modules YANG RESTCONF/NMDA
+ * indispensables sont presents dans le contexte sysrepo ; installez-les
+ * au prealable avec sysrepoctl si cette verification echoue. */
 int sysrepo_backend_init(void);
 void sysrepo_backend_destroy(void);
 

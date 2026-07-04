@@ -32,11 +32,51 @@
 
 static sr_conn_ctx_t *g_conn;
 
+static const char *REQUIRED_YANG_MODULES[] = {
+    "ietf-yang-library",
+    "ietf-datastores",
+    "ietf-restconf",
+    "ietf-restconf-monitoring",
+    "ietf-netconf",
+};
+
+static int validate_required_yang_modules(void)
+{
+    const struct ly_ctx *ctx = sr_acquire_context(g_conn);
+    if (!ctx) {
+        fprintf(stderr, "sr_acquire_context: contexte libyang indisponible\n");
+        return -1;
+    }
+
+    int missing = 0;
+    for (size_t i = 0; i < sizeof(REQUIRED_YANG_MODULES) / sizeof(REQUIRED_YANG_MODULES[0]); i++) {
+        const char *name = REQUIRED_YANG_MODULES[i];
+        if (!ly_ctx_get_module_implemented(ctx, name)) {
+            fprintf(stderr, "module YANG requis absent de sysrepo/libyang: %s\n", name);
+            missing = 1;
+        }
+    }
+
+    sr_release_context(g_conn);
+
+    if (missing) {
+        fprintf(stderr, "installez les modules RESTCONF/NMDA requis avec sysrepoctl avant de "
+                        "lancer restconfd\n");
+        return -1;
+    }
+    return 0;
+}
+
 int sysrepo_backend_init(void)
 {
     int rc = sr_connect(0, &g_conn);
     if (rc != SR_ERR_OK) {
         fprintf(stderr, "sr_connect: %s\n", sr_strerror(rc));
+        return -1;
+    }
+    if (validate_required_yang_modules() != 0) {
+        sr_disconnect(g_conn);
+        g_conn = NULL;
         return -1;
     }
     return 0;

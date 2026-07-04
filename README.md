@@ -131,6 +131,32 @@ publiques de sysrepo et libyang ont evolue :
 Ces trois points n'ont **pas pu etre compiles/testes dans cet environnement** (pas d'acces reseau
 pour installer sysrepo/libyang/fcgi2 ici) : relisez-les avant la premiere compilation.
 
+## Modules YANG requis dans sysrepo
+
+Au demarrage, `sysrepo_backend_init()` verifie que les modules indispensables sont deja charges
+comme modules implementes dans le contexte sysrepo/libyang :
+
+- `ietf-yang-library`
+- `ietf-datastores`
+- `ietf-restconf`
+- `ietf-restconf-monitoring`
+- `ietf-netconf`
+
+Cette verification rend explicite une contrainte qui etait deja implicite : le serveur emet des
+donnees `ietf-restconf:*`, annonce `ietf-restconf-monitoring:restconf-state`, manipule les
+identityrefs `ietf-datastores:*` et pose la metadata d'edition `ietf-netconf:operation`.
+
+Exemple d'installation, a adapter selon l'emplacement de votre depot `yang` et les dependances deja
+presentes dans sysrepo :
+
+```sh
+sysrepoctl -i /path/to/yang/standard/ietf/RFC/ietf-datastores.yang
+sysrepoctl -i /path/to/yang/standard/ietf/RFC/ietf-netconf.yang
+sysrepoctl -i /path/to/yang/standard/ietf/RFC/ietf-yang-library.yang
+sysrepoctl -i /path/to/yang/standard/ietf/RFC/ietf-restconf.yang
+sysrepoctl -i /path/to/yang/standard/ietf/RFC/ietf-restconf-monitoring.yang
+```
+
 ## Construction
 
 ```sh
@@ -197,7 +223,10 @@ curl -s http://localhost/restconf/ds/ietf-datastores:operational | jq
 - ~~**`restconf-state/capabilities`** (`ietf-restconf-monitoring`) pour annoncer les query
   parameters reellement supportes (RFC 8040 SS9)~~ -> fait avec une annonce conservative
   (`defaults` et `depth` pour l'instant).
-- **Support yang** : s'enregistre au pres de sysrepo comme service implémentant ietf restconf yang modules
+- ~~**Support yang** : verifier au demarrage que sysrepo expose les modules IETF requis par le
+  serveur RESTCONF~~ -> fait (`ietf-yang-library`, `ietf-datastores`, `ietf-restconf`,
+  `ietf-restconf-monitoring`, `ietf-netconf`). L'installation automatique via `sysrepoctl` reste
+  volontairement hors du daemon.
 
 ## Arborescence
 
