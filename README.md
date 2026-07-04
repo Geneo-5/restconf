@@ -24,6 +24,7 @@ Squelette **phase 2 (lecture + ecriture de base)** d'un serveur RESTCONF s'appuy
 | idem | DELETE | OK sur une ressource de donnees ; non defini sur la racine de la datastore (RFC 8040 SS4.7) |
 | Parametre `content` | GET | Partiel (voir plus bas) |
 | Parametre `depth` | GET/HEAD | OK (`unbounded` ou entier positif, via `sr_get_data(..., max_depth, ...)`) |
+| Negociation `Accept` / `Content-Type` | GET/HEAD/POST/PUT/PATCH | JSON RESTCONF uniquement : `application/yang-data+json` |
 | Tout le reste (RPC/actions, notifications SSE, XML, `fields`, `with-defaults`, `with-origin`, `insert`/`point`, ETag/Last-Modified, NACM/authn, remplacement complet de la datastore) | — | **Non implemente**, cf. "Feuille de route" |
 
 ## Hypotheses de conception a valider avec vous
@@ -47,9 +48,11 @@ Le parametre `content=config|nonconfig` n'est reellement filtre que pour la data
 constantes dans votre `sysrepo.h` installe**, ils different selon la version). Pour
 running/candidate/startup (purement configuration chez sysrepo), le filtre est ignore.
 
-La negociation de contenu (`Accept`) et le support XML ne sont pas geres : le serveur repond
-toujours en `application/yang-data+json`, ce qui est conforme a la RFC (un serveur DOIT supporter
-au moins un des deux formats) mais incomplet pour des clients qui exigeraient du XML.
+La negociation de contenu est volontairement minimale : les reponses RESTCONF JSON exigent un
+`Accept` absent, compatible avec `application/yang-data+json` (ou un joker HTTP), sinon le serveur
+renvoie `406`. Les requetes d'ecriture `POST`/`PUT`/`PATCH` exigent
+`Content-Type: application/yang-data+json`, sinon elles renvoient `415`. Le support XML
+(`application/yang-data+xml`) reste a implementer.
 
 ## Ecritures (POST/PUT/PATCH/DELETE)
 
@@ -183,7 +186,9 @@ curl -s http://localhost/restconf/ds/ietf-datastores:operational | jq
 - **ETag / Last-Modified** pour la detection de collision d'edition (RFC 8040 SS3.4.1/3.5.1-2).
 - **Authentification/autorisation** : TLS + identite client (deleguee a nginx en frontal) et NACM
   cote sysrepo (`sr_session_set_user`/`SR_SESS_ENABLE_NACM` a etudier).
-- **Support XML** en plus de JSON, negociation via `Accept`/`Content-Type`.
+- **Support XML** en plus de JSON. La negociation `Accept`/`Content-Type` existe maintenant pour
+  refuser proprement les representations non supportees, mais seul JSON est encode/decode pour
+  l'instant.
 - ~~**`restconf-state/capabilities`** (`ietf-restconf-monitoring`) pour annoncer les query
   parameters reellement supportes (RFC 8040 SS9)~~ -> fait avec une annonce conservative
   (`defaults` et `depth` pour l'instant).

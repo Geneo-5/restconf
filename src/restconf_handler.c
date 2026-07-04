@@ -5,6 +5,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <errno.h>
@@ -47,6 +48,101 @@ static void send_restconf_error(struct http_response *resp, struct restconf_erro
 static int is_get_or_head(const char *method)
 {
     return method && (strcmp(method, "GET") == 0 || strcmp(method, "HEAD") == 0);
+}
+
+static int media_range_matches_json(const char *value, size_t len)
+{
+    while (len > 0 && isspace((unsigned char)*value)) {
+        value++;
+        len--;
+    }
+    while (len > 0 && isspace((unsigned char)value[len - 1])) {
+        len--;
+    }
+
+    const char *semi = memchr(value, ';', len);
+    if (semi) {
+        len = (size_t)(semi - value);
+        while (len > 0 && isspace((unsigned char)value[len - 1])) {
+            len--;
+        }
+    }
+
+    return (len == 3 && strncasecmp(value, "*/*", len) == 0) ||
+           (len == 13 && strncasecmp(value, "application/*", len) == 0) ||
+           (len == 26 && strncasecmp(value, "application/yang-data+json", len) == 0);
+}
+
+static int media_type_is_yang_json(const char *value, size_t len)
+{
+    while (len > 0 && isspace((unsigned char)*value)) {
+        value++;
+        len--;
+    }
+    while (len > 0 && isspace((unsigned char)value[len - 1])) {
+        len--;
+    }
+
+    const char *semi = memchr(value, ';', len);
+    if (semi) {
+        len = (size_t)(semi - value);
+        while (len > 0 && isspace((unsigned char)value[len - 1])) {
+            len--;
+        }
+    }
+
+    return len == 26 && strncasecmp(value, "application/yang-data+json", len) == 0;
+}
+
+static int accepts_yang_json(const struct http_request *req)
+{
+    if (!req->accept || !*req->accept) {
+        return 1;
+    }
+
+    const char *p = req->accept;
+    while (*p) {
+        const char *comma = strchr(p, ',');
+        size_t len = comma ? (size_t)(comma - p) : strlen(p);
+        if (media_range_matches_json(p, len)) {
+            return 1;
+        }
+        if (!comma) {
+            break;
+        }
+        p = comma + 1;
+    }
+
+    return 0;
+}
+
+static int require_yang_json_accept(const struct http_request *req, struct http_response *resp)
+{
+    if (accepts_yang_json(req)) {
+        return 0;
+    }
+    send_error_status(resp, 406, "protocol", "invalid-value",
+                       "seul application/yang-data+json est actuellement disponible");
+    return -1;
+}
+
+static int has_yang_json_content_type(const struct http_request *req)
+{
+    if (!req->content_type || !*req->content_type) {
+        return 0;
+    }
+    return media_type_is_yang_json(req->content_type, strlen(req->content_type));
+}
+
+static int require_yang_json_content_type(const struct http_request *req,
+                                           struct http_response *resp)
+{
+    if (has_yang_json_content_type(req)) {
+        return 0;
+    }
+    send_error_status(resp, 415, "protocol", "invalid-value",
+                       "seul Content-Type: application/yang-data+json est actuellement supporte");
+    return -1;
 }
 
 /* Percent-encode un segment de chemin RESTCONF pour l'en-tete 'Location'
@@ -197,6 +293,9 @@ static void handle_restconf_monitoring_capabilities(const struct http_request *r
                            "lecture seule");
         return;
     }
+    if (require_yang_json_accept(req, resp) != 0) {
+        return;
+    }
 
     const char *capabilities =
         "\"urn:ietf:params:restconf:capability:defaults:1.0?basic-mode=explicit\","
@@ -228,6 +327,9 @@ static void handle_root(const struct http_request *req, struct http_response *re
     if (!is_get_or_head(req->method)) {
         send_error_status(resp, 405, "protocol", "operation-not-supported",
                            "seules les methodes GET/HEAD sont supportees sur la ressource API");
+        return;
+    }
+    if (require_yang_json_accept(req, resp) != 0) {
         return;
     }
     /* On reutilise l'accesseur dedie pour rester coherent avec la
@@ -264,6 +366,9 @@ static void handle_yang_library_version(const struct http_request *req, struct h
                            "seules les methodes GET/HEAD sont supportees ici");
         return;
     }
+    if (require_yang_json_accept(req, resp) != 0) {
+        return;
+    }
     char *json = NULL;
     struct restconf_error err;
     memset(&err, 0, sizeof(err));
@@ -278,6 +383,10 @@ static void handle_yang_library_version(const struct http_request *req, struct h
 static void handle_data_get(const struct http_request *req, struct http_response *resp, int sr_ds,
                              const struct restconf_request_path *path)
 {
+    if (require_yang_json_accept(req, resp) != 0) {
+        return;
+    }
+
     struct restconf_get_options options;
     if (parse_get_options(req, &options, resp) != 0) {
         return;
@@ -412,10 +521,19 @@ static void handle_data_like(const struct http_request *req, struct http_respons
     if (is_get_or_head(req->method)) {
         handle_data_get(req, resp, sr_ds, path);
     } else if (strcmp(req->method, "POST") == 0) {
+        if (require_yang_json_content_type(req, resp) != 0) {
+            return;
+        }
         handle_data_post(req, resp, sr_ds, path);
     } else if (strcmp(req->method, "PUT") == 0) {
+        if (require_yang_json_content_type(req, resp) != 0) {
+            return;
+        }
         handle_data_put(req, resp, sr_ds, path);
     } else if (strcmp(req->method, "PATCH") == 0) {
+        if (require_yang_json_content_type(req, resp) != 0) {
+            return;
+        }
         handle_data_patch(req, resp, sr_ds, path);
     } else if (strcmp(req->method, "DELETE") == 0) {
         handle_data_delete(resp, sr_ds, path);
