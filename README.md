@@ -6,6 +6,7 @@ Squelette **phase 2 (lecture + ecriture de base)** d'un serveur RESTCONF s'appuy
   serveur web frontal (nginx, etc.) qui parle FastCGI ;
 - [sysrepo](https://github.com/sysrepo/sysrepo) comme moteur de datastores YANG/NMDA, via son
   API C et libyang pour la (de)serialisation JSON (RFC 7951).
+- [yang](https://github.com/YangModels/yang.git) IETF standards-track YANG modules
 
 ## Ce qui est implemente
 
@@ -166,8 +167,7 @@ curl -s http://localhost/restconf/ds/ietf-datastores:operational | jq
 - **Authentification/autorisation** : TLS + identite client (deleguee a nginx en frontal) et NACM
   cote sysrepo (`sr_session_set_user`/`SR_SESS_ENABLE_NACM` a etudier).
 - **Support XML** en plus de JSON, negociation via `Accept`/`Content-Type`.
-- **`restconf-state/capabilities`** (`ietf-restconf-monitoring`) pour annoncer les query
-  parameters reellement supportes (RFC 8040 SS9).
+- **Support yang** : s'enregistre au pres de sysrepo comme service implémentant ietf restconf yang modules
 
 ## Arborescence
 
