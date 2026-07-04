@@ -184,6 +184,38 @@ static int require_yang_json_content_type(const struct http_request *req,
     return -1;
 }
 
+static int query_param_allowed(const char *name, const char *const *allowed, size_t nallowed)
+{
+    if (!name) {
+        return 0;
+    }
+    for (size_t i = 0; i < nallowed; i++) {
+        if (strcmp(name, allowed[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int validate_query_params(const struct http_request *req, struct http_response *resp,
+                                  const char *const *allowed, size_t nallowed)
+{
+    for (size_t i = 0; i < req->nparams; i++) {
+        const char *name = req->params[i].name;
+        if (!query_param_allowed(name, allowed, nallowed)) {
+            send_error_status(resp, 400, "protocol", "invalid-value",
+                               "parametre de requete non supporte : %s", name ? name : "");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int validate_no_query_params(const struct http_request *req, struct http_response *resp)
+{
+    return validate_query_params(req, resp, NULL, 0);
+}
+
 /* Percent-encode un segment de chemin RESTCONF pour l'en-tete 'Location'
  * (RFC 8040 SS4.4.1). Les caracteres qui font partie de la syntaxe
  * 'api-path' elle-meme (':' separateur module, '=' et ',' pour les
@@ -337,6 +369,9 @@ static void handle_restconf_monitoring_capabilities(const struct http_request *r
                                  "en lecture seule");
         return;
     }
+    if (validate_no_query_params(req, resp) != 0) {
+        return;
+    }
     if (require_yang_json_accept(req, resp) != 0) {
         return;
     }
@@ -377,6 +412,9 @@ static void handle_root(const struct http_request *req, struct http_response *re
         send_method_not_allowed(resp, allow,
                                  "seules les methodes GET/HEAD sont supportees sur la ressource "
                                  "API");
+        return;
+    }
+    if (validate_no_query_params(req, resp) != 0) {
         return;
     }
     if (require_yang_json_accept(req, resp) != 0) {
@@ -420,6 +458,9 @@ static void handle_yang_library_version(const struct http_request *req, struct h
         send_method_not_allowed(resp, allow, "seules les methodes GET/HEAD sont supportees ici");
         return;
     }
+    if (validate_no_query_params(req, resp) != 0) {
+        return;
+    }
     if (require_yang_json_accept(req, resp) != 0) {
         return;
     }
@@ -437,6 +478,12 @@ static void handle_yang_library_version(const struct http_request *req, struct h
 static void handle_data_get(const struct http_request *req, struct http_response *resp, int sr_ds,
                              const struct restconf_request_path *path)
 {
+    static const char *const allowed_params[] = { "content", "depth" };
+
+    if (validate_query_params(req, resp, allowed_params,
+                               sizeof(allowed_params) / sizeof(allowed_params[0])) != 0) {
+        return;
+    }
     if (require_yang_json_accept(req, resp) != 0) {
         return;
     }
@@ -580,21 +627,33 @@ static void handle_data_like(const struct http_request *req, struct http_respons
     } else if (is_get_or_head(req->method)) {
         handle_data_get(req, resp, sr_ds, path);
     } else if (strcmp(req->method, "POST") == 0) {
+        if (validate_no_query_params(req, resp) != 0) {
+            return;
+        }
         if (require_yang_json_content_type(req, resp) != 0) {
             return;
         }
         handle_data_post(req, resp, sr_ds, path);
     } else if (strcmp(req->method, "PUT") == 0) {
+        if (validate_no_query_params(req, resp) != 0) {
+            return;
+        }
         if (require_yang_json_content_type(req, resp) != 0) {
             return;
         }
         handle_data_put(req, resp, sr_ds, path);
     } else if (strcmp(req->method, "PATCH") == 0) {
+        if (validate_no_query_params(req, resp) != 0) {
+            return;
+        }
         if (require_yang_json_content_type(req, resp) != 0) {
             return;
         }
         handle_data_patch(req, resp, sr_ds, path);
     } else if (strcmp(req->method, "DELETE") == 0) {
+        if (validate_no_query_params(req, resp) != 0) {
+            return;
+        }
         if (path->nsegments == 0) {
             send_method_not_allowed(resp, allow,
                                      "DELETE n'est pas defini sur la racine d'une datastore");
@@ -652,6 +711,9 @@ static void handle_operations(const struct http_request *req, struct http_respon
         return;
     }
     if (strcmp(req->method, "POST") == 0) {
+        if (validate_no_query_params(req, resp) != 0) {
+            return;
+        }
         /* L'invocation de RPC/action (POST) sera ajoutee dans une phase
          * ulterieure via sr_rpc_send_tree(). */
         send_error_status(resp, 501, "application", "operation-not-supported",
@@ -674,6 +736,9 @@ void restconf_handle_request(const struct http_request *req, struct http_respons
         }
         if (!is_get_or_head(req->method)) {
             send_method_not_allowed(resp, allow, NULL);
+            return;
+        }
+        if (validate_no_query_params(req, resp) != 0) {
             return;
         }
         char body[256];

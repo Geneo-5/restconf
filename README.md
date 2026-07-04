@@ -24,6 +24,7 @@ Squelette **phase 2 (lecture + ecriture de base)** d'un serveur RESTCONF s'appuy
 | idem | DELETE | OK sur une ressource de donnees ; non defini sur la racine de la datastore (RFC 8040 SS4.7) |
 | Parametre `content` | GET | Partiel (voir plus bas) |
 | Parametre `depth` | GET/HEAD | OK (`unbounded` ou entier positif, via `sr_get_data(..., max_depth, ...)`) |
+| Parametres non supportes | toutes methodes | Rejet explicite `400 invalid-value` au lieu d'une ignorance silencieuse |
 | Negociation `Accept` / `Content-Type` | GET/HEAD/POST/PUT/PATCH | JSON RESTCONF uniquement : `application/yang-data+json` |
 | `OPTIONS` / en-tete `Allow` | OPTIONS + erreurs 405 | OK pour les ressources RESTCONF exposees |
 | Tout le reste (RPC/actions, notifications SSE, XML, `fields`, `with-defaults`, `with-origin`, `insert`/`point`, ETag/Last-Modified, NACM/authn, remplacement complet de la datastore) | — | **Non implemente**, cf. "Feuille de route" |
@@ -58,6 +59,11 @@ renvoie `406`. Les requetes d'ecriture `POST`/`PUT`/`PATCH` exigent
 `OPTIONS` renvoie `204 No Content` avec un en-tete `Allow` adapte a la ressource ciblee. Les
 erreurs `405 operation-not-supported` ajoutent aussi `Allow`, ce qui facilite la decouverte par les
 clients sans lancer d'operation sysrepo.
+
+Les query parameters sont valides avant execution : les lectures de donnees acceptent seulement
+`content` et `depth`; les autres ressources/methodes n'acceptent aucun parametre pour l'instant.
+Ainsi `fields`, `with-defaults`, `with-origin`, `insert`, `point`, etc. renvoient `400
+invalid-value` tant que leur semantique n'est pas implementee.
 
 ## Ecritures (POST/PUT/PATCH/DELETE)
 
@@ -213,7 +219,8 @@ curl -s http://localhost/restconf/ds/ietf-datastores:operational | jq
 - **Notifications** : flux SSE sur `text/event-stream` -> `sr_event_notif_subscribe_tree()`.
 - **Parametres de requete restants** : ~~`depth`~~, `fields`, `with-defaults` (RFC 8040 SS4.8.9 et
   son cas particulier operationnel RFC 8527 SS3.2.1), `with-origin` (RFC 8527 SS3.2.2), `insert`/
-  `point`. `depth` est implemente pour GET/HEAD via le `max_depth` de `sr_get_data()`.
+  `point`. `depth` est implemente pour GET/HEAD via le `max_depth` de `sr_get_data()`; les autres
+  parametres non supportes sont maintenant rejetes explicitement en `400 invalid-value`.
 - **ETag / Last-Modified** pour la detection de collision d'edition (RFC 8040 SS3.4.1/3.5.1-2).
 - **Authentification/autorisation** : TLS + identite client (deleguee a nginx en frontal) et NACM
   cote sysrepo (`sr_session_set_user`/`SR_SESS_ENABLE_NACM` a etudier).
