@@ -25,6 +25,7 @@ Squelette **phase 2 (lecture + ecriture de base)** d'un serveur RESTCONF s'appuy
 | Parametre `content` | GET | Partiel (voir plus bas) |
 | Parametre `depth` | GET/HEAD | OK (`unbounded` ou entier positif, via `sr_get_data(..., max_depth, ...)`) |
 | Negociation `Accept` / `Content-Type` | GET/HEAD/POST/PUT/PATCH | JSON RESTCONF uniquement : `application/yang-data+json` |
+| `OPTIONS` / en-tete `Allow` | OPTIONS + erreurs 405 | OK pour les ressources RESTCONF exposees |
 | Tout le reste (RPC/actions, notifications SSE, XML, `fields`, `with-defaults`, `with-origin`, `insert`/`point`, ETag/Last-Modified, NACM/authn, remplacement complet de la datastore) | — | **Non implemente**, cf. "Feuille de route" |
 
 ## Hypotheses de conception a valider avec vous
@@ -53,6 +54,10 @@ La negociation de contenu est volontairement minimale : les reponses RESTCONF JS
 renvoie `406`. Les requetes d'ecriture `POST`/`PUT`/`PATCH` exigent
 `Content-Type: application/yang-data+json`, sinon elles renvoient `415`. Le support XML
 (`application/yang-data+xml`) reste a implementer.
+
+`OPTIONS` renvoie `204 No Content` avec un en-tete `Allow` adapte a la ressource ciblee. Les
+erreurs `405 operation-not-supported` ajoutent aussi `Allow`, ce qui facilite la decouverte par les
+clients sans lancer d'operation sysrepo.
 
 ## Ecritures (POST/PUT/PATCH/DELETE)
 

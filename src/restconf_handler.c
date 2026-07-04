@@ -50,6 +50,45 @@ static int is_get_or_head(const char *method)
     return method && (strcmp(method, "GET") == 0 || strcmp(method, "HEAD") == 0);
 }
 
+static int is_options(const char *method)
+{
+    return method && strcmp(method, "OPTIONS") == 0;
+}
+
+static void add_allow_header(struct http_response *resp, const char *allow)
+{
+    char header[256];
+    snprintf(header, sizeof(header), "Allow: %s", allow);
+    http_response_add_header(resp, header);
+}
+
+static void send_options(struct http_response *resp, const char *allow)
+{
+    http_response_set_status(resp, 204, "No Content");
+    add_allow_header(resp, allow);
+    http_response_set_body(resp, NULL, NULL, 0);
+}
+
+static void send_method_not_allowed(struct http_response *resp, const char *allow,
+                                     const char *fmt, ...)
+{
+    char message[512];
+    if (fmt) {
+        va_list ap;
+        va_start(ap, fmt);
+        vsnprintf(message, sizeof(message), fmt, ap);
+        va_end(ap);
+    } else {
+        message[0] = '\0';
+    }
+
+    char *body = restconf_error_single_json("protocol", "operation-not-supported", NULL,
+                                             fmt ? "%s" : NULL, message);
+    http_response_set_status(resp, 405, "Error");
+    add_allow_header(resp, allow);
+    http_response_set_body(resp, "application/yang-data+json", body, body ? strlen(body) : 0);
+}
+
 static int media_range_matches_json(const char *value, size_t len)
 {
     while (len > 0 && isspace((unsigned char)*value)) {
@@ -287,10 +326,15 @@ static void handle_restconf_monitoring_capabilities(const struct http_request *r
                                                      struct http_response *resp,
                                                      const struct restconf_request_path *path)
 {
+    const char *allow = "GET, HEAD, OPTIONS";
+    if (is_options(req->method)) {
+        send_options(resp, allow);
+        return;
+    }
     if (!is_get_or_head(req->method)) {
-        send_error_status(resp, 405, "protocol", "operation-not-supported",
-                           "restconf-state/capabilities est une ressource operationnelle en "
-                           "lecture seule");
+        send_method_not_allowed(resp, allow,
+                                 "restconf-state/capabilities est une ressource operationnelle "
+                                 "en lecture seule");
         return;
     }
     if (require_yang_json_accept(req, resp) != 0) {
@@ -324,9 +368,15 @@ static void handle_restconf_monitoring_capabilities(const struct http_request *r
 
 static void handle_root(const struct http_request *req, struct http_response *resp)
 {
+    const char *allow = "GET, HEAD, OPTIONS";
+    if (is_options(req->method)) {
+        send_options(resp, allow);
+        return;
+    }
     if (!is_get_or_head(req->method)) {
-        send_error_status(resp, 405, "protocol", "operation-not-supported",
-                           "seules les methodes GET/HEAD sont supportees sur la ressource API");
+        send_method_not_allowed(resp, allow,
+                                 "seules les methodes GET/HEAD sont supportees sur la ressource "
+                                 "API");
         return;
     }
     if (require_yang_json_accept(req, resp) != 0) {
@@ -361,9 +411,13 @@ static void handle_root(const struct http_request *req, struct http_response *re
 
 static void handle_yang_library_version(const struct http_request *req, struct http_response *resp)
 {
+    const char *allow = "GET, HEAD, OPTIONS";
+    if (is_options(req->method)) {
+        send_options(resp, allow);
+        return;
+    }
     if (!is_get_or_head(req->method)) {
-        send_error_status(resp, 405, "protocol", "operation-not-supported",
-                           "seules les methodes GET/HEAD sont supportees ici");
+        send_method_not_allowed(resp, allow, "seules les methodes GET/HEAD sont supportees ici");
         return;
     }
     if (require_yang_json_accept(req, resp) != 0) {
@@ -518,7 +572,12 @@ static void handle_data_delete(struct http_response *resp, int sr_ds,
 static void handle_data_like(const struct http_request *req, struct http_response *resp,
                               int sr_ds, const struct restconf_request_path *path)
 {
-    if (is_get_or_head(req->method)) {
+    const char *allow = path->nsegments == 0
+                            ? "GET, HEAD, POST, OPTIONS"
+                            : "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS";
+    if (is_options(req->method)) {
+        send_options(resp, allow);
+    } else if (is_get_or_head(req->method)) {
         handle_data_get(req, resp, sr_ds, path);
     } else if (strcmp(req->method, "POST") == 0) {
         if (require_yang_json_content_type(req, resp) != 0) {
@@ -536,10 +595,16 @@ static void handle_data_like(const struct http_request *req, struct http_respons
         }
         handle_data_patch(req, resp, sr_ds, path);
     } else if (strcmp(req->method, "DELETE") == 0) {
+        if (path->nsegments == 0) {
+            send_method_not_allowed(resp, allow,
+                                     "DELETE n'est pas defini sur la racine d'une datastore");
+            return;
+        }
         handle_data_delete(resp, sr_ds, path);
     } else {
-        send_error_status(resp, 405, "protocol", "operation-not-supported",
-                           "methode %s non supportee sur une ressource de donnees", req->method);
+        send_method_not_allowed(resp, allow,
+                                 "methode %s non supportee sur une ressource de donnees",
+                                 req->method);
     }
 }
 
@@ -556,11 +621,16 @@ static void handle_datastore(const struct http_request *req, struct http_respons
         return;
     }
     if (read_only && !is_get_or_head(req->method)) {
+        const char *allow = "GET, HEAD, OPTIONS";
+        if (is_options(req->method)) {
+            send_options(resp, allow);
+            return;
+        }
         /* RFC 8527 SS3.2, 2e tiret : datastore en lecture seule par
          * nature -> 405 operation-not-supported. */
-        send_error_status(resp, 405, "protocol", "operation-not-supported",
-                           "la datastore '%s' est en lecture seule sur ce serveur",
-                           path->datastore_identityref);
+        send_method_not_allowed(resp, allow,
+                                 "la datastore '%s' est en lecture seule sur ce serveur",
+                                 path->datastore_identityref);
         return;
     }
     handle_data_like(req, resp, sr_ds, path);
@@ -570,23 +640,40 @@ static void handle_operations(const struct http_request *req, struct http_respon
                                const struct restconf_request_path *path)
 {
     (void)path;
-    if (is_get_or_head(req->method)) {
-        /* RFC 8040 SS4.3 : GET sur une ressource d'operation -> 405. */
-        send_error_status(resp, 405, "protocol", "operation-not-supported",
-                           "les ressources d'operation ne supportent pas GET/HEAD");
+    const char *allow = "POST, OPTIONS";
+    if (is_options(req->method)) {
+        send_options(resp, allow);
         return;
     }
-    /* L'invocation de RPC/action (POST) sera ajoutee dans une phase
-     * ulterieure via sr_rpc_send_tree(). */
-    send_error_status(resp, 501, "application", "operation-not-supported",
-                       "invocation de RPC/action non encore implementee (squelette phase 1)");
+    if (is_get_or_head(req->method)) {
+        /* RFC 8040 SS4.3 : GET sur une ressource d'operation -> 405. */
+        send_method_not_allowed(resp, allow,
+                                 "les ressources d'operation ne supportent pas GET/HEAD");
+        return;
+    }
+    if (strcmp(req->method, "POST") == 0) {
+        /* L'invocation de RPC/action (POST) sera ajoutee dans une phase
+         * ulterieure via sr_rpc_send_tree(). */
+        send_error_status(resp, 501, "application", "operation-not-supported",
+                           "invocation de RPC/action non encore implementee (squelette phase 1)");
+        return;
+    }
+
+    send_method_not_allowed(resp, allow,
+                             "methode %s non supportee sur une ressource d'operation",
+                             req->method);
 }
 
 void restconf_handle_request(const struct http_request *req, struct http_response *resp)
 {
     if (strcmp(req->path, "/.well-known/host-meta") == 0) {
+        const char *allow = "GET, HEAD, OPTIONS";
+        if (is_options(req->method)) {
+            send_options(resp, allow);
+            return;
+        }
         if (!is_get_or_head(req->method)) {
-            send_error_status(resp, 405, "protocol", "operation-not-supported", NULL);
+            send_method_not_allowed(resp, allow, NULL);
             return;
         }
         char body[256];
