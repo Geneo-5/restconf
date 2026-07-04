@@ -616,8 +616,41 @@ static void handle_data_delete(struct http_response *resp, int sr_ds,
     http_response_set_body(resp, NULL, NULL, 0);
 }
 
+/* RFC 8040 SS3.6 (action invoquee sous {+restconf}/data/<...>/<action>) +
+ * RFC 8527 SS3.1 ("YANG actions can only be invoked in
+ * {+restconf}/ds/ietf-datastores:operational") : meme structure que
+ * handle_operation_invoke(), mais pour sysrepo_backend_action_invoke(),
+ * qui a besoin du chemin COMPLET (ancetres + cles inclus) jusqu'a
+ * l'action, pas d'un unique segment qualifie par un module. */
+static void handle_action_invoke(const struct http_request *req, struct http_response *resp,
+                                  const struct restconf_request_path *path)
+{
+    if (req->body && req->body_len > 0 && require_yang_json_content_type(req, resp) != 0) {
+        return;
+    }
+
+    char *json_out = NULL;
+    struct restconf_error err;
+    memset(&err, 0, sizeof(err));
+    int rc = sysrepo_backend_action_invoke(path->segments, path->nsegments, req->body,
+                                            req->body_len, &json_out, &err);
+    if (rc != 0) {
+        send_restconf_error(resp, &err, 0);
+        return;
+    }
+
+    if (json_out) {
+        http_response_set_status(resp, 200, "OK");
+        http_response_set_body(resp, "application/yang-data+json", json_out, strlen(json_out));
+    } else {
+        http_response_set_status(resp, 204, "No Content");
+        http_response_set_body(resp, NULL, NULL, 0);
+    }
+}
+
 static void handle_data_like(const struct http_request *req, struct http_response *resp,
-                              int sr_ds, const struct restconf_request_path *path)
+                              int sr_ds, const struct restconf_request_path *path,
+                              int is_operational_ds)
 {
     const char *allow = path->nsegments == 0
                             ? "GET, HEAD, POST, OPTIONS"
@@ -628,6 +661,21 @@ static void handle_data_like(const struct http_request *req, struct http_respons
         handle_data_get(req, resp, sr_ds, path);
     } else if (strcmp(req->method, "POST") == 0) {
         if (validate_no_query_params(req, resp) != 0) {
+            return;
+        }
+        /* Distingue une invocation d'action (statement YANG "action",
+         * RFC 8040 SS3.6) d'une creation de ressource de donnees
+         * ordinaire (POST SS4.4.1) : le dernier segment du chemin est
+         * verifie contre le schema compile. */
+        if (path->nsegments >= 2 &&
+            sysrepo_backend_is_action_path(path->segments, path->nsegments)) {
+            if (!is_operational_ds) {
+                send_error_status(resp, 400, "protocol", "invalid-value",
+                                   "les actions YANG ne peuvent etre invoquees que sous "
+                                   "{+restconf}/ds/ietf-datastores:operational (RFC 8527 SS3.1)");
+                return;
+            }
+            handle_action_invoke(req, resp, path);
             return;
         }
         if (require_yang_json_content_type(req, resp) != 0) {
@@ -680,19 +728,28 @@ static void handle_datastore(const struct http_request *req, struct http_respons
         return;
     }
     if (read_only && !is_get_or_head(req->method)) {
-        const char *allow = "GET, HEAD, OPTIONS";
-        if (is_options(req->method)) {
-            send_options(resp, allow);
+        /* Exception RFC 8527 SS3.1 : les actions restent invocables
+         * (POST) sous operational meme si ce datastore est par ailleurs
+         * en lecture seule pour les ecritures de donnees ordinaires. */
+        int is_action_post = strcmp(req->method, "POST") == 0 && path->nsegments >= 2 &&
+                              sysrepo_backend_is_action_path(path->segments, path->nsegments);
+        if (!is_action_post) {
+            const char *allow = "GET, HEAD, OPTIONS";
+            if (is_options(req->method)) {
+                send_options(resp, allow);
+                return;
+            }
+            /* RFC 8527 SS3.2, 2e tiret : datastore en lecture seule par
+             * nature -> 405 operation-not-supported. */
+            send_method_not_allowed(resp, allow,
+                                     "la datastore '%s' est en lecture seule sur ce serveur",
+                                     path->datastore_identityref);
             return;
         }
-        /* RFC 8527 SS3.2, 2e tiret : datastore en lecture seule par
-         * nature -> 405 operation-not-supported. */
-        send_method_not_allowed(resp, allow,
-                                 "la datastore '%s' est en lecture seule sur ce serveur",
-                                 path->datastore_identityref);
-        return;
     }
-    handle_data_like(req, resp, sr_ds, path);
+    int is_operational_ds = path->datastore_identityref &&
+                             strcmp(path->datastore_identityref, "ietf-datastores:operational") == 0;
+    handle_data_like(req, resp, sr_ds, path, is_operational_ds);
 }
 
 static void handle_operation_invoke(const struct http_request *req, struct http_response *resp,
@@ -825,7 +882,10 @@ void restconf_handle_request(const struct http_request *req, struct http_respons
         if (is_restconf_monitoring_capabilities(&path)) {
             handle_restconf_monitoring_capabilities(req, resp, &path);
         } else {
-            handle_data_like(req, resp, sysrepo_backend_default_data_datastore(), &path);
+            /* {+restconf}/data n'est pas la datastore operational (cf.
+             * hypotheses de mapping dans README.md) : RFC 8527 SS3.1
+             * n'autorise donc pas d'y invoquer une action. */
+            handle_data_like(req, resp, sysrepo_backend_default_data_datastore(), &path, 0);
         }
         break;
     case RESTCONF_RES_DATASTORE:

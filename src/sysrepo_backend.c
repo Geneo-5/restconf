@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 static sr_conn_ctx_t *g_conn;
 
@@ -496,6 +497,316 @@ static const char *write_error_tag(int sr_rc)
     }
 }
 
+/* Cherche l'accolade fermante correspondant a s[start] (qui DOIT etre '{'),
+ * en respectant les chaines JSON entre guillemets (pour ne pas compter des
+ * accolades litterales a l'interieur d'une valeur de type string) et leurs
+ * echappements ('\\'). Renvoie 0 et remplit *end_out (index de l'accolade
+ * fermante) en cas de succes, -1 si aucune accolade fermante correspondante
+ * n'est trouvee avant la fin de la chaine. */
+static int find_matching_brace(const char *s, size_t len, size_t start, size_t *end_out)
+{
+    int depth = 0;
+    int in_string = 0;
+    for (size_t i = start; i < len; i++) {
+        char c = s[i];
+        if (in_string) {
+            if (c == '\\') {
+                i++; /* saute le caractere echappe, quel qu'il soit */
+            } else if (c == '"') {
+                in_string = 0;
+            }
+            continue;
+        }
+        if (c == '"') {
+            in_string = 1;
+        } else if (c == '{') {
+            depth++;
+        } else if (c == '}') {
+            depth--;
+            if (depth == 0) {
+                *end_out = i;
+                return 0;
+            }
+        }
+    }
+    return -1;
+}
+
+/* Deballe l'enveloppe JSON {"ietf-restconf:data": {...}} attendue par un
+ * PUT/PATCH directement sur la racine d'une datastore (RFC 8040 SS4.5
+ * Appendix B.2.3/B.2.4, ou l'exemple XML utilise <data
+ * xmlns="urn:ietf:params:xml:ns:yang:ietf-restconf">...</data>). Ce
+ * conteneur "data" n'est qu'un template YANG ("yang-data" extension, RFC
+ * 8040 SS8, cf. module ietf-restconf) : il n'existe PAS comme noeud de
+ * schema reel, donc lyd_parse_data() ne peut pas le reconnaitre directement
+ * comme parent -- d'ou ce petit parseur JSON minimal (et non un parseur
+ * JSON complet) qui se contente de retrouver la valeur associee a la cle
+ * "ietf-restconf:data" au premier niveau, pour ensuite ne passer que cette
+ * valeur (elle, un vrai objet de noeuds de donnees de haut niveau) au
+ * parseur libyang normal, exactement comme pour un POST directement sur
+ * {+restconf}/data (cf. sysrepo_backend_write(), cas 'attach_point NULL').
+ *
+ * *inner_start/*inner_len decrivent la sous-chaine de 'body' correspondant
+ * a cette valeur (accolades incluses, ex. "{}" ou "{...}"), SANS copie ; a
+ * dupliquer et NUL-terminer par l'appelant avant de la passer a
+ * ly_in_new_memory(). Renvoie 0 en cas de succes ; -1 + *err (error-tag
+ * "malformed-message") si l'enveloppe est absente ou mal formee. */
+static int extract_data_envelope(const char *body, size_t len, const char **inner_start,
+                                 size_t *inner_len, struct restconf_error *err)
+{
+    static const char *const key = "ietf-restconf:data";
+    size_t klen = strlen(key);
+    size_t i = 0;
+
+    while (i < len && isspace((unsigned char)body[i])) {
+        i++;
+    }
+    if (i >= len || body[i] != '{') {
+        goto bad;
+    }
+    i++;
+    while (i < len && isspace((unsigned char)body[i])) {
+        i++;
+    }
+    if (i >= len || body[i] != '"') {
+        goto bad;
+    }
+    i++;
+    if (i + klen > len || strncmp(body + i, key, klen) != 0) {
+        goto bad;
+    }
+    i += klen;
+    if (i >= len || body[i] != '"') {
+        goto bad;
+    }
+    i++;
+    while (i < len && isspace((unsigned char)body[i])) {
+        i++;
+    }
+    if (i >= len || body[i] != ':') {
+        goto bad;
+    }
+    i++;
+    while (i < len && isspace((unsigned char)body[i])) {
+        i++;
+    }
+    if (i >= len || body[i] != '{') {
+        /* On n'accepte que la forme objet ('{}' pour une datastore vide, ou
+         * '{"module:noeud": ...}') ; une valeur scalaire/array au premier
+         * niveau de "ietf-restconf:data" n'aurait de toute facon aucun sens
+         * ici. */
+        goto bad;
+    }
+
+    size_t obj_end = 0;
+    if (find_matching_brace(body, len, i, &obj_end) != 0) {
+        goto bad;
+    }
+
+    *inner_start = body + i;
+    *inner_len = obj_end - i + 1;
+    return 0;
+
+bad:
+    err->error_type = strdup("protocol");
+    err->error_tag = strdup("malformed-message");
+    err->error_message =
+        strdup("corps de requete attendu sous la forme {\"ietf-restconf:data\": {...}} "
+               "(RFC 8040 SS4.5 Appendix B.2.3/B.2.4)");
+    return -1;
+}
+
+/* PUT (RESTCONF_WRITE_REPLACE) ou PATCH (RESTCONF_WRITE_MERGE) directement
+ * sur la racine d'une datastore ({+restconf}/data ou {+restconf}/ds/<name>
+ * eux-memes, nsegments == 0 cote appelant), RFC 8040 SS4.5 Appendix B.2.4
+ * (PUT, remplacement complet) / SS4.6.1 + exemple B.2.3 (PATCH, fusion).
+ *
+ * Pour PUT : RFC 8040 SS4.5 exige que "tout noeud enfant absent de
+ * l'element <data> mais present sur le serveur soit supprime". On ne
+ * diffe explicitement qu'au niveau des noeuds de PREMIER niveau
+ * (identifies via describe_child_segment(), qui inclut les valeurs de cle
+ * pour les instances de liste) : pour un noeud de premier niveau present
+ * dans les deux arbres, poser l'operation d'edition NETCONF "replace" sur
+ * ce noeud (cf. plus bas) fait deja supprimer recursivement, cote sysrepo,
+ * tout descendant absent du nouveau corps -- semantique standard
+ * NETCONF <edit-config> avec nc:operation="replace". Seule l'ABSENCE
+ * totale d'un noeud de premier niveau dans le nouveau corps necessite donc
+ * une suppression explicite ici, via sr_delete_item() sur son xpath exact
+ * (obtenu avec lyd_path(), XXX-LY-API : verifiez cette signature dans
+ * votre libyang/tree_data.h).
+ *
+ * Pour PATCH ("plain patch"), aucune suppression n'est effectuee : les
+ * noeuds de premier niveau du corps sont simplement fusionnes ('merge'),
+ * conformement a la semantique "plain patch" (RFC 8040 SS4.6.1) qui ne
+ * permet de creer/mettre a jour que ce qui est explicitement present dans
+ * le corps.
+ *
+ * Non teste contre un sysrepo/libyang reels (cf. "Points sensibles a la
+ * version installee" dans README.md) : la strategie de diff "premier
+ * niveau + replace recursif" ci-dessus est une hypothese de conception a
+ * valider, comme le reste de ce squelette. */
+static int sysrepo_backend_write_datastore(int sr_ds, enum restconf_write_op op,
+                                            const char *body_json, size_t body_len,
+                                            struct restconf_error *err)
+{
+    if (!body_json || body_len == 0) {
+        err->error_type = strdup("protocol");
+        err->error_tag = strdup("malformed-message");
+        err->error_message = strdup("corps de requete JSON attendu et absent");
+        return -1;
+    }
+
+    const char *inner = NULL;
+    size_t inner_len = 0;
+    if (extract_data_envelope(body_json, body_len, &inner, &inner_len, err) != 0) {
+        return -1;
+    }
+
+    char *inner_copy = malloc(inner_len + 1);
+    if (!inner_copy) {
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("memoire insuffisante");
+        return -1;
+    }
+    memcpy(inner_copy, inner, inner_len);
+    inner_copy[inner_len] = '\0';
+
+    sr_session_ctx_t *session = NULL;
+    int rc = sr_session_start(g_conn, (sr_datastore_t)sr_ds, &session);
+    if (rc != SR_ERR_OK) {
+        free(inner_copy);
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup(sr_strerror(rc));
+        return -1;
+    }
+
+    const struct ly_ctx *ctx = sr_acquire_context(g_conn);
+    if (!ctx) {
+        free(inner_copy);
+        sr_session_stop(session);
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("contexte libyang indisponible");
+        return -1;
+    }
+
+    struct ly_in *in = NULL;
+    if (ly_in_new_memory(inner_copy, &in) != LY_SUCCESS) {
+        free(inner_copy);
+        sr_release_context(g_conn);
+        sr_session_stop(session);
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("echec d'allocation pour l'analyse du corps JSON");
+        return -1;
+    }
+
+    struct lyd_node *new_tree = NULL;
+    LY_ERR lyrc = lyd_parse_data(ctx, NULL, in, LYD_JSON, LYD_PARSE_ONLY | LYD_PARSE_NO_STATE, 0,
+                                  &new_tree);
+    ly_in_free(in, 0);
+    free(inner_copy);
+
+    if (lyrc != LY_SUCCESS) {
+        if (new_tree) {
+            lyd_free_all(new_tree);
+        }
+        sr_release_context(g_conn);
+        sr_session_stop(session);
+        err->error_type = strdup("protocol");
+        err->error_tag = strdup("malformed-message");
+        err->error_message = strdup("contenu de l'enveloppe 'ietf-restconf:data' non conforme "
+                                     "au schema YANG charge (RFC 7951)");
+        return -1;
+    }
+
+    if (op == RESTCONF_WRITE_REPLACE) {
+        sr_data_t *old_data = NULL;
+        rc = sr_get_data(session, "/*", 0, 0, 0, &old_data);
+        if (rc != SR_ERR_OK && rc != SR_ERR_NOT_FOUND) {
+            if (new_tree) {
+                lyd_free_all(new_tree);
+            }
+            sr_release_context(g_conn);
+            sr_session_stop(session);
+            err->error_type = strdup("application");
+            err->error_tag = strdup("operation-failed");
+            err->error_message = strdup(sr_strerror(rc));
+            return -1;
+        }
+        if (old_data && old_data->tree) {
+            for (struct lyd_node *old_n = old_data->tree; old_n; old_n = old_n->next) {
+                char *old_sig = describe_child_segment(old_n);
+                int still_present = 0;
+                for (struct lyd_node *new_n = new_tree; new_n && !still_present;
+                     new_n = new_n->next) {
+                    char *new_sig = describe_child_segment(new_n);
+                    if (old_sig && new_sig && strcmp(old_sig, new_sig) == 0) {
+                        still_present = 1;
+                    }
+                    free(new_sig);
+                }
+                if (!still_present) {
+                    /* XXX-LY-API : lyd_path() (LYD_PATH_STD) renvoie le
+                     * chemin de DONNEES exact de l'instance (avec ses
+                     * predicats de cle) ; verifiez cette signature dans
+                     * votre libyang/tree_data.h. */
+                    char old_xpath[1024];
+                    if (lyd_path(old_n, LYD_PATH_STD, old_xpath, sizeof(old_xpath))) {
+                        sr_delete_item(session, old_xpath, 0);
+                    }
+                }
+                free(old_sig);
+            }
+        }
+        if (old_data) {
+            sr_release_data(old_data);
+        }
+    }
+
+    if (new_tree) {
+        const char *op_attr = (op == RESTCONF_WRITE_REPLACE) ? "replace" : "merge";
+        for (struct lyd_node *n = new_tree; n; n = n->next) {
+            if (lyd_new_attr(n, "ietf-netconf", "ietf-netconf:operation", op_attr, NULL) !=
+                LY_SUCCESS) {
+                lyd_free_all(new_tree);
+                sr_release_context(g_conn);
+                sr_session_stop(session);
+                err->error_type = strdup("application");
+                err->error_tag = strdup("operation-failed");
+                err->error_message = strdup("echec de marquage de l'operation d'edition");
+                return -1;
+            }
+        }
+        rc = sr_edit_batch(session, new_tree, "merge");
+    } else {
+        /* Enveloppe '{"ietf-restconf:data": {}}' : pas de nouveau contenu a
+         * apporter (pour PUT, les eventuelles suppressions ci-dessus
+         * suffisent a vider la datastore ; pour PATCH, c'est un no-op). */
+        rc = SR_ERR_OK;
+    }
+    if (rc == SR_ERR_OK) {
+        rc = sr_apply_changes(session, 0);
+    }
+
+    if (new_tree) {
+        lyd_free_all(new_tree);
+    }
+    sr_release_context(g_conn);
+    sr_session_stop(session);
+
+    if (rc != SR_ERR_OK) {
+        err->error_type = strdup("application");
+        err->error_tag = strdup(write_error_tag(rc));
+        err->error_message = strdup(sr_strerror(rc));
+        return -1;
+    }
+
+    return 0;
+}
+
 int sysrepo_backend_write(int sr_ds, const struct restconf_path_segment *segments,
                           size_t nsegments, enum restconf_write_op op, const char *body_json,
                           size_t body_len, int *created_out, char **created_child_segment_out,
@@ -511,15 +822,9 @@ int sysrepo_backend_write(int sr_ds, const struct restconf_path_segment *segment
 
     if (op != RESTCONF_WRITE_CREATE && nsegments == 0) {
         /* PUT/PATCH sur la racine de la datastore ({+restconf}/data ou
-         * {+restconf}/ds/<name> eux-memes) : le remplacement complet de
-         * la datastore (RFC 8040 SS4.5, exemple Appendix B.2.4, avec son
-         * enveloppe 'data') n'est pas gere par ce squelette. */
-        err->error_type = strdup("application");
-        err->error_tag = strdup("operation-not-supported");
-        err->error_message =
-            strdup("remplacement/fusion de la datastore entiere via PUT/PATCH sur la racine "
-                   "non implemente dans ce squelette (cf. feuille de route)");
-        return -1;
+         * {+restconf}/ds/<name> eux-memes) : RFC 8040 SS4.5 Appendix
+         * B.2.4 (PUT) / SS4.6.1 + exemple B.2.3 (PATCH). */
+        return sysrepo_backend_write_datastore(sr_ds, op, body_json, body_len, err);
     }
 
     if (!body_json || body_len == 0) {
