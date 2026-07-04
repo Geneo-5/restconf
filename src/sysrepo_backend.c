@@ -845,6 +845,105 @@ int sysrepo_backend_yang_library_version(char **json_out, struct restconf_error 
  * RPC (RFC 8040 SS3.6/SS4.4.2) -- invocation de {+restconf}/operations/<op>
  * -------------------------------------------------------------------- */
 
+/* Resout le noeud de SCHEMA (sans predicats de cle) correspondant a une
+ * suite de segments RESTCONF, en suivant la meme regle d'heritage de
+ * module que build_xpath() (un segment sans module herite du module du
+ * segment precedent). Contrairement a build_xpath(), ne construit aucun
+ * chemin de DONNEES et ne renvoie que le dernier noeud de schema
+ * resolu -- utile pour determiner la NATURE du noeud cible (RPC,
+ * action, conteneur, liste, ...) avant de decider comment le traiter.
+ * Renvoie NULL si un segment ne correspond a aucun noeud du schema
+ * charge (ou si le premier segment n'indique pas de module). */
+static const struct lysc_node *resolve_schema_node(const struct ly_ctx *ctx,
+                                                    const struct restconf_path_segment *segments,
+                                                    size_t nsegments)
+{
+    char *schema_path = NULL;
+    size_t len = 0, cap = 0;
+    const char *current_module = NULL;
+    const struct lysc_node *snode = NULL;
+
+    for (size_t i = 0; i < nsegments; i++) {
+        const struct restconf_path_segment *seg = &segments[i];
+        const char *module = seg->module ? seg->module : current_module;
+        if (!module) {
+            free(schema_path);
+            return NULL;
+        }
+        current_module = module;
+
+        char seg_str[512];
+        snprintf(seg_str, sizeof(seg_str), "/%s:%s", module, seg->name);
+        if (str_append(&schema_path, &len, &cap, seg_str) != 0) {
+            free(schema_path);
+            return NULL;
+        }
+
+        snode = lys_find_path(ctx, NULL, schema_path, 0);
+        if (!snode) {
+            free(schema_path);
+            return NULL;
+        }
+    }
+
+    free(schema_path);
+    return snode;
+}
+
+/* Recherche le conteneur schema special "output" (nodetype LYS_OUTPUT)
+ * dans l'arbre 'tree' renvoye par sr_rpc_send_tree() pour un RPC/action,
+ * le serialise en JSON (RFC 8040 SS3.6.2, "module:output") et LIBERE
+ * 'tree' dans tous les cas (succes comme echec). *json_out recoit NULL
+ * si la section 'output' est absente ou vide (l'appelant doit alors
+ * repondre 204 No Content), ou le corps JSON alloue sinon. Renvoie 0 en
+ * cas de succes, -1 + *err si la serialisation echoue. */
+static int extract_operation_output(struct lyd_node *tree, char **json_out,
+                                     struct restconf_error *err)
+{
+    *json_out = NULL;
+
+    if (!tree) {
+        return 0;
+    }
+
+    /* XXX-SR-API/XXX-LY-API : le conteneur 'output' peut se trouver a la
+     * racine de l'arbre renvoye ou comme enfant du noeud RPC/action
+     * selon la version de sysrepo/libyang -- on le recherche
+     * explicitement plutot que de supposer sa position. */
+    struct lyd_node *out_node = tree;
+    if (!out_node->schema || out_node->schema->nodetype != LYS_OUTPUT) {
+        struct lyd_node *child = lyd_child(out_node);
+        out_node = NULL;
+        for (; child; child = child->next) {
+            if (child->schema && child->schema->nodetype == LYS_OUTPUT) {
+                out_node = child;
+                break;
+            }
+        }
+    }
+
+    if (!out_node || !lyd_child(out_node)) {
+        lyd_free_all(tree);
+        return 0;
+    }
+
+    char *raw = NULL;
+    if (lyd_print_mem(&raw, out_node, LYD_JSON, LYD_PRINT_SHRINK) != 0) {
+        lyd_free_all(tree);
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("echec de serialisation JSON de la sortie");
+        return -1;
+    }
+    lyd_free_all(tree);
+
+    /* RFC 8040 SS3.6.2 : la sortie est enveloppee dans un objet "output"
+     * qualifie par le module -- ce qu'imprime deja lyd_print_mem() pour
+     * ce noeud cible unique ("module:output": {...}). */
+    *json_out = raw;
+    return 0;
+}
+
 int sysrepo_backend_rpc_invoke(const struct restconf_path_segment *segments, size_t nsegments,
                                const char *body_json, size_t body_len, char **json_out,
                                struct restconf_error *err)
@@ -979,47 +1078,160 @@ int sysrepo_backend_rpc_invoke(const struct restconf_path_segment *segments, siz
         return -1;
     }
 
-    if (!output) {
-        /* Pas de sortie -> 204 No Content (RFC 8040 SS4.4.2). */
+    return extract_operation_output(output, json_out, err);
+}
+
+int sysrepo_backend_is_action_path(const struct restconf_path_segment *segments, size_t nsegments)
+{
+    if (nsegments < 2) {
         return 0;
     }
 
-    /* 'output' est l'arbre RPC renvoye par sysrepo ; le conteneur
-     * schema special "output" (nodetype LYS_OUTPUT) peut se trouver a la
-     * racine ou comme enfant selon la version de sysrepo/libyang -- on
-     * le recherche explicitement plutot que de supposer sa position
-     * (meme prudence que XXX-LY-API ailleurs dans ce fichier). */
-    struct lyd_node *out_node = output;
-    if (!out_node->schema || out_node->schema->nodetype != LYS_OUTPUT) {
-        struct lyd_node *child = lyd_child(out_node);
-        out_node = NULL;
-        for (; child; child = child->next) {
-            if (child->schema && child->schema->nodetype == LYS_OUTPUT) {
-                out_node = child;
-                break;
-            }
+    const struct ly_ctx *ctx = sr_acquire_context(g_conn);
+    if (!ctx) {
+        return 0;
+    }
+
+    const struct lysc_node *snode = resolve_schema_node(ctx, segments, nsegments);
+    int is_action = snode && snode->nodetype == LYS_ACTION;
+
+    sr_release_context(g_conn);
+    return is_action;
+}
+
+int sysrepo_backend_action_invoke(const struct restconf_path_segment *segments, size_t nsegments,
+                                  const char *body_json, size_t body_len, char **json_out,
+                                  struct restconf_error *err)
+{
+    *json_out = NULL;
+    memset(err, 0, sizeof(*err));
+
+    /* RFC 8040 SS3.6 : le chemin d'une action est
+     * {+restconf}/data/<...ancetres avec cles...>/<action-name> (ou,
+     * pour ce serveur, l'equivalent sous {+restconf}/ds/<n>/...) --
+     * 'segments' couvre donc TOUS ces segments, ancetres inclus, a la
+     * difference d'un RPC de haut niveau qui n'en a qu'un seul. */
+    if (nsegments < 2) {
+        err->error_type = strdup("protocol");
+        err->error_tag = strdup("invalid-value");
+        err->error_message = strdup("chemin d'action invalide : une action doit etre invoquee "
+                                     "sous une ressource de donnees parente");
+        return -1;
+    }
+
+    sr_session_ctx_t *session = NULL;
+    int rc = sr_session_start(g_conn, SR_DS_OPERATIONAL, &session);
+    if (rc != SR_ERR_OK) {
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup(sr_strerror(rc));
+        return -1;
+    }
+
+    const struct ly_ctx *ctx = sr_acquire_context(g_conn);
+    if (!ctx) {
+        sr_session_stop(session);
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("contexte libyang indisponible");
+        return -1;
+    }
+
+    const struct lysc_node *action_snode = resolve_schema_node(ctx, segments, nsegments);
+    if (!action_snode || action_snode->nodetype != LYS_ACTION) {
+        sr_release_context(g_conn);
+        sr_session_stop(session);
+        err->error_type = strdup("protocol");
+        err->error_tag = strdup("invalid-value");
+        err->error_message = strdup("aucune action ne correspond a ce chemin");
+        return -1;
+    }
+
+    /* build_xpath() resout aussi les valeurs de cle des ancetres (listes
+     * ordered-by etc.) et n'ajoute pas de predicat pour le dernier
+     * segment (l'action elle-meme, qui n'a jamais de cle -- seg->nkeys
+     * == 0), ce qui produit exactement le chemin de DONNEES complet
+     * jusqu'a l'instance de l'action visee. */
+    char *full_xpath = NULL;
+    if (build_xpath(ctx, segments, nsegments, &full_xpath, err) != 0) {
+        sr_release_context(g_conn);
+        sr_session_stop(session);
+        return -1;
+    }
+
+    /* Construit le squelette d'ancetres (avec les cles des instances de
+     * liste concernees) jusqu'au noeud d'action lui-meme -- meme demarche
+     * et meme prudence que sysrepo_backend_write() (cf. XXX-LY-API :
+     * CESNET/libyang#2337) : on re-resout le noeud cible via
+     * lyd_find_path() plutot que de se fier au 'new_node' renvoye. */
+    struct lyd_node *top = NULL, *new_node = NULL;
+    LY_ERR lyrc = lyd_new_path2(NULL, ctx, full_xpath, NULL, 0, 0, 0, &top, &new_node);
+    if (lyrc != LY_SUCCESS || !top) {
+        free(full_xpath);
+        sr_release_context(g_conn);
+        sr_session_stop(session);
+        err->error_type = strdup("protocol");
+        err->error_tag = strdup("invalid-value");
+        err->error_message = strdup("impossible de construire le chemin de l'action (incoherent "
+                                     "avec le schema/les instances existantes)");
+        return -1;
+    }
+    struct lyd_node *action_node = NULL;
+    if (lyd_find_path(top, full_xpath, 0, &action_node) != LY_SUCCESS || !action_node) {
+        action_node = new_node;
+    }
+    free(full_xpath);
+
+    if (body_json && body_len > 0) {
+        struct ly_in *in = NULL;
+        if (ly_in_new_memory(body_json, &in) != LY_SUCCESS) {
+            lyd_free_all(top);
+            sr_release_context(g_conn);
+            sr_session_stop(session);
+            err->error_type = strdup("application");
+            err->error_tag = strdup("operation-failed");
+            err->error_message = strdup("echec d'allocation pour l'analyse du corps JSON");
+            return -1;
+        }
+
+        struct lyd_node *parsed = NULL;
+        lyrc = lyd_parse_data(ctx, action_node, in, LYD_JSON, LYD_PARSE_ONLY | LYD_PARSE_NO_STATE,
+                               0, &parsed);
+        ly_in_free(in, 0);
+
+        if (lyrc != LY_SUCCESS) {
+            lyd_free_all(top);
+            sr_release_context(g_conn);
+            sr_session_stop(session);
+            err->error_type = strdup("protocol");
+            err->error_tag = strdup("malformed-message");
+            err->error_message = strdup("corps de requete JSON non conforme au schema 'input' "
+                                         "de cette action (RFC 7951)");
+            return -1;
         }
     }
 
-    if (!out_node || !lyd_child(out_node)) {
-        /* Section 'output' absente ou vide -> pas de corps de reponse. */
-        lyd_free_all(output);
-        return 0;
-    }
+    /* A la difference d'un RPC de haut niveau (ou l'arbre soumis est le
+     * noeud rpc lui-meme), sr_rpc_send_tree() a besoin ici de l'arbre
+     * COMPLET depuis la racine ('top') pour localiser l'instance de
+     * donnees exacte (ex. quelle 'interface=eth0') sous laquelle
+     * l'action est invoquee. */
+    struct lyd_node *output = NULL;
+    rc = sr_rpc_send_tree(session, top, 0, &output);
 
-    char *raw = NULL;
-    if (lyd_print_mem(&raw, out_node, LYD_JSON, LYD_PRINT_SHRINK) != 0) {
-        lyd_free_all(output);
+    lyd_free_all(top);
+    sr_release_context(g_conn);
+    sr_session_stop(session);
+
+    if (rc != SR_ERR_OK) {
         err->error_type = strdup("application");
-        err->error_tag = strdup("operation-failed");
-        err->error_message = strdup("echec de serialisation JSON de la sortie RPC");
+        err->error_tag = strdup(rc == SR_ERR_UNAUTHORIZED
+                                     ? "access-denied"
+                                     : (rc == SR_ERR_NOT_FOUND ? "invalid-value"
+                                                                : "operation-failed"));
+        err->error_message = strdup(sr_strerror(rc));
         return -1;
     }
-    lyd_free_all(output);
 
-    /* RFC 8040 SS3.6.2 : la sortie est enveloppee dans un objet "output"
-     * qualifie par le module -- ce qu'imprime deja lyd_print_mem() pour
-     * ce noeud cible unique ("module:output": {...}). */
-    *json_out = raw;
-    return 0;
+    return extract_operation_output(output, json_out, err);
 }

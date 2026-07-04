@@ -155,4 +155,40 @@ int sysrepo_backend_rpc_invoke(const struct restconf_path_segment *segments, siz
                                const char *body_json, size_t body_len, char **json_out,
                                struct restconf_error *err);
 
+/* Indique si 'segments'/'nsegments' (>= 2) designe une action YANG
+ * (statement "action", RFC 8040 SS3.6) : le dernier segment doit
+ * resoudre, dans le schema compile libyang, vers un noeud de type
+ * LYS_ACTION plutot qu'un noeud de donnees ordinaire. Utilise par
+ * restconf_handler.c pour distinguer, sur un POST recu sous
+ * {+restconf}/data/<...>/<dernier-segment> ou {+restconf}/ds/<n>/<...>,
+ * une invocation d'action d'une creation de ressource de donnees
+ * classique (RFC 8040 SS4.4.1).
+ *
+ * Fonction de simple lecture de schema (pas de session sysrepo) :
+ * renvoie 0 (faux) sans remplir d'erreur si le chemin ne resout pas ou
+ * ne designe pas une action -- l'appelant doit alors traiter la requete
+ * normalement (la vraie erreur, le cas echeant, remontera via le chemin
+ * normal, ex. sysrepo_backend_write()). */
+int sysrepo_backend_is_action_path(const struct restconf_path_segment *segments, size_t nsegments);
+
+/* Invoque l'action YANG (RFC 8040 SS3.6) designee par 'segments'/
+ * 'nsegments' via sr_rpc_send_tree(). A la difference d'un RPC de haut
+ * niveau, 'segments' decrit ici le chemin COMPLET jusqu'a l'action,
+ * ancetres inclus avec leurs eventuelles valeurs de cle (ex.
+ * "interfaces", "interface=eth0", "reset") ; 'nsegments' doit donc etre
+ * >= 2 (au moins un ancetre + le segment d'action lui-meme).
+ *
+ * RFC 8527 SS3.1 : les actions ne peuvent etre invoquees que sous
+ * {+restconf}/ds/ietf-datastores:operational -- cette contrainte est
+ * appliquee par l'appelant (restconf_handler.c), pas par cette fonction,
+ * qui se contente d'invoquer l'action au chemin donne quel que soit le
+ * datastore d'origine de l'appel.
+ *
+ * 'body_json'/'body_len', *json_out et les codes de retour suivent
+ * exactement la meme convention que sysrepo_backend_rpc_invoke() (RFC
+ * 8040 SS3.6.1/SS3.6.2/SS4.4.2). */
+int sysrepo_backend_action_invoke(const struct restconf_path_segment *segments, size_t nsegments,
+                                  const char *body_json, size_t body_len, char **json_out,
+                                  struct restconf_error *err);
+
 #endif /* RESTCONFD_SYSREPO_BACKEND_H */
