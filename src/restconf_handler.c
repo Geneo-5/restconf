@@ -7,6 +7,9 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <errno.h>
+#include <limits.h>
+#include <ctype.h>
 
 const char *g_restconf_root = "/restconf";
 
@@ -110,19 +113,114 @@ static char *build_location(const struct http_request *req, const char *child_se
     return loc;
 }
 
-static enum restconf_content_mode parse_content_param(const struct http_request *req)
+static int parse_get_options(const struct http_request *req, struct restconf_get_options *options,
+                              struct http_response *resp)
 {
+    options->content = RESTCONF_CONTENT_ALL;
+    options->depth = 0;
+
     const char *v = http_request_get_param(req, "content");
-    if (!v) {
-        return RESTCONF_CONTENT_ALL;
+    if (v) {
+        if (strcmp(v, "config") == 0) {
+            options->content = RESTCONF_CONTENT_CONFIG;
+        } else if (strcmp(v, "nonconfig") == 0) {
+            options->content = RESTCONF_CONTENT_NONCONFIG;
+        } else if (strcmp(v, "all") == 0) {
+            options->content = RESTCONF_CONTENT_ALL;
+        } else {
+            send_error_status(resp, 400, "protocol", "invalid-value",
+                               "valeur invalide pour le parametre content");
+            return -1;
+        }
     }
-    if (strcmp(v, "config") == 0) {
-        return RESTCONF_CONTENT_CONFIG;
+
+    v = http_request_get_param(req, "depth");
+    if (v) {
+        if (strcmp(v, "unbounded") == 0) {
+            options->depth = 0;
+        } else {
+            for (const char *p = v; *p; p++) {
+                if (!isdigit((unsigned char)*p)) {
+                    send_error_status(resp, 400, "protocol", "invalid-value",
+                                       "valeur invalide pour le parametre depth");
+                    return -1;
+                }
+            }
+            char *end = NULL;
+            errno = 0;
+            unsigned long depth = strtoul(v, &end, 10);
+            if (errno != 0 || !end || *end != '\0' || depth == 0 || depth > UINT_MAX) {
+                send_error_status(resp, 400, "protocol", "invalid-value",
+                                   "valeur invalide pour le parametre depth");
+                return -1;
+            }
+            options->depth = (unsigned int)depth;
+        }
     }
-    if (strcmp(v, "nonconfig") == 0) {
-        return RESTCONF_CONTENT_NONCONFIG;
+
+    return 0;
+}
+
+static int is_restconf_monitoring_capabilities(const struct restconf_request_path *path)
+{
+    if (path->nsegments < 1 || path->nsegments > 3) {
+        return 0;
     }
-    return RESTCONF_CONTENT_ALL;
+    if (!path->segments[0].module ||
+        strcmp(path->segments[0].module, "ietf-restconf-monitoring") != 0 ||
+        strcmp(path->segments[0].name, "restconf-state") != 0 ||
+        path->segments[0].nkeys != 0) {
+        return 0;
+    }
+    if (path->nsegments >= 2 &&
+        (path->segments[1].module ||
+         strcmp(path->segments[1].name, "capabilities") != 0 ||
+         path->segments[1].nkeys != 0)) {
+        return 0;
+    }
+    if (path->nsegments == 3 &&
+        (path->segments[2].module ||
+         strcmp(path->segments[2].name, "capability") != 0 ||
+         path->segments[2].nkeys != 0)) {
+        return 0;
+    }
+    return 1;
+}
+
+static void handle_restconf_monitoring_capabilities(const struct http_request *req,
+                                                     struct http_response *resp,
+                                                     const struct restconf_request_path *path)
+{
+    if (!is_get_or_head(req->method)) {
+        send_error_status(resp, 405, "protocol", "operation-not-supported",
+                           "restconf-state/capabilities est une ressource operationnelle en "
+                           "lecture seule");
+        return;
+    }
+
+    const char *capabilities =
+        "\"urn:ietf:params:restconf:capability:defaults:1.0?basic-mode=explicit\","
+        "\"urn:ietf:params:restconf:capability:depth:1.0\"";
+    const char *fmt = NULL;
+    if (path->nsegments == 1) {
+        fmt = "{\"ietf-restconf-monitoring:restconf-state\":{\"capabilities\":"
+              "{\"capability\":[%s]}}}";
+    } else if (path->nsegments == 2) {
+        fmt = "{\"ietf-restconf-monitoring:capabilities\":{\"capability\":[%s]}}";
+    } else {
+        fmt = "{\"ietf-restconf-monitoring:capability\":[%s]}";
+    }
+
+    size_t need = strlen(fmt) + strlen(capabilities) + 1;
+    char *body = malloc(need);
+    if (!body) {
+        send_error_status(resp, 500, "application", "operation-failed", "memoire insuffisante");
+        return;
+    }
+    snprintf(body, need, fmt, capabilities);
+
+    http_response_set_status(resp, 200, "OK");
+    http_response_set_body(resp, "application/yang-data+json", body, strlen(body));
 }
 
 static void handle_root(const struct http_request *req, struct http_response *resp)
@@ -180,12 +278,15 @@ static void handle_yang_library_version(const struct http_request *req, struct h
 static void handle_data_get(const struct http_request *req, struct http_response *resp, int sr_ds,
                              const struct restconf_request_path *path)
 {
-    enum restconf_content_mode content = parse_content_param(req);
+    struct restconf_get_options options;
+    if (parse_get_options(req, &options, resp) != 0) {
+        return;
+    }
 
     char *json = NULL;
     struct restconf_error err;
     memset(&err, 0, sizeof(err));
-    int rc = sysrepo_backend_get(sr_ds, path->segments, path->nsegments, content, &json, &err);
+    int rc = sysrepo_backend_get(sr_ds, path->segments, path->nsegments, &options, &json, &err);
     if (rc != 0) {
         int status = 0;
         if (err.error_tag && strcmp(err.error_tag, "invalid-value") == 0) {
@@ -399,7 +500,11 @@ void restconf_handle_request(const struct http_request *req, struct http_respons
         handle_yang_library_version(req, resp);
         break;
     case RESTCONF_RES_DATA:
-        handle_data_like(req, resp, sysrepo_backend_default_data_datastore(), &path);
+        if (is_restconf_monitoring_capabilities(&path)) {
+            handle_restconf_monitoring_capabilities(req, resp, &path);
+        } else {
+            handle_data_like(req, resp, sysrepo_backend_default_data_datastore(), &path);
+        }
         break;
     case RESTCONF_RES_DATASTORE:
         handle_datastore(req, resp, &path);

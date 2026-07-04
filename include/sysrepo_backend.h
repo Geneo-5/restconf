@@ -12,6 +12,11 @@ enum restconf_content_mode {
     RESTCONF_CONTENT_NONCONFIG,
 };
 
+struct restconf_get_options {
+    enum restconf_content_mode content;
+    unsigned int depth; /* 0 = profondeur non bornee (RFC 8040 "unbounded"). */
+};
+
 /* Connexion sysrepo partagee par tous les threads/requetes (un seul
  * sr_connect() pour tout le processus, cf. doc sysrepo : "It is safe to
  * use a single connection by multiple threads"). A initialiser une fois
@@ -42,7 +47,7 @@ int sysrepo_backend_datastore_from_identityref(const char *identityref, int *sr_
  * *err (error-tag adapte : "invalid-value" si le chemin ne correspond a
  * aucun noeud du schema, "operation-failed" en cas d'erreur sysrepo). */
 int sysrepo_backend_get(int sr_ds, const struct restconf_path_segment *segments,
-                         size_t nsegments, enum restconf_content_mode content,
+                         size_t nsegments, const struct restconf_get_options *options,
                          char **json_out, struct restconf_error *err);
 
 /* Construit le contenu JSON de {+restconf}/yang-library-version (RFC

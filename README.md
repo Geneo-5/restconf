@@ -16,13 +16,15 @@ Squelette **phase 2 (lecture + ecriture de base)** d'un serveur RESTCONF s'appuy
 | `{+restconf}` (ressource API) | GET | OK |
 | `{+restconf}/yang-library-version` | GET | OK |
 | `{+restconf}/data[/<api-path>]` | GET/HEAD | OK (voir hypothese ci-dessous) |
+| `{+restconf}/data/ietf-restconf-monitoring:restconf-state/capabilities` | GET/HEAD | OK (annonce conservative, voir "Monitoring") |
 | `{+restconf}/ds/<datastore>[/<api-path>]` (RFC 8527) | GET/HEAD | OK pour `running`, `candidate`, `startup`, `operational` |
 | `{+restconf}/data[/<api-path>]` et `{+restconf}/ds/<name>/<api-path>` | POST (creation) | OK (voir "Ecritures" ci-dessous) ; pas sur `operational` (lecture seule) |
 | idem | PUT (remplacement) | OK sur une ressource de donnees ; PUT sur la racine de la datastore (remplacement complet) non implemente |
 | idem | PATCH ("plain patch", fusion) | OK sur une ressource de donnees ; PATCH sur la racine de la datastore non implemente |
 | idem | DELETE | OK sur une ressource de donnees ; non defini sur la racine de la datastore (RFC 8040 SS4.7) |
 | Parametre `content` | GET | Partiel (voir plus bas) |
-| Tout le reste (RPC/actions, notifications SSE, XML, `depth`, `fields`, `with-defaults`, `with-origin`, `insert`/`point`, ETag/Last-Modified, NACM/authn, remplacement complet de la datastore) | — | **Non implemente**, cf. "Feuille de route" |
+| Parametre `depth` | GET/HEAD | OK (`unbounded` ou entier positif, via `sr_get_data(..., max_depth, ...)`) |
+| Tout le reste (RPC/actions, notifications SSE, XML, `fields`, `with-defaults`, `with-origin`, `insert`/`point`, ETag/Last-Modified, NACM/authn, remplacement complet de la datastore) | — | **Non implemente**, cf. "Feuille de route" |
 
 ## Hypotheses de conception a valider avec vous
 
@@ -77,6 +79,21 @@ Implementees dans `sysrepo_backend_write()`/`sysrepo_backend_delete()` (`src/sys
 - L'ecriture est bloquee sur la datastore `operational` par le meme garde-fou que la lecture (cf.
   "Hypotheses de conception" ci-dessus : `read_only` dans `DS_MAP`), coherent avec le fait que
   sysrepo peuple cette datastore via des abonnements plutot que des edits RESTCONF classiques.
+
+## Monitoring RESTCONF
+
+`src/restconf_handler.c` intercepte maintenant localement :
+
+- `{+restconf}/data/ietf-restconf-monitoring:restconf-state`
+- `{+restconf}/data/ietf-restconf-monitoring:restconf-state/capabilities`
+- `{+restconf}/data/ietf-restconf-monitoring:restconf-state/capabilities/capability`
+
+Ces ressources exposent le conteneur obligatoire `restconf-state/capabilities` du module
+`ietf-restconf-monitoring` (RFC 8040 SS9.1). L'annonce est volontairement conservative :
+`urn:ietf:params:restconf:capability:defaults:1.0?basic-mode=explicit` et
+`urn:ietf:params:restconf:capability:depth:1.0` sont publies pour l'instant. Les capacites
+optionnelles liees a `fields`, `with-defaults`, `filter`, `start-time`, `stop-time`, etc. ne
+seront ajoutees que lorsque les parametres correspondants seront reellement implementes.
 
 ## Points sensibles a la version installee (a verifier avant de compiler)
 
@@ -160,13 +177,16 @@ curl -s http://localhost/restconf/ds/ietf-datastores:operational | jq
   corps de requete).
 - **RPC/actions** : POST sur `{+restconf}/operations/<op>` -> `sr_rpc_send_tree()`.
 - **Notifications** : flux SSE sur `text/event-stream` -> `sr_event_notif_subscribe_tree()`.
-- **Parametres de requete restants** : `depth`, `fields`, `with-defaults` (RFC 8040 SS4.8.9 et son
-  cas particulier operationnel RFC 8527 SS3.2.1), `with-origin` (RFC 8527 SS3.2.2), `insert`/
-  `point`.
+- **Parametres de requete restants** : ~~`depth`~~, `fields`, `with-defaults` (RFC 8040 SS4.8.9 et
+  son cas particulier operationnel RFC 8527 SS3.2.1), `with-origin` (RFC 8527 SS3.2.2), `insert`/
+  `point`. `depth` est implemente pour GET/HEAD via le `max_depth` de `sr_get_data()`.
 - **ETag / Last-Modified** pour la detection de collision d'edition (RFC 8040 SS3.4.1/3.5.1-2).
 - **Authentification/autorisation** : TLS + identite client (deleguee a nginx en frontal) et NACM
   cote sysrepo (`sr_session_set_user`/`SR_SESS_ENABLE_NACM` a etudier).
 - **Support XML** en plus de JSON, negociation via `Accept`/`Content-Type`.
+- ~~**`restconf-state/capabilities`** (`ietf-restconf-monitoring`) pour annoncer les query
+  parameters reellement supportes (RFC 8040 SS9)~~ -> fait avec une annonce conservative
+  (`defaults` et `depth` pour l'instant).
 - **Support yang** : s'enregistre au pres de sysrepo comme service implémentant ietf restconf yang modules
 
 ## Arborescence

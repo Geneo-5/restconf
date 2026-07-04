@@ -240,13 +240,15 @@ struct fetch_result {
 };
 
 static int fetch_tree(sr_session_ctx_t *session, const char *xpath, int whole_datastore,
-                       enum restconf_content_mode content, int sr_ds, struct fetch_result *out,
+                       const struct restconf_get_options *options, int sr_ds, struct fetch_result *out,
                        struct restconf_error *err)
 {
     memset(out, 0, sizeof(*out));
     int rc;
+    unsigned int depth = options ? options->depth : 0;
+    enum restconf_content_mode content = options ? options->content : RESTCONF_CONTENT_ALL;
 
-    if (whole_datastore) {
+    if (whole_datastore || depth > 0) {
         uint32_t opts = 0;
         /* Le filtrage config/nonconfig via des drapeaux sr_get_data
          * n'a de sens que pour la datastore <operational> chez sysrepo
@@ -260,7 +262,7 @@ static int fetch_tree(sr_session_ctx_t *session, const char *xpath, int whole_da
                 opts |= SR_OPER_NO_CONFIG;
             }
         }
-        rc = sr_get_data(session, xpath, 0, 0, opts, &out->sr_data);
+        rc = sr_get_data(session, xpath, depth, 0, opts, &out->sr_data);
     } else {
         rc = sr_get_subtree(session, xpath, 0, &out->sr_data);
     }
@@ -285,7 +287,7 @@ static void fetch_result_release(struct fetch_result *r)
 }
 
 int sysrepo_backend_get(int sr_ds, const struct restconf_path_segment *segments,
-                         size_t nsegments, enum restconf_content_mode content,
+                         size_t nsegments, const struct restconf_get_options *options,
                          char **json_out, struct restconf_error *err)
 {
     *json_out = NULL;
@@ -320,7 +322,7 @@ int sysrepo_backend_get(int sr_ds, const struct restconf_path_segment *segments,
     }
 
     struct fetch_result fr;
-    int frc = fetch_tree(session, xpath, whole, content, sr_ds, &fr, err);
+    int frc = fetch_tree(session, xpath, whole, options, sr_ds, &fr, err);
     free(xpath);
     sr_release_context(g_conn);
     sr_session_stop(session);
