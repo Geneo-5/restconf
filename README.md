@@ -1,6 +1,6 @@
 # restconfd — serveur RESTCONF (RFC 8040 + RFC 8527) sur fastcgi2 + sysrepo
 
-Squelette **phase 1 (lecture seule)** d'un serveur RESTCONF s'appuyant sur :
+Squelette **phase 2 (lecture + ecriture de base)** d'un serveur RESTCONF s'appuyant sur :
 
 - [fcgi2](https://github.com/FastCGI-Archives/fcgi2) (API `FCGX_*`) comme transport HTTP via un
   serveur web frontal (nginx, etc.) qui parle FastCGI ;
@@ -16,8 +16,12 @@ Squelette **phase 1 (lecture seule)** d'un serveur RESTCONF s'appuyant sur :
 | `{+restconf}/yang-library-version` | GET | OK |
 | `{+restconf}/data[/<api-path>]` | GET/HEAD | OK (voir hypothese ci-dessous) |
 | `{+restconf}/ds/<datastore>[/<api-path>]` (RFC 8527) | GET/HEAD | OK pour `running`, `candidate`, `startup`, `operational` |
+| `{+restconf}/data[/<api-path>]` et `{+restconf}/ds/<name>/<api-path>` | POST (creation) | OK (voir "Ecritures" ci-dessous) ; pas sur `operational` (lecture seule) |
+| idem | PUT (remplacement) | OK sur une ressource de donnees ; PUT sur la racine de la datastore (remplacement complet) non implemente |
+| idem | PATCH ("plain patch", fusion) | OK sur une ressource de donnees ; PATCH sur la racine de la datastore non implemente |
+| idem | DELETE | OK sur une ressource de donnees ; non defini sur la racine de la datastore (RFC 8040 SS4.7) |
 | Parametre `content` | GET | Partiel (voir plus bas) |
-| Tout le reste (POST/PUT/PATCH/DELETE, RPC/actions, notifications SSE, XML, `depth`, `fields`, `with-defaults`, `with-origin`, `insert`/`point`, ETag/Last-Modified, NACM/authn) | — | **Non implemente**, cf. "Feuille de route" |
+| Tout le reste (RPC/actions, notifications SSE, XML, `depth`, `fields`, `with-defaults`, `with-origin`, `insert`/`point`, ETag/Last-Modified, NACM/authn, remplacement complet de la datastore) | — | **Non implemente**, cf. "Feuille de route" |
 
 ## Hypotheses de conception a valider avec vous
 
@@ -44,6 +48,35 @@ La negociation de contenu (`Accept`) et le support XML ne sont pas geres : le se
 toujours en `application/yang-data+json`, ce qui est conforme a la RFC (un serveur DOIT supporter
 au moins un des deux formats) mais incomplet pour des clients qui exigeraient du XML.
 
+## Ecritures (POST/PUT/PATCH/DELETE)
+
+Implementees dans `sysrepo_backend_write()`/`sysrepo_backend_delete()` (`src/sysrepo_backend.c`) :
+
+- Le corps JSON de la requete est analyse avec `lyd_parse_data()` en le rattachant directement au
+  noeud parent concerne dans l'arbre libyang (construit au prealable avec `lyd_new_path2()` a
+  partir du chemin RESTCONF), ce qui fait porter la validation du schema (module/nom/type
+  attendus a cet endroit) a libyang lui-meme plutot qu'a du code de correspondance ad hoc.
+- Chaque noeud ainsi apporte par le corps est marque avec la metadata d'edition NETCONF standard
+  (`ietf-netconf:operation` = `create` pour POST, `replace` pour PUT, `merge` pour PATCH) avant
+  d'etre soumis via `sr_edit_batch()` (operation par defaut `merge`, sans effet sur le squelette
+  d'ancetres du chemin) puis `sr_apply_changes()`. C'est cette metadata qui fait qu'un POST sur une
+  ressource deja existante echoue avec `data-exists` (409) au lieu de silencieusement la remplacer.
+- PATCH exige que la ressource **parente** existe deja (sinon `data-missing`, 409) ; PUT determine
+  si la ressource **cible** existe deja (sonde `sr_get_subtree` avant edition) pour repondre 201 ou
+  204 conformement a la RFC 8040 SS4.5.
+- L'en-tete `Location` d'un POST reussi (RFC 8040 SS4.4.1, MUST) est reconstruit a partir du chemin
+  de la requete et d'un segment `module:nom` (ou `module:nom=cle1,cle2` pour une liste) derive du
+  noeud fraichement analyse ; les valeurs de cle sont percent-encodees par prudence mais sans
+  gestion fine de tous les caracteres reserves de la RFC 8040 SS3.5.3 (a completer si vos cles
+  utilisent des caracteres inhabituels).
+- **Non gere** : remplacement/fusion de la datastore entiere via PUT/PATCH directement sur
+  `{+restconf}/data` ou `{+restconf}/ds/<name>` (RFC 8040 SS4.5, exemple Appendix B.2.4, qui
+  s'appuie sur l'enveloppe `data` du module `ietf-restconf`) ; DELETE n'est pas defini sur cette
+  meme racine (RFC 8040 SS4.7). Ces deux cas renvoient actuellement `501`/`400`.
+- L'ecriture est bloquee sur la datastore `operational` par le meme garde-fou que la lecture (cf.
+  "Hypotheses de conception" ci-dessus : `read_only` dans `DS_MAP`), coherent avec le fait que
+  sysrepo peuple cette datastore via des abonnements plutot que des edits RESTCONF classiques.
+
 ## Points sensibles a la version installee (a verifier avant de compiler)
 
 Deux zones du code sont explicitement commentees `XXX-SR-API` / `XXX-LY-API` car les API
@@ -59,8 +92,17 @@ publiques de sysrepo et libyang ont evolue :
    SS3.5.3) parcourt le schema compile libyang via `lysc_node_children()` et le drapeau
    `LYS_KEY`. Verifiez que ces symboles existent tels quels dans votre
    `libyang/tree_schema.h`.
+3. **`src/sysrepo_backend.c` / `sysrepo_backend_write()`** : construit un squelette d'ancetres avec
+   `lyd_new_path2()` (9 parametres dont `value_size_bits`/`any_hints` separes dans les versions
+   recentes de libyang) puis y rattache le corps JSON de la requete avec `lyd_parse_data()` a
+   *parent* explicite. Le comportement exact du noeud `new_node` renvoye par `lyd_new_path2()`
+   pour un chemin ciblant une liste a varie entre versions de libyang 2.x (cf. discussion amont
+   CESNET/libyang#2337) ; le code re-resout donc ce noeud via `lyd_find_path()` par securite, mais
+   verifiez ces signatures dans votre `libyang/tree_data.h`. De meme, `lyd_new_attr()` (pose de la
+   metadata `ietf-netconf:operation` consommee par `sr_edit_batch()`) suppose que le module
+   `ietf-netconf` est resolvable dans le contexte libyang de sysrepo.
 
-Ces deux points n'ont **pas pu etre compiles/testes dans cet environnement** (pas d'acces reseau
+Ces trois points n'ont **pas pu etre compiles/testes dans cet environnement** (pas d'acces reseau
 pour installer sysrepo/libyang/fcgi2 ici) : relisez-les avant la premiere compilation.
 
 ## Construction
@@ -110,9 +152,11 @@ curl -s http://localhost/restconf/ds/ietf-datastores:operational | jq
 
 ## Feuille de route (phase 2 et suivantes, a prioriser ensemble)
 
-- **Ecritures** : POST (creation), PUT (remplacement), PATCH (fusion "plain patch"), DELETE, en
-  s'appuyant sur `sr_edit_batch()`/`sr_set_item_str()`/`sr_delete_item()` + `sr_apply_changes()`,
-  avec le mapping d'erreurs `data-exists` (409), `data-missing` (409), `lock-denied` (409), etc.
+- ~~**Ecritures** : POST (creation), PUT (remplacement), PATCH (fusion "plain patch"), DELETE~~ ->
+  fait (voir "Ecritures" ci-dessus), a l'exception du remplacement/fusion complet de la datastore
+  via PUT/PATCH directement sur `{+restconf}/data`/`{+restconf}/ds/<name>` (RFC 8040 SS4.5
+  Appendix B.2.4), qui reste a faire (necessite de deballer l'enveloppe `ietf-restconf:data` du
+  corps de requete).
 - **RPC/actions** : POST sur `{+restconf}/operations/<op>` -> `sr_rpc_send_tree()`.
 - **Notifications** : flux SSE sur `text/event-stream` -> `sr_event_notif_subscribe_tree()`.
 - **Parametres de requete restants** : `depth`, `fields`, `with-defaults` (RFC 8040 SS4.8.9 et son

@@ -64,5 +64,60 @@ int sysrepo_backend_get_yang_library_revision(char **revision_out, struct restco
  * sr_datastore_t. */
 int sysrepo_backend_default_data_datastore(void);
 
+/* Semantique d'ecriture RESTCONF pour une ressource de donnees (RFC 8040
+ * SS4.4 POST, SS4.5 PUT, SS4.6.1 PATCH "plain patch"). Traduite, cote
+ * sysrepo/libyang, en une metadata d'edition "ietf-netconf:operation"
+ * (create/replace/merge) posee sur le(s) noeud(s) apporte(s) par le corps
+ * JSON de la requete avant soumission via sr_edit_batch()+sr_apply_changes(). */
+enum restconf_write_op {
+    RESTCONF_WRITE_CREATE,  /* POST  : le noeud cible ne doit pas deja exister (409 data-exists sinon) */
+    RESTCONF_WRITE_REPLACE, /* PUT   : remplace le noeud cible, le cree s'il est absent */
+    RESTCONF_WRITE_MERGE,   /* PATCH : fusionne avec le contenu existant ; le PARENT doit deja exister */
+};
+
+/* Ecrit 'body_json'/'body_len' (corps de requete RFC 7951) dans le
+ * datastore sr_ds a l'emplacement designe par 'segments'/'nsegments' :
+ *
+ * - RESTCONF_WRITE_CREATE (POST, "create resource mode", RFC 8040
+ *   SS4.4.1) : 'segments' designe la ressource PARENTE, cible de l'URI
+ *   POST ; le corps doit contenir exactement une instance du nouveau
+ *   noeud enfant a creer.
+ * - RESTCONF_WRITE_REPLACE / RESTCONF_WRITE_MERGE (PUT SS4.5 / PATCH
+ *   SS4.6.1) : 'segments' designe la ressource CIBLE elle-meme ('segments'
+ *   doit donc contenir au moins un element) ; le corps represente cette
+ *   ressource.
+ *
+ * *created_out (si non NULL) est positionne a 1 si la ressource ciblee par
+ * un PUT n'existait pas avant l'operation, pour permettre a l'appelant de
+ * distinguer 201 Created de 204 No Content (RFC 8040 SS4.5) ; ignore pour
+ * les autres operations.
+ *
+ * *created_child_segment_out (si non NULL, uniquement pertinent pour
+ * RESTCONF_WRITE_CREATE) recoit le segment de chemin RESTCONF
+ * ("module:nom" ou "module:nom=cle1,cle2") du noeud nouvellement cree, a
+ * concatener par l'appelant a la ressource parente pour construire
+ * l'en-tete "Location" exige par la RFC 8040 SS4.4.1. Chaine allouee, a
+ * liberer par l'appelant ; peut rester NULL si elle n'a pas pu etre
+ * determinee.
+ *
+ * Retourne 0 en cas de succes. En cas d'echec, retourne -1 et remplit
+ * *err : error-tag "malformed-message" si le corps n'est pas du JSON
+ * valide ou ne correspond pas au schema attendu a cet emplacement,
+ * "data-exists"/"data-missing"/"lock-denied"/"access-denied" si sysrepo
+ * signale respectivement SR_ERR_EXISTS/SR_ERR_NOT_FOUND/SR_ERR_LOCKED/
+ * SR_ERR_UNAUTHORIZED, "operation-failed" sinon. */
+int sysrepo_backend_write(int sr_ds, const struct restconf_path_segment *segments,
+                          size_t nsegments, enum restconf_write_op op, const char *body_json,
+                          size_t body_len, int *created_out, char **created_child_segment_out,
+                          struct restconf_error *err);
+
+/* Supprime la ressource de donnees designee par 'segments'/'nsegments'
+ * (RFC 8040 SS4.7 DELETE). 'nsegments' doit etre > 0 : la RFC ne definit
+ * pas de semantique DELETE sur la racine d'une datastore. Retourne 0 en
+ * cas de succes ; -1 + *err sinon ("invalid-value" si la ressource
+ * n'existe pas -> l'appelant doit renvoyer 404 ; "lock-denied"/
+ * "access-denied" le cas echeant ; "operation-failed" sinon). */
+int sysrepo_backend_delete(int sr_ds, const struct restconf_path_segment *segments,
+                           size_t nsegments, struct restconf_error *err);
 
 #endif /* RESTCONFD_SYSREPO_BACKEND_H */

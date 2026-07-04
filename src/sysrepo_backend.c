@@ -380,6 +380,378 @@ int sysrepo_backend_default_data_datastore(void)
     return SR_DS_RUNNING;
 }
 
+/* --------------------------------------------------------------------
+ * Ecritures (POST/PUT/PATCH/DELETE) -- RFC 8040 SS4.4/4.5/4.6.1/4.7
+ * -------------------------------------------------------------------- */
+
+/* Construit le segment de chemin RESTCONF ('module:nom', ou
+ * 'module:nom=cle1,cle2' pour une instance de liste, ou 'module:nom=val'
+ * pour une leaf-list) correspondant a un noeud de donnees fraichement
+ * cree. Utilise pour l'en-tete 'Location' d'une reponse 201 (POST, RFC
+ * 8040 SS4.4.1). Les valeurs de cle usuelles (identifiants) ne
+ * necessitent pas de percent-encodage ; l'appelant HTTP se charge malgre
+ * tout d'encoder le resultat par prudence (cf. restconf_handler.c). */
+static char *describe_child_segment(const struct lyd_node *node)
+{
+    if (!node || !node->schema) {
+        return NULL;
+    }
+    const struct lysc_node *snode = node->schema;
+    char *buf = NULL;
+    size_t len = 0, cap = 0;
+    char head[512];
+    snprintf(head, sizeof(head), "%s:%s", snode->module->name, snode->name);
+    if (str_append(&buf, &len, &cap, head) != 0) {
+        return NULL;
+    }
+
+    if (snode->nodetype == LYS_LIST) {
+        int first = 1;
+        /* XXX-LY-API : meme convention que build_xpath() pour retrouver,
+         * dans l'ordre du schema, les feuilles de cle d'une instance de
+         * liste fraichement analysee depuis le corps JSON. */
+        for (const struct lyd_node *child = lyd_child(node); child; child = child->next) {
+            if (child->schema && child->schema->nodetype == LYS_LEAF &&
+                (child->schema->flags & LYS_KEY)) {
+                const char *v = lyd_get_value(child);
+                if (str_append(&buf, &len, &cap, first ? "=" : ",") != 0 ||
+                    str_append(&buf, &len, &cap, v ? v : "") != 0) {
+                    free(buf);
+                    return NULL;
+                }
+                first = 0;
+            }
+        }
+    } else if (snode->nodetype == LYS_LEAFLIST) {
+        const char *v = lyd_get_value(node);
+        if (str_append(&buf, &len, &cap, "=") != 0 || str_append(&buf, &len, &cap, v ? v : "") != 0) {
+            free(buf);
+            return NULL;
+        }
+    }
+
+    return buf;
+}
+
+/* Traduit un code d'erreur sysrepo en error-tag RESTCONF pour les
+ * operations d'ecriture (RFC 8040 SS7, tableau "Mapping from <error-tag>
+ * to Status Code"). */
+static const char *write_error_tag(int sr_rc)
+{
+    switch (sr_rc) {
+    case SR_ERR_EXISTS:
+        return "data-exists";
+    case SR_ERR_NOT_FOUND:
+        return "data-missing";
+    case SR_ERR_LOCKED:
+        return "lock-denied";
+    case SR_ERR_UNAUTHORIZED:
+        return "access-denied";
+    case SR_ERR_VALIDATION_FAILED:
+        return "invalid-value";
+    default:
+        return "operation-failed";
+    }
+}
+
+int sysrepo_backend_write(int sr_ds, const struct restconf_path_segment *segments,
+                          size_t nsegments, enum restconf_write_op op, const char *body_json,
+                          size_t body_len, int *created_out, char **created_child_segment_out,
+                          struct restconf_error *err)
+{
+    memset(err, 0, sizeof(*err));
+    if (created_out) {
+        *created_out = 0;
+    }
+    if (created_child_segment_out) {
+        *created_child_segment_out = NULL;
+    }
+
+    if (op != RESTCONF_WRITE_CREATE && nsegments == 0) {
+        /* PUT/PATCH sur la racine de la datastore ({+restconf}/data ou
+         * {+restconf}/ds/<name> eux-memes) : le remplacement complet de
+         * la datastore (RFC 8040 SS4.5, exemple Appendix B.2.4, avec son
+         * enveloppe 'data') n'est pas gere par ce squelette. */
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-not-supported");
+        err->error_message =
+            strdup("remplacement/fusion de la datastore entiere via PUT/PATCH sur la racine "
+                   "non implemente dans ce squelette (cf. feuille de route)");
+        return -1;
+    }
+
+    if (!body_json || body_len == 0) {
+        err->error_type = strdup("protocol");
+        err->error_tag = strdup("malformed-message");
+        err->error_message = strdup("corps de requete JSON attendu et absent");
+        return -1;
+    }
+
+    sr_session_ctx_t *session = NULL;
+    int rc = sr_session_start(g_conn, (sr_datastore_t)sr_ds, &session);
+    if (rc != SR_ERR_OK) {
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup(sr_strerror(rc));
+        return -1;
+    }
+
+    const struct ly_ctx *ctx = sr_acquire_context(g_conn);
+    if (!ctx) {
+        sr_session_stop(session);
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("contexte libyang indisponible");
+        return -1;
+    }
+
+    /* Pour PUT, determine si la ressource CIBLE existe deja, afin de
+     * distinguer 201 Created de 204 No Content (RFC 8040 SS4.5). */
+    if (op == RESTCONF_WRITE_REPLACE && created_out && nsegments > 0) {
+        char *target_xpath = NULL;
+        struct restconf_error xerr;
+        memset(&xerr, 0, sizeof(xerr));
+        if (build_xpath(ctx, segments, nsegments, &target_xpath, &xerr) == 0) {
+            sr_data_t *probe = NULL;
+            int prc = sr_get_subtree(session, target_xpath, 0, &probe);
+            *created_out = (prc == SR_ERR_NOT_FOUND) ? 1 : 0;
+            if (probe) {
+                sr_release_data(probe);
+            }
+            free(target_xpath);
+        }
+        restconf_error_release(&xerr);
+    }
+
+    /* Segments 'parents' sous lesquels le corps JSON doit s'inserer :
+     * - POST : la totalite des segments de l'URI (c'est la ressource
+     *   PARENTE au sens RFC 8040 SS4.4.1) ;
+     * - PUT/PATCH : tous les segments sauf le dernier (le dernier est la
+     *   ressource CIBLE elle-meme, dont le corps porte la representation). */
+    size_t parent_n = (op == RESTCONF_WRITE_CREATE) ? nsegments : (nsegments > 0 ? nsegments - 1 : 0);
+
+    struct lyd_node *top = NULL;          /* racine de l'arbre soumis a sr_edit_batch */
+    struct lyd_node *attach_point = NULL; /* noeud sous lequel accrocher le corps JSON, ou NULL
+                                            * si le corps est lui-meme un arbre de haut niveau */
+
+    if (parent_n > 0) {
+        char *parent_xpath = NULL;
+        if (build_xpath(ctx, segments, parent_n, &parent_xpath, err) != 0) {
+            sr_release_context(g_conn);
+            sr_session_stop(session);
+            return -1;
+        }
+
+        if (op == RESTCONF_WRITE_MERGE) {
+            /* PATCH (plain patch) : le parent DOIT deja exister (sinon
+             * 'data-missing', cf. tableau RFC 8040 SS7 -- un merge sur un
+             * parent absent ne peut pas etre satisfait sans le creer
+             * implicitement, ce que la semantique 'merge' n'autorise pas
+             * ici par prudence). */
+            sr_data_t *probe = NULL;
+            int prc = sr_get_subtree(session, parent_xpath, 0, &probe);
+            if (probe) {
+                sr_release_data(probe);
+            }
+            if (prc == SR_ERR_NOT_FOUND) {
+                free(parent_xpath);
+                sr_release_context(g_conn);
+                sr_session_stop(session);
+                err->error_type = strdup("protocol");
+                err->error_tag = strdup("data-missing");
+                err->error_message = strdup("la ressource parente n'existe pas");
+                return -1;
+            }
+        }
+
+        /* XXX-LY-API : lyd_new_path2() cree (ou retrouve) le squelette
+         * d'ancetres jusqu'a la ressource parente ; 'top' est le noeud le
+         * plus haut cree (a soumettre tel quel a sr_edit_batch). D'apres
+         * les discussions upstream libyang (CESNET/libyang#2337), le
+         * 'new_node' renvoye pour un chemin cible une liste n'est pas
+         * garanti etre l'entree de liste elle-meme selon les versions ;
+         * on re-resout donc systematiquement 'attach_point' via
+         * lyd_find_path() sur l'arbre obtenu, par securite. */
+        struct lyd_node *new_node = NULL;
+        LY_ERR lyrc = lyd_new_path2(NULL, ctx, parent_xpath, NULL, 0, 0, 0, &top, &new_node);
+        if (lyrc != LY_SUCCESS || !top) {
+            free(parent_xpath);
+            sr_release_context(g_conn);
+            sr_session_stop(session);
+            err->error_type = strdup("protocol");
+            err->error_tag = strdup("invalid-value");
+            err->error_message = strdup("impossible de construire le chemin de la ressource "
+                                         "parente (incoherent avec le schema YANG charge)");
+            return -1;
+        }
+        if (lyd_find_path(top, parent_xpath, 0, &attach_point) != LY_SUCCESS || !attach_point) {
+            attach_point = new_node; /* repli sur la valeur renvoyee directement */
+        }
+        free(parent_xpath);
+    }
+
+    /* Analyse le corps JSON (RFC 7951) comme enfant(s) de 'attach_point'
+     * (ou comme arbre racine si 'attach_point' est NULL, c.-a-d. pour un
+     * POST directement sur {+restconf}/data ou {+restconf}/ds/<name>). */
+    struct ly_in *in = NULL;
+    if (ly_in_new_memory(body_json, &in) != LY_SUCCESS) {
+        if (top) {
+            lyd_free_all(top);
+        }
+        sr_release_context(g_conn);
+        sr_session_stop(session);
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("echec d'allocation pour l'analyse du corps JSON");
+        return -1;
+    }
+
+    struct lyd_node *parsed_tree = NULL;
+    LY_ERR lyrc = lyd_parse_data(ctx, attach_point, in, LYD_JSON, LYD_PARSE_ONLY | LYD_PARSE_NO_STATE,
+                                  0, &parsed_tree);
+    ly_in_free(in, 0);
+
+    if (lyrc != LY_SUCCESS) {
+        if (top) {
+            lyd_free_all(top);
+        } else if (parsed_tree) {
+            lyd_free_all(parsed_tree);
+        }
+        sr_release_context(g_conn);
+        sr_session_stop(session);
+        err->error_type = strdup("protocol");
+        err->error_tag = strdup("malformed-message");
+        err->error_message = strdup("corps de requete JSON non conforme au schema YANG charge "
+                                     "(RFC 7951) pour cet emplacement");
+        return -1;
+    }
+
+    if (!attach_point) {
+        /* {+restconf}/data ou {+restconf}/ds/<name> eux-memes : le corps
+         * EST l'arbre de haut niveau a soumettre. */
+        top = parsed_tree;
+    }
+    if (!top) {
+        /* Corps JSON vide ('{}') : rien a faire (cf. exemple RFC 8040
+         * SS4.4.1, creation d'un conteneur vide). */
+        sr_release_context(g_conn);
+        sr_session_stop(session);
+        return 0;
+    }
+
+    /* Tague les noeuds apportes par le corps JSON (enfants directs du
+     * point d'attache, ou racine(s) de l'arbre s'il n'y avait pas de
+     * point d'attache) avec l'operation d'edition NETCONF correspondante :
+     *  - POST  -> 'create'  (SR_ERR_EXISTS -> 409 data-exists si deja present)
+     *  - PUT   -> 'replace' (remplace tout le sous-arbre existant)
+     *  - PATCH -> 'merge'   (fusion, 'plain patch' RFC 8040 SS4.6.1)
+     * Le squelette d'ancetres (le cas echeant) n'est lui jamais tague :
+     * il reste soumis a l'operation par defaut 'merge' de sr_edit_batch(),
+     * sans effet de bord s'il correspond a des donnees deja existantes. */
+    const char *op_attr = (op == RESTCONF_WRITE_CREATE)
+                              ? "create"
+                              : (op == RESTCONF_WRITE_REPLACE ? "replace" : "merge");
+    struct lyd_node *tag_start = attach_point ? lyd_child(attach_point) : top;
+
+    if (op == RESTCONF_WRITE_CREATE && created_child_segment_out && tag_start) {
+        *created_child_segment_out = describe_child_segment(tag_start);
+    }
+
+    for (struct lyd_node *n = tag_start; n; n = n->next) {
+        if (lyd_new_attr(n, "ietf-netconf", "ietf-netconf:operation", op_attr, NULL) != LY_SUCCESS) {
+            lyd_free_all(top);
+            sr_release_context(g_conn);
+            sr_session_stop(session);
+            err->error_type = strdup("application");
+            err->error_tag = strdup("operation-failed");
+            err->error_message = strdup("echec de marquage de l'operation d'edition (metadata "
+                                         "ietf-netconf:operation)");
+            return -1;
+        }
+    }
+
+    rc = sr_edit_batch(session, top, "merge");
+    if (rc == SR_ERR_OK) {
+        rc = sr_apply_changes(session, 0);
+    }
+
+    lyd_free_all(top);
+    sr_release_context(g_conn);
+    sr_session_stop(session);
+
+    if (rc != SR_ERR_OK) {
+        if (created_child_segment_out && *created_child_segment_out) {
+            free(*created_child_segment_out);
+            *created_child_segment_out = NULL;
+        }
+        err->error_type = strdup("application");
+        err->error_tag = strdup(write_error_tag(rc));
+        err->error_message = strdup(sr_strerror(rc));
+        return -1;
+    }
+
+    return 0;
+}
+
+int sysrepo_backend_delete(int sr_ds, const struct restconf_path_segment *segments,
+                           size_t nsegments, struct restconf_error *err)
+{
+    memset(err, 0, sizeof(*err));
+
+    if (nsegments == 0) {
+        /* RFC 8040 SS4.7 : DELETE cible une ressource de donnees, pas la
+         * datastore/racine {+restconf}/data elle-meme. */
+        err->error_type = strdup("protocol");
+        err->error_tag = strdup("operation-not-supported");
+        err->error_message = strdup("DELETE n'est pas defini sur la racine d'une datastore");
+        return -1;
+    }
+
+    sr_session_ctx_t *session = NULL;
+    int rc = sr_session_start(g_conn, (sr_datastore_t)sr_ds, &session);
+    if (rc != SR_ERR_OK) {
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup(sr_strerror(rc));
+        return -1;
+    }
+
+    const struct ly_ctx *ctx = sr_acquire_context(g_conn);
+    if (!ctx) {
+        sr_session_stop(session);
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("contexte libyang indisponible");
+        return -1;
+    }
+
+    char *xpath = NULL;
+    if (build_xpath(ctx, segments, nsegments, &xpath, err) != 0) {
+        sr_release_context(g_conn);
+        sr_session_stop(session);
+        return -1;
+    }
+
+    /* SR_EDIT_STRICT : la ressource DOIT deja exister (RFC 8040 SS4.7 :
+     * sinon 404 invalid-value, via SR_ERR_NOT_FOUND ci-dessous). */
+    rc = sr_delete_item(session, xpath, SR_EDIT_STRICT);
+    if (rc == SR_ERR_OK) {
+        rc = sr_apply_changes(session, 0);
+    }
+    free(xpath);
+    sr_release_context(g_conn);
+    sr_session_stop(session);
+
+    if (rc != SR_ERR_OK) {
+        err->error_type = strdup("application");
+        err->error_tag = strdup(rc == SR_ERR_NOT_FOUND ? "invalid-value" : write_error_tag(rc));
+        err->error_message = strdup(sr_strerror(rc));
+        return -1;
+    }
+
+    return 0;
+}
+
 int sysrepo_backend_get_yang_library_revision(char **revision_out, struct restconf_error *err)
 {
     *revision_out = NULL;
