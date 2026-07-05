@@ -56,3 +56,4 @@ dkms.conf
 .DS_Store
 *.bak*
 .codex/
+build.log
