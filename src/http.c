@@ -254,3 +254,89 @@ void http_response_flush(FCGX_Request *request, const struct http_response *resp
         FCGX_PutStr(resp->body, (int)resp->body_len, request->out);
     }
 }
+
+/* --------------------------------------------------------------------
+ * Server-Sent Events (RFC 8040 SS3.8/SS6.2/SS6.3, W3C SSE)
+ * -------------------------------------------------------------------- */
+
+int http_request_wants_event_stream(const struct http_request *req)
+{
+    if (!req || !req->accept) {
+        return 0;
+    }
+    /* Recherche grossiere de sous-chaine : suffisant ici puisque
+     * 'text/event-stream' n'a pas de parametres pertinents pour ce
+     * squelette (contrairement a la negociation JSON/XML de
+     * restconf_handler.c, qui analyse la liste complete des media-ranges
+     * avec leurs qualites -- pas necessaire pour un simple "le client
+     * veut-il du SSE ?"). */
+    return strcasestr(req->accept, "text/event-stream") != NULL;
+}
+
+void http_sse_send_headers(FCGX_Request *request)
+{
+    /* RFC 8040 SS6.3/SS6.4 : pas de Content-Length (corps de duree
+     * indefinie) ; Cache-Control: no-cache comme pour les autres
+     * reponses RESTCONF (SS5.5). 'X-Accel-Buffering: no' desactive la
+     * bufferisation de reponse de nginx pour cette requete precise (a
+     * defaut de le faire globalement dans la configuration du serveur
+     * web, cf. etc/nginx-restconf.conf.example), indispensable pour que
+     * les evenements atteignent le client au fur et a mesure plutot que
+     * d'etre retenus jusqu'a la fin (qui n'arrive jamais) de la reponse. */
+    FCGX_FPrintF(request->out, "Status: 200 OK\r\n");
+    FCGX_FPrintF(request->out, "Content-Type: text/event-stream\r\n");
+    FCGX_FPrintF(request->out, "Cache-Control: no-cache\r\n");
+    FCGX_FPrintF(request->out, "X-Accel-Buffering: no\r\n");
+    FCGX_FPrintF(request->out, "Connection: keep-alive\r\n");
+    FCGX_FPrintF(request->out, "\r\n");
+    FCGX_FFlush(request->out);
+}
+
+/* Ecrit un champ SSE multi-lignes ("data: <ligne>\n" pour chaque ligne de
+ * 'value', puisque le format SSE interdit un saut de ligne litteral a
+ * l'interieur d'un seul champ 'data:'). 'json_notification' etant du
+ * JSON serialise sur une seule ligne par libyang (lyd_print_mem() sans
+ * LYD_PRINT_FORMAT/WITHSIBLINGS), ceci degenere en pratique en une seule
+ * ligne "data: {...}", mais reste correct si ce n'etait pas le cas. */
+static int sse_write_field(FCGX_Request *request, const char *field, const char *value)
+{
+    const char *p = value;
+    while (p) {
+        const char *nl = strchr(p, '\n');
+        int n;
+        if (nl) {
+            n = FCGX_FPrintF(request->out, "%s: %.*s\n", field, (int)(nl - p), p);
+            p = nl + 1;
+        } else {
+            n = FCGX_FPrintF(request->out, "%s: %s\n", field, p);
+            p = NULL;
+        }
+        if (n < 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int http_sse_send_event(FCGX_Request *request, const char *json_notification)
+{
+    if (sse_write_field(request, "data", json_notification) != 0) {
+        return -1;
+    }
+    if (FCGX_FPrintF(request->out, "\n") < 0) {
+        return -1;
+    }
+    /* RFC 8040 SS6.4 dernier paragraphe : le champ 'retry' peut etre
+     * envoye par le serveur (recommande cote client) ; ce squelette ne
+     * l'envoie pas (pas de reconnexion geree cote serveur au-dela de ce
+     * que FastCGI/nginx font deja par defaut). */
+    return FCGX_FFlush(request->out) < 0 ? -1 : 0;
+}
+
+int http_sse_send_comment(FCGX_Request *request, const char *comment)
+{
+    if (FCGX_FPrintF(request->out, ": %s\n\n", comment ? comment : "keep-alive") < 0) {
+        return -1;
+    }
+    return FCGX_FFlush(request->out) < 0 ? -1 : 0;
+}

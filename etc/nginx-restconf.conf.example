@@ -31,6 +31,16 @@ http {
             # RESTCONF n'utilise pas le cache HTTP standard (RFC 8040 SS5.5) ;
             # le serveur applicatif emet deja Cache-Control: no-cache.
             fastcgi_hide_header X-Powered-By;
+
+            # Notifications SSE (RFC 8040 SS3.8/SS6, /restconf/streams/<module>) :
+            # restconfd emet deja "X-Accel-Buffering: no" pour ces reponses
+            # precises (cf. http_sse_send_headers() dans src/http.c), mais
+            # fastcgi_buffering doit AUSSI etre desactive cote nginx pour que
+            # les evenements soient transmis au fil de l'eau plutot que
+            # retenus jusqu'a la fermeture (qui n'arrive jamais) de la reponse.
+            # Decommenter si votre nginx ne respecte pas X-Accel-Buffering :
+            # fastcgi_buffering off;
+            # fastcgi_read_timeout 1h;
         }
     }
 }

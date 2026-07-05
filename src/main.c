@@ -29,10 +29,16 @@ static void *worker_main(void *arg)
             struct http_response resp;
             http_response_init(&resp);
 
-            restconf_handle_request(&req, &resp);
+            restconf_handle_request(&request, &req, &resp);
 
-            int head = (req.method && strcmp(req.method, "HEAD") == 0);
-            http_response_flush(&request, &resp, head);
+            /* RFC 8040 SS3.8/SS6 : un flux SSE (restconf_handle_request()
+             * ayant deja ecrit directement sur 'request' et positionne
+             * resp.already_sent) n'a pas de reponse bufferisee a envoyer
+             * ici. */
+            if (!resp.already_sent) {
+                int head = (req.method && strcmp(req.method, "HEAD") == 0);
+                http_response_flush(&request, &resp, head);
+            }
 
             http_response_free(&resp);
             http_request_free(&req);

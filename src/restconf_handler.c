@@ -11,6 +11,8 @@
 #include <errno.h>
 #include <limits.h>
 #include <ctype.h>
+#include <pthread.h>
+#include <time.h>
 
 const char *g_restconf_root = "/restconf";
 
@@ -914,6 +916,175 @@ static void handle_operation_invoke(const struct http_request *req, struct http_
     }
 }
 
+/* --------------------------------------------------------------------
+ * Flux SSE (RFC 8040 SS3.8/SS6, RFC 8527 n'etend pas ce mecanisme) :
+ * {+restconf}/streams/<nom-de-flux>. Cf. feuille de route README.md,
+ * Phase 2.
+ * -------------------------------------------------------------------- */
+
+/* Etat partage entre le thread de la requete HTTP (bloque dans la boucle
+ * de handle_streams() ci-dessous) et le thread INTERNE cree par sysrepo
+ * pour l'abonnement (qui invoque sse_notif_cb() de maniere asynchrone,
+ * cf. sysrepo_backend_stream_subscribe()). Simple file FIFO protegee par
+ * mutex+condvar : le thread de requete la vide et ecrit chaque message
+ * en SSE des qu'il est reveille (notification recue) ou au bout de
+ * SSE_HEARTBEAT_SECONDS (heartbeat, sert aussi a detecter une
+ * deconnexion client via l'echec d'ecriture correspondant). */
+struct sse_ctx {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    char **pending;
+    size_t npending;
+    size_t cap;
+};
+
+#define SSE_HEARTBEAT_SECONDS 15
+
+static void sse_notif_cb(const char *json_notification, void *user_data)
+{
+    struct sse_ctx *ctx = user_data;
+    pthread_mutex_lock(&ctx->mutex);
+    if (ctx->npending == ctx->cap) {
+        size_t ncap = ctx->cap ? ctx->cap * 2 : 8;
+        char **np = realloc(ctx->pending, ncap * sizeof(char *));
+        if (np) {
+            ctx->pending = np;
+            ctx->cap = ncap;
+        }
+    }
+    if (ctx->npending < ctx->cap) {
+        char *copy = strdup(json_notification);
+        if (copy) {
+            ctx->pending[ctx->npending++] = copy;
+        }
+    }
+    /* Sinon (echec d'allocation) : notification silencieusement perdue --
+     * pas de meilleure option sans bloquer indefiniment le thread
+     * sysrepo qui invoque ce callback. */
+    pthread_cond_signal(&ctx->cond);
+    pthread_mutex_unlock(&ctx->mutex);
+}
+
+static void handle_streams(FCGX_Request *fcgx_request, const struct http_request *req,
+                            struct http_response *resp, const struct restconf_request_path *path)
+{
+    const char *allow = "GET, HEAD, OPTIONS";
+    if (is_options(req->method)) {
+        send_options(resp, allow);
+        return;
+    }
+    if (!is_get_or_head(req->method)) {
+        send_method_not_allowed(resp, allow,
+                                 "seules les methodes GET/HEAD sont supportees sur une "
+                                 "ressource de flux");
+        return;
+    }
+    if (validate_no_query_params(req, resp) != 0) {
+        return;
+    }
+    if (!path->stream_name || !*path->stream_name) {
+        send_error_status(resp, 400, "protocol", "invalid-value",
+                           "nom de flux manquant : attendu {+restconf}/streams/<nom>");
+        return;
+    }
+    if (!http_request_wants_event_stream(req)) {
+        /* RFC 8040 SS3.8 : une ressource de flux d'evenements n'a de sens
+         * qu'en SSE ; ce squelette rejette explicitement toute autre
+         * negociation plutot que de renvoyer un contenu vide ou de
+         * silencieusement ignorer la demande. */
+        send_error_status(resp, 406, "protocol", "invalid-value",
+                           "cette ressource ne peut etre recuperee qu'avec "
+                           "'Accept: text/event-stream' (RFC 8040 SS6.3)");
+        return;
+    }
+    if (strcmp(req->method, "HEAD") == 0) {
+        /* HEAD sur un flux de duree indefinie n'a pas vraiment de sens ;
+         * on renvoie les en-tetes sans ouvrir d'abonnement sysrepo. */
+        http_response_set_status(resp, 200, "OK");
+        http_response_add_header(resp, "Content-Type: text/event-stream");
+        http_response_set_body(resp, NULL, NULL, 0);
+        return;
+    }
+
+    struct sse_ctx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    pthread_mutex_init(&ctx.mutex, NULL);
+    pthread_cond_init(&ctx.cond, NULL);
+
+    struct sysrepo_stream_subscription *sub = NULL;
+    struct restconf_error err;
+    memset(&err, 0, sizeof(err));
+    if (sysrepo_backend_stream_subscribe(path->stream_name, sse_notif_cb, &ctx, &sub, &err) != 0) {
+        int status = 0;
+        if (err.error_tag && strcmp(err.error_tag, "invalid-value") == 0) {
+            status = 404;
+        }
+        send_restconf_error(resp, &err, status);
+        pthread_cond_destroy(&ctx.cond);
+        pthread_mutex_destroy(&ctx.mutex);
+        return;
+    }
+
+    /* A partir d'ici, la reponse est ecrite directement sur 'fcgx_request'
+     * (en-tetes SSE, puis chaque evenement au fil de l'eau) : main.c ne
+     * doit plus toucher a '*resp' au-dela de 'already_sent'. */
+    http_sse_send_headers(fcgx_request);
+    resp->already_sent = 1;
+
+    int alive = 1;
+    while (alive) {
+        pthread_mutex_lock(&ctx.mutex);
+        struct timespec deadline;
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_sec += SSE_HEARTBEAT_SECONDS;
+        while (ctx.npending == 0) {
+            int rc = pthread_cond_timedwait(&ctx.cond, &ctx.mutex, &deadline);
+            if (rc == ETIMEDOUT) {
+                break;
+            }
+        }
+        char **to_send = ctx.pending;
+        size_t nto_send = ctx.npending;
+        ctx.pending = NULL;
+        ctx.npending = 0;
+        ctx.cap = 0;
+        pthread_mutex_unlock(&ctx.mutex);
+
+        if (nto_send > 0) {
+            for (size_t i = 0; i < nto_send; i++) {
+                if (alive && http_sse_send_event(fcgx_request, to_send[i]) != 0) {
+                    /* Client deconnecte (echec d'ecriture, ex. EPIPE) :
+                     * on cesse d'ecrire mais on finit de liberer la file
+                     * courante avant de sortir de la boucle externe. */
+                    alive = 0;
+                }
+                free(to_send[i]);
+            }
+            free(to_send);
+        } else {
+            /* Timeout sans notification recue : heartbeat SSE (ligne de
+             * commentaire ignoree par tout client conforme), sert aussi
+             * a detecter une deconnexion pendant les periodes calmes. */
+            if (http_sse_send_comment(fcgx_request, "keep-alive") != 0) {
+                alive = 0;
+            }
+        }
+    }
+
+    /* sysrepo_backend_stream_unsubscribe() bloque jusqu'a ce qu'aucun
+     * appel a sse_notif_cb() ne soit plus en cours ni a venir pour cet
+     * abonnement : purger 'ctx.pending' seulement APRES cet appel evite
+     * toute fuite memoire due a une derniere notification arrivee juste
+     * avant le desabonnement. */
+    sysrepo_backend_stream_unsubscribe(sub);
+    for (size_t i = 0; i < ctx.npending; i++) {
+        free(ctx.pending[i]);
+    }
+    free(ctx.pending);
+    pthread_cond_destroy(&ctx.cond);
+    pthread_mutex_destroy(&ctx.mutex);
+}
+
 static void handle_operations(const struct http_request *req, struct http_response *resp,
                                const struct restconf_request_path *path)
 {
@@ -950,7 +1121,8 @@ static void handle_operations(const struct http_request *req, struct http_respon
                              req->method);
 }
 
-void restconf_handle_request(const struct http_request *req, struct http_response *resp)
+void restconf_handle_request(FCGX_Request *fcgx_request, const struct http_request *req,
+                              struct http_response *resp)
 {
     if (strcmp(req->path, "/.well-known/host-meta") == 0) {
         const char *allow = "GET, HEAD, OPTIONS";
@@ -992,6 +1164,9 @@ void restconf_handle_request(const struct http_request *req, struct http_respons
         break;
     case RESTCONF_RES_YANG_LIBRARY_VERSION:
         handle_yang_library_version(req, resp);
+        break;
+    case RESTCONF_RES_STREAMS:
+        handle_streams(fcgx_request, req, resp, &path);
         break;
     case RESTCONF_RES_DATA:
         if (is_restconf_monitoring_state_path(&path)) {

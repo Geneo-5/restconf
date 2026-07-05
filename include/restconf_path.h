@@ -22,6 +22,7 @@ enum restconf_resource_type {
     RESTCONF_RES_DATASTORE,            /* {+restconf}/ds/<name>[/<api-path>]   */
     RESTCONF_RES_OPERATIONS,           /* {+restconf}/operations[/<api-path>]  */
     RESTCONF_RES_YANG_LIBRARY_VERSION, /* {+restconf}/yang-library-version     */
+    RESTCONF_RES_STREAMS,              /* {+restconf}/streams/<stream-name>    */
     RESTCONF_RES_UNKNOWN,
 };
 
@@ -31,6 +32,15 @@ struct restconf_request_path {
     /* Pour RESTCONF_RES_DATASTORE : identityref brut tel que recu dans
      * l'URI, ex. "ietf-datastores:operational". */
     char *datastore_identityref;
+
+    /* Pour RESTCONF_RES_STREAMS : nom du flux demande (RFC 8040 SS3.8),
+     * deja percent-decode. Ce squelette fait correspondre un nom de flux
+     * directement a un nom de module YANG portant des notifications (cf.
+     * sysrepo_backend_stream_subscribe()) ; ce n'est PAS un "api-path" au
+     * sens SS3.5.3.1 (pas de segments/cles), d'ou ce champ dedie plutot
+     * que 'segments'. NULL si {+restconf}/streams est demande sans nom de
+     * flux (-> 400 invalid-value, cf. restconf_path_parse()). */
+    char *stream_name;
 
     struct restconf_path_segment *segments;
     size_t nsegments;

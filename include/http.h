@@ -39,6 +39,14 @@ struct http_response {
     char *extra_headers;      /* lignes "Nom: valeur\r\n" supplementaires, ou NULL */
     char *body;                /* alloue, ou NULL                       */
     size_t body_len;
+
+    /* Positionne a 1 par restconf_handle_request() quand la reponse a
+     * deja ete entierement ecrite directement sur le FCGX_Request (cas
+     * d'un flux SSE, RFC 8040 SS3.8/SS6 : en-tetes + evenements envoyes
+     * au fil de l'eau, pas de corps unique a bufferiser dans 'body'). Le
+     * boucle principale (main.c) DOIT alors sauter l'appel a
+     * http_response_flush() pour cette requete. */
+    int already_sent;
 };
 
 /* Construit une struct http_request a partir d'une requete FastCGI en
@@ -64,5 +72,27 @@ void http_response_flush(FCGX_Request *request, const struct http_response *resp
  * Le resultat est alloue et doit etre libere par l'appelant. '+' n'est
  * PAS traite comme un espace (ce n'est pas une query "x-www-form"). */
 char *http_percent_decode(const char *s, size_t len);
+
+/* --------------------------------------------------------------------
+ * Server-Sent Events (RFC 8040 SS3.8/SS6.2/SS6.3, W3C SSE)
+ * -------------------------------------------------------------------- */
+
+/* Indique si le client demande un flux SSE via l'en-tete 'Accept' (media
+ * type "text/event-stream", RFC 8040 SS6.3). */
+int http_request_wants_event_stream(const struct http_request *req);
+
+/* Envoie directement sur 'request' les en-tetes HTTP d'un flux SSE (RFC
+ * 8040 SS6.3/6.4). N'ecrit PAS de corps : chaque evenement est ensuite
+ * envoye separement via http_sse_send_event()/http_sse_send_comment(). */
+void http_sse_send_headers(FCGX_Request *request);
+
+/* Envoie un evenement SSE dont le champ 'data' est 'json_notification'
+ * suivi d'une ligne vide (RFC 8040 SS6.4). Renvoie 0 en cas de succes,
+ * -1 si l'ecriture a echoue (client deconnecte). */
+int http_sse_send_event(FCGX_Request *request, const char *json_notification);
+
+/* Envoie une ligne de commentaire SSE (heartbeat), memes conventions de
+ * retour que http_sse_send_event(). */
+int http_sse_send_comment(FCGX_Request *request, const char *comment);
 
 #endif /* RESTCONFD_HTTP_H */

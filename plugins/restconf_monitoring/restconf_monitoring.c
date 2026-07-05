@@ -129,6 +129,99 @@ static int restconf_monitoring_capabilities_cb(sr_session_ctx_t *session, uint32
     return SR_ERR_OK;
 }
 
+/* Callback fournisseur de donnees operationnelles pour le sous-arbre
+ * /ietf-restconf-monitoring:restconf-state/streams (RFC 8040 SS9.2/SS3.8),
+ * desormais alimente puisque restconfd sait servir des flux SSE (cf.
+ * src/restconf_handler.c:handle_streams(), README.md Phase 2). Un flux
+ * est annonce pour chaque module YANG IMPLEMENTE portant au moins une
+ * notification (correspondance 1:1 module<->flux, cf.
+ * sysrepo_backend_stream_exists() dans restconfd, qu'il faut garder
+ * coherent avec ce qui est annonce ici -- meme limite de couplage manuel
+ * entre binaires que pour CAPABILITY_URIS ci-dessus). N'annonce que
+ * l'encodage JSON (seul supporte par restconfd tant que la Phase 3 "XML
+ * Full Support" du README n'est pas faite).
+ *
+ * Limite assumee : la racine "{+restconf}" est ici supposee etre
+ * "/restconf" (valeur par defaut de restconfd, cf. g_restconf_root dans
+ * src/restconf_handler.c) puisque ce plugin tourne dans un processus
+ * SEPARE (sysrepo-plugind) qui n'a pas acces a la configuration reelle de
+ * restconfd. A corriger si restconfd est deploye avec une autre racine. */
+#define RESTCONFD_STREAMS_ROOT "/restconf/streams/"
+
+static int restconf_monitoring_streams_cb(sr_session_ctx_t *session, uint32_t sub_id,
+                                          const char *module_name, const char *path,
+                                          const char *request_xpath, uint32_t request_id,
+                                          struct lyd_node **parent, void *private_data)
+{
+    const struct ly_ctx *ly_ctx;
+    uint32_t idx = 0;
+    const struct lys_module *mod;
+    int first = 1;
+
+    (void)sub_id;
+    (void)module_name;
+    (void)path;
+    (void)request_xpath;
+    (void)request_id;
+    (void)private_data;
+
+    ly_ctx = sr_acquire_context(sr_session_get_connection(session));
+    if (!ly_ctx) {
+        return SR_ERR_INTERNAL;
+    }
+
+    /* XXX-LY-API : ly_ctx_get_module_iter() parcourt TOUS les modules
+     * charges (implementes ou simplement importes) ; on ne retient que
+     * ceux effectivement implementes ET portant au moins une notification
+     * compilee (struct lysc_module::notifs). Verifiez ces deux fonctions
+     * contre libyang/context.h et libyang/tree_schema.h si votre version
+     * differe (meme prudence qu'ailleurs dans ce fichier). */
+    while ((mod = ly_ctx_get_module_iter(ly_ctx, &idx))) {
+        if (!mod->implemented || !mod->compiled || !mod->compiled->notifs ||
+            LY_ARRAY_COUNT(mod->compiled->notifs) == 0) {
+            continue;
+        }
+
+        char location[256];
+        snprintf(location, sizeof(location), "%s%s", RESTCONFD_STREAMS_ROOT, mod->name);
+
+        char name_path[512];
+        snprintf(name_path, sizeof(name_path),
+                 "/ietf-restconf-monitoring:restconf-state/streams/stream[name='%s']/name",
+                 mod->name);
+        char desc_path[512];
+        snprintf(desc_path, sizeof(desc_path),
+                 "/ietf-restconf-monitoring:restconf-state/streams/stream[name='%s']/description",
+                 mod->name);
+        char access_path[512];
+        snprintf(access_path, sizeof(access_path),
+                 "/ietf-restconf-monitoring:restconf-state/streams/stream[name='%s']"
+                 "/access[encoding='json']/location",
+                 mod->name);
+
+        LY_ERR lyrc;
+        lyrc = lyd_new_path(first ? NULL : *parent, first ? ly_ctx : NULL, name_path, mod->name, 0,
+                            parent);
+        first = 0;
+        if (lyrc == LY_SUCCESS) {
+            lyrc = lyd_new_path(*parent, NULL, desc_path, mod->name, 0, NULL);
+        }
+        if (lyrc == LY_SUCCESS) {
+            lyrc = lyd_new_path(*parent, NULL, access_path, location, 0, NULL);
+        }
+        if (lyrc != LY_SUCCESS) {
+            SRPLG_LOG_ERR("restconf-monitoring",
+                          "echec de construction de restconf-state/streams/stream[%s]",
+                          mod->name);
+            sr_release_context(sr_session_get_connection(session));
+            return SR_ERR_INTERNAL;
+        }
+    }
+
+    sr_release_context(sr_session_get_connection(session));
+    return SR_ERR_OK;
+}
+
 int sr_plugin_init_cb(sr_session_ctx_t *session, void **private_data)
 {
     int rc;
@@ -145,6 +238,21 @@ int sr_plugin_init_cb(sr_session_ctx_t *session, void **private_data)
     if (rc != SR_ERR_OK) {
         SRPLG_LOG_ERR("restconf-monitoring",
                       "sr_oper_get_subscribe(restconf-state/capabilities) a echoue: %s",
+                      sr_strerror(rc));
+        return rc;
+    }
+
+    /* RFC 8040 SS9.2 : restconf-state/streams, desormais que restconfd
+     * sait livrer des flux SSE (README.md Phase 2). Reutilise le meme
+     * contexte de subscription '&g_sub' -- sr_oper_get_subscribe() y
+     * ajoute simplement une nouvelle subscription, cf. doc sysrepo
+     * (parametre 'subscription' partage entre appels successifs). */
+    rc = sr_oper_get_subscribe(session, "ietf-restconf-monitoring",
+                               "/ietf-restconf-monitoring:restconf-state/streams",
+                               restconf_monitoring_streams_cb, NULL, SR_SUBSCR_CTX_REUSE, &g_sub);
+    if (rc != SR_ERR_OK) {
+        SRPLG_LOG_ERR("restconf-monitoring",
+                      "sr_oper_get_subscribe(restconf-state/streams) a echoue: %s",
                       sr_strerror(rc));
         return rc;
     }

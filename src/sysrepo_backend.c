@@ -2300,3 +2300,202 @@ int sysrepo_backend_get_xml(int sr_ds, const struct restconf_path_segment *segme
  * schema parsing with LYD_XML flag directly on the schema context.
  * -------------------------------------------------------------------- */
 #endif /* #if 0 : bloc XML casse desactive, cf. note plus haut */
+
+/* --------------------------------------------------------------------
+ * Notifications / flux SSE (RFC 8040 SS3.8/SS6, cf. README.md Phase 2)
+ * -------------------------------------------------------------------- */
+
+int sysrepo_backend_stream_exists(const char *module_name)
+{
+    if (!module_name || !*module_name) {
+        return 0;
+    }
+
+    const struct ly_ctx *ctx = sr_acquire_context(g_conn);
+    if (!ctx) {
+        return 0;
+    }
+
+    const struct lys_module *mod = ly_ctx_get_module_implemented(ctx, module_name);
+    int has_notif = 0;
+    /* XXX-LY-API : struct lysc_module::notifs est le tableau (sized array,
+     * cf. LY_ARRAY_COUNT()) des notifications de haut niveau compilees
+     * pour ce module. Verifiez ce champ contre libyang/tree_schema.h si
+     * votre version differe (marqueur deja utilise ailleurs dans ce
+     * fichier pour les memes raisons). */
+    if (mod && mod->compiled && mod->compiled->notifs) {
+        has_notif = (LY_ARRAY_COUNT(mod->compiled->notifs) > 0);
+    }
+
+    sr_release_context(g_conn);
+    return has_notif;
+}
+
+/* Formate 'ts' (ou l'heure courante si NULL) en RFC 3339 UTC sans
+ * fraction de seconde, p.ex. "2013-12-21T00:01:00Z" (RFC 8040 SS6.4,
+ * exemple Appendix -- meme format que celui des exemples de la RFC).
+ * Renvoie une chaine allouee, ou NULL en cas d'echec d'allocation. */
+static char *format_rfc3339(const struct timespec *ts)
+{
+    struct tm tm_utc;
+    time_t sec = ts ? ts->tv_sec : time(NULL);
+    gmtime_r(&sec, &tm_utc);
+    char *buf = malloc(32);
+    if (!buf) {
+        return NULL;
+    }
+    size_t n = strftime(buf, 32, "%Y-%m-%dT%H:%M:%S", &tm_utc);
+    snprintf(buf + n, 32 - n, "Z");
+    return buf;
+}
+
+struct sysrepo_stream_subscription {
+    sr_session_ctx_t *session;
+    sr_subscription_ctx_t *sub_ctx;
+    sysrepo_notif_cb cb;
+    void *user_data;
+};
+
+/* XXX-SR-API : signature de sr_event_notif_tree_cb (sysrepo >= 2.x). Sous
+ * une version plus ancienne, adaptez le type du 4e parametre ('notif',
+ * ici 'const struct lyd_node *') et la maniere de recuperer le nom du
+ * module/de l'evenement le cas echeant. */
+static void stream_notif_cb(sr_session_ctx_t *session, uint32_t sub_id,
+                            const sr_ev_notif_type_t notif_type, const struct lyd_node *notif,
+                            struct timespec *timestamp, void *private_data)
+{
+    (void)session;
+    (void)sub_id;
+    struct sysrepo_stream_subscription *sub = private_data;
+    if (!sub || !sub->cb) {
+        return;
+    }
+    /* Pas de rejeu demande (start_time/stop_time = 0 a la souscription,
+     * cf. sysrepo_backend_stream_subscribe()) : seules les notifications
+     * temps reel sont converties/livrees ; SR_EV_NOTIF_REPLAY(_COMPLETE)/
+     * SR_EV_NOTIF_STOP sont ignorees. */
+    if (notif_type != SR_EV_NOTIF_REALTIME || !notif) {
+        return;
+    }
+
+    /* Serialise UNIQUEMENT le sous-arbre de la notification (racine
+     * "module:event-name" incluse) en JSON RFC 7951, sans mise en forme
+     * (une seule ligne, plus simple a encoder comme champ SSE "data:"). */
+    char *fragment = NULL;
+    if (lyd_print_mem(&fragment, notif, LYD_JSON, 0) != 0 || !fragment) {
+        free(fragment);
+        return;
+    }
+
+    /* 'fragment' est de la forme {"module:event-name":{...}} ; on retire
+     * les accolades englobantes pour en reinserer le contenu tel quel
+     * comme membre de l'objet "ietf-restconf:notification" (RFC 8040
+     * SS6.4, exemple Appendix). */
+    size_t flen = strlen(fragment);
+    const char *inner = fragment;
+    size_t inner_len = flen;
+    if (flen >= 2 && fragment[0] == '{' && fragment[flen - 1] == '}') {
+        inner = fragment + 1;
+        inner_len = flen - 2;
+    }
+
+    char *event_time = format_rfc3339(timestamp);
+    const char *event_time_str = event_time ? event_time : "1970-01-01T00:00:00Z";
+
+    size_t need = inner_len + strlen(event_time_str) + 64;
+    char *json = malloc(need);
+    if (json) {
+        snprintf(json, need, "{\"ietf-restconf:notification\":{\"eventTime\":\"%s\",%.*s}}",
+                 event_time_str, (int)inner_len, inner);
+        sub->cb(json, sub->user_data);
+        free(json);
+    }
+
+    free(event_time);
+    free(fragment);
+}
+
+int sysrepo_backend_stream_subscribe(const char *module_name, sysrepo_notif_cb cb,
+                                     void *user_data, struct sysrepo_stream_subscription **out,
+                                     struct restconf_error *err)
+{
+    *out = NULL;
+
+    if (!sysrepo_backend_stream_exists(module_name)) {
+        err->error_type = strdup("protocol");
+        err->error_tag = strdup("invalid-value");
+        err->error_message = module_name
+            ? NULL /* rempli ci-dessous avec le nom, cf. restconf_error_single_json ailleurs */
+            : strdup("nom de flux manquant");
+        if (module_name) {
+            size_t need = strlen(module_name) + 64;
+            char *msg = malloc(need);
+            if (msg) {
+                snprintf(msg, need, "flux d'evenements inconnu ou sans notification : %s",
+                         module_name);
+            }
+            err->error_message = msg;
+        }
+        return -1;
+    }
+
+    struct sysrepo_stream_subscription *sub = calloc(1, sizeof(*sub));
+    if (!sub) {
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("memoire insuffisante");
+        return -1;
+    }
+    sub->cb = cb;
+    sub->user_data = user_data;
+
+    /* Session sysrepo dediee (cf. sysrepo_backend.h) : la datastore
+     * choisie ici n'a pas d'importance pour un abonnement notification
+     * (sr_notif_subscribe_tree() ne lit/n'ecrit aucune donnee via cette
+     * session), <operational> est utilisee par convention. */
+    int rc = sr_session_start(g_conn, SR_DS_OPERATIONAL, &sub->session);
+    if (rc != SR_ERR_OK) {
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        char msg[256];
+        snprintf(msg, sizeof(msg), "sr_session_start: %s", sr_strerror(rc));
+        err->error_message = strdup(msg);
+        free(sub);
+        return -1;
+    }
+
+    /* start_time=0, stop_time=0 : livraison temps reel uniquement, pas de
+     * rejeu du journal de notifications (RFC 8040 SS4.8.7/4.8.8, deja
+     * rejetes explicitement pour les ressources de donnees classiques,
+     * cf. README.md "Rejet explicite" -- coherence voulue). */
+    rc = sr_notif_subscribe_tree(sub->session, module_name, NULL, 0, 0, stream_notif_cb, sub, 0,
+                                 &sub->sub_ctx);
+    if (rc != SR_ERR_OK) {
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        char msg[256];
+        snprintf(msg, sizeof(msg), "sr_notif_subscribe_tree(%s): %s", module_name,
+                 sr_strerror(rc));
+        err->error_message = strdup(msg);
+        sr_session_stop(sub->session);
+        free(sub);
+        return -1;
+    }
+
+    *out = sub;
+    return 0;
+}
+
+void sysrepo_backend_stream_unsubscribe(struct sysrepo_stream_subscription *sub)
+{
+    if (!sub) {
+        return;
+    }
+    if (sub->sub_ctx) {
+        sr_unsubscribe(sub->sub_ctx);
+    }
+    if (sub->session) {
+        sr_session_stop(sub->session);
+    }
+    free(sub);
+}

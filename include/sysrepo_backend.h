@@ -272,4 +272,56 @@ void sysrepo_backend_get_datastore_revision(int sr_ds, char **etag_out, char **l
 int sysrepo_backend_check_preconditions(int sr_ds, const char *if_match,
                                         const char *if_unmodified_since);
 
+/* --------------------------------------------------------------------
+ * Notifications / flux SSE (RFC 8040 SS3.8/SS6, RFC 8527 ne modifie pas
+ * ce mecanisme). Cf. feuille de route README.md, Phase 2.
+ * -------------------------------------------------------------------- */
+
+/* Indique si 'module_name' est un module implemente par sysrepo/libyang
+ * ET declare au moins une notification ("notification-stmt", RFC 7950
+ * SS7.16). Utilise pour valider un nom de flux (RFC 8040 SS3.8) avant de
+ * s'y abonner : ce squelette fait correspondre un flux directement a un
+ * module YANG plutot que d'implementer une liste de flux nommes
+ * arbitrairement (une seule notification 'NETCONF' generique comme le
+ * suggere RFC 8040 SS6.3.1 n'a pas d'equivalent direct chez sysrepo, qui
+ * route par module). Renvoie 1 si oui, 0 sinon (module inconnu ou sans
+ * aucune notification). */
+int sysrepo_backend_stream_exists(const char *module_name);
+
+/* Callback invoque a chaque notification recue pour le flux souscrit,
+ * depuis le thread INTERNE cree par sysrepo pour cet abonnement (PAS le
+ * thread de la requete HTTP qui a appele sysrepo_backend_stream_subscribe() :
+ * l'appelant DOIT donc proteger tout etat partage, ex. le descripteur
+ * FastCGI de la requete, par un mecanisme de synchronisation adapte,
+ * cf. restconf_handler.c). 'json_notification' est l'enveloppe JSON
+ * complete (RFC 8040 SS6.4 : "ietf-restconf:notification"/"eventTime"/
+ * "<module>:<event>"), pretee (NE PAS la liberer ; copiez-la si vous devez
+ * la conserver au-dela de l'appel). */
+typedef void (*sysrepo_notif_cb)(const char *json_notification, void *user_data);
+
+struct sysrepo_stream_subscription;
+
+/* S'abonne aux notifications du module 'module_name' (RFC 8040 SS6.1/
+ * SS6.2), livraison temps reel uniquement (pas de rejeu : ce squelette
+ * n'expose pas les parametres "start-time"/"stop-time", RFC 8040
+ * SS4.8.7/4.8.8, deja rejetes explicitement ailleurs dans ce projet, cf.
+ * README.md "Rejet explicite"). Cree une session sysrepo DEDIEE a cet
+ * abonnement (independante de la connexion partagee utilisee ailleurs
+ * dans ce fichier) car sa duree de vie doit correspondre a celle du flux
+ * SSE ouvert, pas a celle du processus entier.
+ *
+ * Retourne 0 et remplit *out en cas de succes (a liberer avec
+ * sysrepo_backend_stream_unsubscribe()) ; -1 + *err sinon
+ * ("invalid-value" si le module n'a pas de notifications,
+ * "operation-failed" en cas d'echec sysrepo). */
+int sysrepo_backend_stream_subscribe(const char *module_name, sysrepo_notif_cb cb,
+                                     void *user_data, struct sysrepo_stream_subscription **out,
+                                     struct restconf_error *err);
+
+/* Desabonne et libere '*sub' (NULL accepte, no-op). A appeler UNE FOIS
+ * que le thread de requete HTTP a fini d'utiliser le flux SSE : aucune
+ * notification supplementaire ne sera livree apres cet appel, qui peut
+ * bloquer brievement le temps que sysrepo acheve un callback en cours. */
+void sysrepo_backend_stream_unsubscribe(struct sysrepo_stream_subscription *sub);
+
 #endif /* RESTCONFD_SYSREPO_BACKEND_H */

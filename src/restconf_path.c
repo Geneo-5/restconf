@@ -197,6 +197,27 @@ int restconf_path_parse(const char *restconf_root, const char *raw_path,
         return 0;
     }
 
+    if (first_len == 7 && strncmp(p, "streams", 7) == 0) {
+        /* RFC 8040 SS3.8 : un flux d'evenements n'est pas une ressource de
+         * donnees YANG (pas de grammaire api-path/predicats de cle) -- on
+         * se contente donc de decoder le segment suivant tel quel comme
+         * nom de flux, sans passer par parse_api_path(). Un segment
+         * supplementaire ('rest' non vide au-dela du nom) est rejete. */
+        out->type = RESTCONF_RES_STREAMS;
+        if (!*rest) {
+            out->stream_name = NULL;
+            return 0;
+        }
+        const char *slash2 = strchr(rest, '/');
+        size_t name_len = slash2 ? (size_t)(slash2 - rest) : strlen(rest);
+        if (slash2 && *(slash2 + 1)) {
+            set_invalid_value(err, "'/restconf/streams/<nom>' ne prend pas de sous-chemin");
+            return -1;
+        }
+        out->stream_name = http_percent_decode(rest, name_len);
+        return 0;
+    }
+
     set_invalid_value(err, "ressource RESTCONF inconnue");
     out->type = RESTCONF_RES_UNKNOWN;
     return -1;
@@ -208,6 +229,7 @@ void restconf_path_free(struct restconf_request_path *p)
         return;
     }
     free(p->datastore_identityref);
+    free(p->stream_name);
     for (size_t i = 0; i < p->nsegments; i++) {
         free(p->segments[i].module);
         free(p->segments[i].name);

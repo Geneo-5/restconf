@@ -39,12 +39,13 @@ Serveur léger d'implémentation de **RESTCONF** basés sur les RFC IETF 8040 et
 | **Conditionals** | ✅ Done | `ETag`, `Last-Modified`, `If-Match`, `If-Unmodified-Since` au niveau du datastore entier |
 | **RPC Operations** | ✅ Done | POST sur `/{+restconf}/operations/<module>:<rpc>` → `sr_rpc_send_tree()` avec recherche LYS_OUTPUT |
 | **Actions YANG** | ✅ Done | Invocation sous `/{+restconf}/ds/ietf-datastores:operational` via `sysrepo_backend_is_action_path()`, rejet ailleurs |
+| **Notifications SSE** | ✅ Done (v1) | GET `/{+restconf}/streams/<module>` avec `Accept: text/event-stream` → `sr_notif_subscribe_tree()` ; temps réel uniquement, JSON uniquement, un thread FastCGI par flux ouvert (cf. Phase 2 pour les limites restantes) |
 
 ### Fonctionnalités Non Implémentées
 
 | Fonctionnalité | Statut | Notes |
 |----------------|--------|-------|
-| Notifications SSE (Server-Sent Events) | 🔵 Pending | In progress ; implémentation `sr_event_notif_subscribe_tree()` en cours |
+| Notifications SSE (Server-Sent Events) | ✅ Done (v1) | `{+restconf}/streams/<module>` + `sr_notif_subscribe_tree()` ; un flux = un module YANG ; pas de rejeu (`start-time`/`stop-time` non supportes) ; discovery via `restconf-state/streams` (plugin) |
 | XML Full Support | ⬜ Not Started | Media type negotiation, YANG XML serializer (`lyd_print_mem`), RESTCONF ops XML |
 | Authentication/NACM | ⬜ Planned | Framework TLS + NACM (`sr_session_set_user`, `SR_SESS_ENABLE_NACM`), JWT handling (RFC7519/8725/7797) |
 
@@ -158,13 +159,78 @@ docker run --rm -p 80:80 restconfd
 ---
 
 ## Feuille de Route
+### Analyse de Cohérence Implémentation vs RFC
+
+| RFC | Score de cohérence | Incohérences critiques |
+|-----|--------------------|------------------------|
+| **RFC 8040** | ✅ ~95% | Mineures (SS3.6, SS4.5) |
+| **RFC 8527** | ⚠️ ~70-80% | Actions Yang restriction, with-origin, ETag granulaire |
+
+---
+
+## Détails d'Incohérences par RFC
+
+### 🔴 **RFC 8040 : Points d'attention potentiels**
+
+| Zone RFC | Observation | Impact |
+|----------|-------------|--------|
+| **SS3.6 (Operations)** | Actions invokées sous `/data/<...>/<action>` vs ops dans `/operations` | Note explicite en code, architecture sysrepo ne sépare pas bien les deux |
+| **SS4.5 (Creation)** | POST sur root datastore → `201 Created` requis | Implémentation peut envoyer `204 No Content` selon le cas |
+
+### 🔴 **RFC 8527 : NMDA Extensions — Incohérences identifiées**
+
+| RFC 8527 Section | Exigence | État implémentation |
+|------------------|----------|--------------------|
+| **SS3.1** | Actions YANG *uniquement* sur `/ds/ietf-datastores:operational` | ⚠️ Partiel : code dit "n'autorise donc pas..." mais actions restent invocables ailleurs |
+| **SS3.2.1** | `"with-defaults"` doit reporter les par défaut de *chaque* datastore (trim,report-all,master) | ✅ Implémentation basique |
+| **SS3.2.2** | `"with-origin"` doit suivre le chemin d'origine du tree (`sr_get_oper_flag_t`) | ✅ Implémentée mais pas de validation stricte du flag sysrepo |
+| **SS3.4.1-3.4.1.2** | ETag/Last-Modified au niveau de la *ressource*, pas seulement du datastore entier | ❌ Pas implémentée : valeurs partagées entre toutes les ressources |
+
+---
+
+### 🔴 **Points d'incohérence critiques (RFC 8527)**
+
+#### 1. **Actions YANG hors operational**
+- **RFC exige** : Actions uniquement invocabiles sous `{+restconf}/ds/ietf-datastores:operational`
+- **Code actuel** : Commentaire dit "n'autorise donc pas...", mais `sr_backend_is_action_path()` n'est *pas* vérifié avant les ops
+
+#### 2. **with-origin selon datastore**
+- **RFC exige** : Pour `/running`, le chemin d'origine diffère de `/operational` (car running = config)
+- **Code actuel** : `with-origin` force systématiquement `/operational` (lignes ~519-520 de sysrepo_backend.c)
+
+#### 3. **ETag par ressource vs datastore**
+- **RFC exige** : ETag unique par ressource individuelle, pas seulement par datastore global
+- **Code actuel** : Même ETag utilisé pour toutes les ressources d'un même datastore
+
+---
+
+### ✅ **RFC 8040 / RFC 8527 : Implémentation correcte**
+
+| Fonctionnalité | Statut |
+|----------------|--------|
+| Root resource discovery | ✅ Correct |
+| Datastore CRUD sur `/ds/ietf-datastores:<name>` | ✅ Correct |
+| Query params: depth, fields, with-defaults, with-origin | ✅ Correct |
+| Yang Library Version resource | ✅ Correct |
+| Operations resource (POST / <module>:<rpc>) | ✅ Correct |
+| Error mapping table (RFC 8040 SS7) | ✅ Correct |
+
+---
+
+## Priorités de Correction RFC 8527
+
+| Priorité | Point à corriger | Effort estimé |
+|----------|------------------|---------------|
+| 🔴 Critical | Actions Yang restriction stricte (vérifier `sr_backend_is_action_path()` avant tout op) | 1-2 jours |
+| 🟡 High | with-origin behaviour selon datastore (running vs operational) | 1 jour |
+| 🟡 High | ETag granulaire par ressource (pas seulement par datastore global) | 2-3 jours |
 
 ### Phase 1: Core RESTCONF (✅ COMPLETED)
 
 | # | Tâche | Effort | Notes |
 |---|-------|--------|-------|
 | 1 | Implémentation GET/HEAD sur ressources RESTCONF | ✅ Done | Support RFC 8040 SS4.x pour les endpoints de base |
-| 2 | Implémentation CRUD完整 (POST/PUT/PATCH/DELETE) | ✅ Done | Support complet avec gestion des erreurs selon RFC 8040 |
+| 2 | Implémentation CRUD (POST/PUT/PATCH/DELETE) | ✅ Done | Support complet avec gestion des erreurs selon RFC 8040 |
 | 3 | Intégration sysrepo backend (get_set_tree, sr_rpc_send_tree, actions) | ✅ Done | Mappage correct des chemins YANG vers datastores |
 | 4 | Support de paramètres RESTCONF (depth/fields/with-defaults/with-origin) | ✅ Done | Validation et filtrage selon RFC 8040 |
 | 5 | Intégration fcgi2 pour transport HTTP | ✅ Done | Utiliser API FCGX_* via backend http_catch |
@@ -172,16 +238,19 @@ docker run --rm -p 80:80 restconfd
 
 **Total Phase 1:** ~0 jour (complet)
 
-### Phase 2: Notifications SSE (🔵 IN PROGRESS)
+### Phase 2: Notifications SSE (🟡 EN COURS — v1 fonctionnelle)
 
 | # | Tâche | Effort | Status | Notes |
 |---|-------|--------|--------|-------|
-| 7 | Implémentation `sr_event_notif_subscribe_tree()` | 🟡 In Progress | 2-3 jours | Subscription à Tree level avec gestion des callbacks |
-| 8 | Gestion du buffering pour haut volume | 🟡 Pending | 1-2 jours | Tests de charge et ajustement mémoire |
-| 9 | Conversion JSON ↔ XML notifications | 🔵 Pending | 1-2 jours | Support multi-format selon `Accept` header |
-| 10 | Intégration avec sysrepo SSE abonnements | ⬜ Pending | ? jour | Configuration des paramètres de subscription |
+| 7 | Implémentation `sr_notif_subscribe_tree()` | ✅ Done | ~1 jour | `sysrepo_backend_stream_subscribe()`/`_unsubscribe()` (src/sysrepo_backend.c) : session sysrepo dédiée par flux, callback `stream_notif_cb()` convertit chaque notification en JSON enveloppe RFC 8040 SS6.4 |
+| 7bis | Endpoint HTTP `{+restconf}/streams/<module>` + boucle SSE | ✅ Done | ~1 jour | `handle_streams()` (src/restconf_handler.c) : file FIFO mutex+condvar entre le thread sysrepo (callback) et le thread de requête FastCGI (écriture SSE), heartbeat 15s (`http_sse_send_comment()`) pour détecter une déconnexion client |
+| 7ter | Discovery `restconf-state/streams` | ✅ Done | ~0.5 jour | Plugin `restconf_monitoring` (`restconf_monitoring_streams_cb()`) : un flux par module YANG implementé portant des notifications ; racine `{+restconf}` supposée fixe (`/restconf`, cf. limite documentée dans le plugin) |
+| 8 | Gestion du buffering pour haut volume | 🟡 Pending | 1-2 jours | La file FIFO actuelle n'est pas bornée (croissance illimitée si le client lit plus lentement que les notifications n'arrivent) ; tests de charge et ajustement mémoire à faire |
+| 9 | Conversion JSON ↔ XML notifications | 🔵 Pending | 1-2 jours | Dépend de la Phase 3 (XML Full Support) ; `handle_streams()` n'accepte pour l'instant que `Accept: text/event-stream` avec charge JSON |
+| 10 | Rejeu ("start-time"/"stop-time") | ⬜ Pending | 2-3 jours | `sr_notif_subscribe_tree()` est appelé avec `start_time=stop_time=0` (temps réel uniquement) ; brancher les query parameters RFC 8040 SS4.8.7/4.8.8 (actuellement rejetés partout ailleurs dans ce serveur) demanderait de revoir ce choix |
+| 11 | Un seul thread FastCGI par flux SSE ouvert | ⚠️ Limite connue | - | Ce squelette garde un thread worker FastCGI bloqué par connexion SSE (pas de libev malgré la dépendance listée en tête de ce fichier) : le nombre de flux concurrents est donc plafonné par `g_nthreads` (argv[2] de restconfd, défaut 4) moins les threads nécessaires aux requêtes RESTCONF classiques -- à revoir (event loop dédiée) avant un usage en production avec beaucoup de clients SSE simultanés |
 
-**Total Phase 2:** ~5 jours estimé
+**Total Phase 2 restant:** ~5-7 jours estimé (buffering, rejeu, event loop dédiée ; XML reporté en Phase 3)
 
 ### Phase 3: XML Full Support (⬜ PENDING)
 
@@ -229,18 +298,18 @@ docker run --rm -p 80:80 restconfd
 | Phase | Effort estimé | Priorité | Status |
 |-------|---------------|----------|--------|
 | Phase 1: Core | ✅ 0 jour | 🔴 Top Priority | **Completed** |
-| Phase 2: SSE | ~5 jours | 🟡 High | **In Progress** |
+| Phase 2: SSE | ~5-7 jours restants | 🟡 High | **v1 fonctionnelle** (flux temps réel JSON, discovery) ; durcissement restant (buffering, rejeu, event loop dédiée) |
 | Phase 3: XML | ~6 jours | 🟡 Medium | ⬜ Pending |
 | Phase 4: Advanced | ~10 jours | 🔴 Critical | ⬜ Pending |
 | Phase 5: Verification | ~13 jours | 🟢 Low | ⬜ Pending |
 | Phase 6: Documentation | ~7 jours | 🟡 Medium | ⬜ Pending |
 
-**Total estimé:** **36-44 jours** pour completion complète du serveur RESTCONF.
+**Total estimé restant:** **~41-43 jours** pour completion complète du serveur RESTCONF (contre 36-44 jours avant la Phase 2 v1 ; le total global n'a pas beaucoup baisse car la Phase 2 n'est fonctionnelle qu'en v1, cf. items 8/9/10/11 encore ouverts).
 
 ---
 
 ## Actions Prioritaires (Next Sprint)
 
-1. **Priorité 1 🔴**: Développer notifications SSE (`sr_event_notif_subscribe_tree()`)
+1. **Priorité 1 🟡**: Durcir les notifications SSE : file bornée (item 8), event loop dédiée au lieu d'un thread FastCGI par flux (item 11) -- la v1 fonctionnelle (`sr_notif_subscribe_tree()` + `{+restconf}/streams/<module>`) est en place
 2. **Priorité 2 🟡**: Auth/NACM framework integration
 3. **Priorité 3 🟢**: Sample applications + documentation utilisateur
