@@ -1,4 +1,18 @@
 /*
+ * _XOPEN_SOURCE (>= 500) est necessaire pour que <time.h> declare
+ * strptime() (utilisee par parse_http_date() ci-dessous, RFC 7232 SS3.4)
+ * -- ni le mode gnu11 par defaut de ce projet (cf. CMakeLists.txt) ni
+ * _DEFAULT_SOURCE (implicite sous glibc en l'absence d'autre macro de
+ * test) ne l'exposent seuls. _DEFAULT_SOURCE est redefini explicitement
+ * juste apres pour conserver les extensions BSD/GNU deja utilisees par
+ * ailleurs dans ce fichier (timegm(), strdup(), strndup(), gmtime_r()) :
+ * definir _XOPEN_SOURCE seul desactiverait ces dernieres sous glibc. Ces
+ * macros DOIVENT etre definies avant tout #include, y compris les
+ * en-tetes systeme inclus transitivement par sysrepo_backend.h/http.h. */
+#define _XOPEN_SOURCE 700
+#define _DEFAULT_SOURCE
+
+/*
  * Ce fichier cible l'API sysrepo "moderne" (sysrepo >= 2.x) dans laquelle
  * sr_get_data()/sr_get_subtree() renvoient un `sr_data_t *` (arbre
  * libyang + verrou de contexte), libere via sr_release_data(). Si votre
@@ -12,11 +26,10 @@
  * De meme, la resolution des noms de cle de liste a partir du chemin
  * RESTCONF (qui ne transporte que les VALEURS de cle, dans l'ordre du
  * "key" YANG, cf. RFC 8040 SS3.5.3) s'appuie sur le parcours du schema
- * compile libyang (struct lysc_node, drapeau LYS_KEY). L'API publique de
- * parcours des enfants d'un noeud de schema a evolue entre les versions
- * de libyang 2.x ; verifiez lysc_node_children() dans votre
- * libyang/tree_schema.h si la compilation echoue a cet endroit
- * (marqueur "XXX-LY-API").
+ * compile libyang (struct lysc_node, drapeau LYS_KEY) via lysc_node_child()
+ * (premier enfant, puis chainage via ->next) ; verifiee compiler contre
+ * CESNET/libyang branche master le 2026-07-05 (marqueur "XXX-LY-API" aux
+ * endroits sensibles si votre version differe).
  */
 
 #include "sysrepo_backend.h"
@@ -439,7 +452,7 @@ static int build_xpath(const struct ly_ctx *ctx, const struct restconf_path_segm
                  * LYS_KEY (ordre du "key" YANG == ordre attendu par la
                  * grammaire RESTCONF list-instance, RFC 8040 SS3.5.3). */
                 size_t kidx = 0;
-                const struct lysc_node *child = lysc_node_children(snode, 0);
+                const struct lysc_node *child = lysc_node_child(snode);
                 for (; child && kidx < seg->nkeys; child = child->next) {
                     if (child->nodetype == LYS_LEAF && (child->flags & LYS_KEY)) {
                         if (append_predicate(&data_path, &data_len, &data_cap, child->name,
@@ -636,7 +649,7 @@ static int fp_is_ident_char(int c)
 }
 
 /* Analyse un "api-identifier" ([module-name ":"] identifier). Renvoie 0
- * et remplit *module_out (eventuellement NULL)/*name_out (chaines
+ * et remplit *module_out (eventuellement NULL) / *name_out (chaines
  * allouees) en cas de succes ; -1 sinon (identifiant vide). */
 static int fp_parse_identifier(struct field_parser *p, char **module_out, char **name_out)
 {
@@ -911,7 +924,7 @@ int sysrepo_backend_get(int sr_ds, const struct restconf_path_segment *segments,
     char *raw = NULL;
     if (fr.tree) {
         if (lyd_print_mem(&raw, fr.tree, LYD_JSON,
-                          LYD_PRINT_WITHSIBLINGS | LYD_PRINT_SHRINK | wd_flag) != 0) {
+                          LYD_PRINT_SIBLINGS | LYD_PRINT_SHRINK | wd_flag) != 0) {
             fetch_result_release(&fr);
             sr_release_context(g_conn);
             err->error_type = strdup("application");
@@ -1637,6 +1650,10 @@ int sysrepo_backend_delete(int sr_ds, const struct restconf_path_segment *segmen
         return -1;
     }
 
+    /* RFC 8040 SS3.4.1.3 : un DELETE reussi change aussi la datastore
+     * (oubli initial ici : seules les ecritures via sysrepo_backend_write()
+     * avancaient l'ETag/Last-Modified jusqu'ici). */
+    bump_datastore_revision(sr_ds);
     return 0;
 }
 
@@ -1737,18 +1754,25 @@ static const struct lysc_node *resolve_schema_node(const struct ly_ctx *ctx,
 }
 
 /* Recherche le conteneur schema special "output" (nodetype LYS_OUTPUT)
- * dans l'arbre 'tree' renvoye par sr_rpc_send_tree() pour un RPC/action,
- * le serialise en JSON (RFC 8040 SS3.6.2, "module:output") et LIBERE
- * 'tree' dans tous les cas (succes comme echec). *json_out recoit NULL
+ * dans l'arbre renvoye par sr_rpc_send_tree() pour un RPC/action (XXX-SR-API :
+ * sr_rpc_send_tree() renvoie un sr_data_t*, comme sr_get_data()/
+ * sr_get_subtree(), pas un struct lyd_node* brut -- verifiez cette
+ * signature dans votre sysrepo.h si elle differe), le serialise en JSON
+ * (RFC 8040 SS3.6.2, "module:output") et LIBERE 'output' dans tous les
+ * cas (succes comme echec) via sr_release_data(). *json_out recoit NULL
  * si la section 'output' est absente ou vide (l'appelant doit alors
  * repondre 204 No Content), ou le corps JSON alloue sinon. Renvoie 0 en
  * cas de succes, -1 + *err si la serialisation echoue. */
-static int extract_operation_output(struct lyd_node *tree, char **json_out,
+static int extract_operation_output(sr_data_t *output, char **json_out,
                                      struct restconf_error *err)
 {
     *json_out = NULL;
 
+    struct lyd_node *tree = output ? output->tree : NULL;
     if (!tree) {
+        if (output) {
+            sr_release_data(output);
+        }
         return 0;
     }
 
@@ -1769,19 +1793,19 @@ static int extract_operation_output(struct lyd_node *tree, char **json_out,
     }
 
     if (!out_node || !lyd_child(out_node)) {
-        lyd_free_all(tree);
+        sr_release_data(output);
         return 0;
     }
 
     char *raw = NULL;
     if (lyd_print_mem(&raw, out_node, LYD_JSON, LYD_PRINT_SHRINK) != 0) {
-        lyd_free_all(tree);
+        sr_release_data(output);
         err->error_type = strdup("application");
         err->error_tag = strdup("operation-failed");
         err->error_message = strdup("echec de serialisation JSON de la sortie");
         return -1;
     }
-    lyd_free_all(tree);
+    sr_release_data(output);
 
     /* RFC 8040 SS3.6.2 : la sortie est enveloppee dans un objet "output"
      * qualifie par le module -- ce qu'imprime deja lyd_print_mem() pour
@@ -1903,11 +1927,12 @@ int sysrepo_backend_rpc_invoke(const struct restconf_path_segment *segments, siz
 
     /* XXX-SR-API : sr_rpc_send_tree() prend ici directement le noeud RPC
      * (avec son eventuel enfant 'input' deja attache) et renvoie, via
-     * 'output', l'arbre de sortie correspondant. Verifiez cette
-     * signature exacte (ordre des parametres, unite du timeout) dans
-     * votre sysrepo.h installe : elle a legerement varie entre versions
-     * de sysrepo 2.x. */
-    struct lyd_node *output = NULL;
+     * 'output' (un sr_data_t*, comme sr_get_data()/sr_get_subtree() --
+     * PAS un struct lyd_node* brut), l'arbre de sortie correspondant.
+     * Verifiez cette signature exacte (ordre des parametres, unite du
+     * timeout, type du dernier parametre) dans votre sysrepo.h installe :
+     * elle a legerement varie entre versions de sysrepo 2.x. */
+    sr_data_t *output = NULL;
     rc = sr_rpc_send_tree(session, rpc_node, 0, &output);
 
     lyd_free_tree(rpc_node);
@@ -2061,8 +2086,9 @@ int sysrepo_backend_action_invoke(const struct restconf_path_segment *segments, 
      * noeud rpc lui-meme), sr_rpc_send_tree() a besoin ici de l'arbre
      * COMPLET depuis la racine ('top') pour localiser l'instance de
      * donnees exacte (ex. quelle 'interface=eth0') sous laquelle
-     * l'action est invoquee. */
-    struct lyd_node *output = NULL;
+     * l'action est invoquee. 'output' est un sr_data_t* (cf. remarque
+     * XXX-SR-API dans sysrepo_backend_rpc_invoke() ci-dessus). */
+    sr_data_t *output = NULL;
     rc = sr_rpc_send_tree(session, top, 0, &output);
 
     lyd_free_all(top);

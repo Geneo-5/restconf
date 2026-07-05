@@ -216,6 +216,58 @@ static int validate_no_query_params(const struct http_request *req, struct http_
     return validate_query_params(req, resp, NULL, 0);
 }
 
+/* --------------------------------------------------------------------
+ * ETag / Last-Modified (RFC 8040 SS3.4.1 Edit Collision Prevention)
+ * -------------------------------------------------------------------- */
+
+/* Ajoute les en-tetes 'ETag' et 'Last-Modified' refletant l'etat courant
+ * de la datastore sr_ds (RFC 8040 SS3.4.1.1/3.4.1.2 ; ce squelette ne
+ * suit ces valeurs qu'au niveau de la datastore entiere, ce que la RFC
+ * autorise explicitement en repli pour une ressource de donnees, cf.
+ * SS3.5.1/3.5.2). Pas d'effet si sysrepo_backend_get_datastore_revision()
+ * ne renvoie rien pour ce sr_ds (defensif, cf. REVISION_TABLE_SIZE cote
+ * sysrepo_backend.c). */
+static void add_datastore_revision_headers(struct http_response *resp, int sr_ds)
+{
+    char *etag = NULL;
+    char *last_modified = NULL;
+    sysrepo_backend_get_datastore_revision(sr_ds, &etag, &last_modified);
+    if (etag) {
+        char header[64];
+        snprintf(header, sizeof(header), "ETag: %s", etag);
+        http_response_add_header(resp, header);
+        free(etag);
+    }
+    if (last_modified) {
+        char header[64];
+        snprintf(header, sizeof(header), "Last-Modified: %s", last_modified);
+        http_response_add_header(resp, header);
+        free(last_modified);
+    }
+}
+
+/* Verifie les preconditions HTTP 'If-Match'/'If-Unmodified-Since' (RFC
+ * 7232 SS3.1/SS3.4) avant une operation d'ecriture (RFC 8040 SS3.4.1,
+ * "Edit Collision Prevention"). Si le client n'a fourni aucun des deux
+ * en-tetes, l'operation peut toujours proceder (0). En cas d'echec de
+ * precondition, renvoie une reponse '412 Precondition Failed' avec les
+ * validateurs courants (RFC 7232 SS4.2) et renvoie -1 ; l'appelant DOIT
+ * alors s'arreter sans effectuer l'ecriture. */
+static int check_write_preconditions(const struct http_request *req, struct http_response *resp,
+                                      int sr_ds)
+{
+    if (!req->if_match && !req->if_unmodified_since) {
+        return 0;
+    }
+    if (!sysrepo_backend_check_preconditions(sr_ds, req->if_match, req->if_unmodified_since)) {
+        return 0;
+    }
+    http_response_set_status(resp, 412, "Precondition Failed");
+    add_datastore_revision_headers(resp, sr_ds);
+    http_response_set_body(resp, NULL, NULL, 0);
+    return -1;
+}
+
 /* Percent-encode un segment de chemin RESTCONF pour l'en-tete 'Location'
  * (RFC 8040 SS4.4.1). Les caracteres qui font partie de la syntaxe
  * 'api-path' elle-meme (':' separateur module, '=' et ',' pour les
@@ -566,6 +618,13 @@ static void handle_data_get(const struct http_request *req, struct http_response
         return;
     }
 
+    /* RFC 8040 SS3.4.1.1/3.4.1.2 : le serveur DOIT renvoyer Last-Modified/
+     * ETag pour une requete de recuperation sur la ressource datastore ;
+     * ce squelette ne les distingue pas par ressource de donnees (repli
+     * autorise par SS3.5.1/3.5.2), donc les memes valeurs sont renvoyees
+     * pour toute lecture sous {+restconf}/data ou {+restconf}/ds/<name>. */
+    add_datastore_revision_headers(resp, sr_ds);
+
     http_response_set_status(resp, 200, "OK");
     http_response_set_body(resp, "application/yang-data+json", json, strlen(json));
 }
@@ -573,6 +632,12 @@ static void handle_data_get(const struct http_request *req, struct http_response
 static void handle_data_post(const struct http_request *req, struct http_response *resp, int sr_ds,
                               const struct restconf_request_path *path)
 {
+    /* RFC 8040 SS3.4.1 : verifie If-Match/If-Unmodified-Since (s'ils sont
+     * fournis) contre l'etat courant de la datastore AVANT toute ecriture. */
+    if (check_write_preconditions(req, resp, sr_ds) != 0) {
+        return;
+    }
+
     int created_child_unused = 0;
     char *child_segment = NULL;
     struct restconf_error err;
@@ -599,6 +664,9 @@ static void handle_data_post(const struct http_request *req, struct http_respons
         http_response_add_header(resp, header);
         free(location);
     }
+    /* RFC 8040 SS4.4.1 exemple Appendix B.2.1 : Last-Modified/ETag sur la
+     * reponse 201, refletant l'etat de la datastore APRES l'ecriture. */
+    add_datastore_revision_headers(resp, sr_ds);
     http_response_set_body(resp, NULL, NULL, 0);
 }
 
@@ -612,6 +680,10 @@ static void handle_data_put(const struct http_request *req, struct http_response
      * requete. La datastore elle-meme (en tant que ressource) existe
      * toujours deja : ce PUT est donc toujours un remplacement, jamais
      * une creation -> 204 No Content (created reste a 0). */
+    if (check_write_preconditions(req, resp, sr_ds) != 0) {
+        return;
+    }
+
     int created = 0;
     struct restconf_error err;
     memset(&err, 0, sizeof(err));
@@ -629,6 +701,9 @@ static void handle_data_put(const struct http_request *req, struct http_response
     } else {
         http_response_set_status(resp, 204, "No Content");
     }
+    /* RFC 8040 SS4.5 exemple Appendix B.2.4 : Last-Modified/ETag sur la
+     * reponse, refletant l'etat de la datastore APRES l'ecriture. */
+    add_datastore_revision_headers(resp, sr_ds);
     http_response_set_body(resp, NULL, NULL, 0);
 }
 
@@ -640,6 +715,10 @@ static void handle_data_patch(const struct http_request *req, struct http_respon
      * JSON "ietf-restconf:data"). sysrepo_backend_write() aiguille ce cas
      * vers sysrepo_backend_write_datastore() ; aucune suppression n'est
      * effectuee dans ce cas, conformement a la semantique "merge". */
+    if (check_write_preconditions(req, resp, sr_ds) != 0) {
+        return;
+    }
+
     struct restconf_error err;
     memset(&err, 0, sizeof(err));
     int rc = sysrepo_backend_write(sr_ds, path->segments, path->nsegments, RESTCONF_WRITE_MERGE,
@@ -652,12 +731,19 @@ static void handle_data_patch(const struct http_request *req, struct http_respon
     /* RFC 8040 SS4.6 : 204 No Content (pas de corps de reponse pour un
      * "plain patch" qui reussit). */
     http_response_set_status(resp, 204, "No Content");
+    /* RFC 8040 SS4.6.1 exemple Appendix B.2.3 : Last-Modified/ETag sur la
+     * reponse, refletant l'etat de la datastore APRES la fusion. */
+    add_datastore_revision_headers(resp, sr_ds);
     http_response_set_body(resp, NULL, NULL, 0);
 }
 
-static void handle_data_delete(struct http_response *resp, int sr_ds,
-                                const struct restconf_request_path *path)
+static void handle_data_delete(const struct http_request *req, struct http_response *resp,
+                                int sr_ds, const struct restconf_request_path *path)
 {
+    if (check_write_preconditions(req, resp, sr_ds) != 0) {
+        return;
+    }
+
     struct restconf_error err;
     memset(&err, 0, sizeof(err));
     int rc = sysrepo_backend_delete(sr_ds, path->segments, path->nsegments, &err);
@@ -768,7 +854,7 @@ static void handle_data_like(const struct http_request *req, struct http_respons
                                      "DELETE n'est pas defini sur la racine d'une datastore");
             return;
         }
-        handle_data_delete(resp, sr_ds, path);
+        handle_data_delete(req, resp, sr_ds, path);
     } else {
         send_method_not_allowed(resp, allow,
                                  "methode %s non supportee sur une ressource de donnees",

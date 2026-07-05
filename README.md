@@ -32,7 +32,8 @@ Squelette **phase 2 (lecture + ecriture de base)** d'un serveur RESTCONF s'appuy
 | `OPTIONS` / en-tete `Allow` | OPTIONS + erreurs 405 | OK pour les ressources RESTCONF exposees |
 | `{+restconf}/operations/<module>:<rpc>` (RPC de haut niveau, RFC 8040 SS3.6) | POST | OK (voir "RPC" ci-dessous) |
 | Actions YANG (`action`, invoquees sous `{+restconf}/data/...`/`{+restconf}/ds/<n>/...`, RFC 8040 SS3.6) | POST | OK sous `{+restconf}/ds/ietf-datastores:operational` uniquement (RFC 8527 SS3.1) ; `400 invalid-value` ailleurs (voir "RPC" ci-dessous) |
-| Tout le reste (notifications SSE, XML, ETag/Last-Modified, NACM/authn) | — | **Non implemente**, cf. "Feuille de route" |
+| `ETag` / `Last-Modified` (RFC 8040 SS3.4.1) + `If-Match` / `If-Unmodified-Since` (detection de collision) | GET/HEAD (en-tetes de reponse) ; POST/PUT/PATCH/DELETE (preconditions + en-tetes de reponse) | OK au niveau de la datastore entiere (voir "ETag / Last-Modified" ci-dessous) |
+| Tout le reste (notifications SSE, XML, NACM/authn) | — | **Non implemente**, cf. "Feuille de route" |
 
 ## Hypotheses de conception a valider avec vous
 
@@ -155,6 +156,51 @@ Implemente dans `sysrepo_backend_rpc_invoke()` (`src/sysrepo_backend.c`), aiguil
 - Les erreurs sysrepo sont traduites en error-tag RESTCONF au mieux (`access-denied` pour
   `SR_ERR_UNAUTHORIZED`, `invalid-value` pour `SR_ERR_INVAL_ARG`, `operation-failed` sinon) ;
   `sr_strerror()` fournit le message.
+
+## ETag / Last-Modified
+
+Implemente dans `sysrepo_backend.c` (etat + logique de comparaison) et cable dans
+`restconf_handler.c` (en-tetes de reponse + rejet des requetes) :
+
+- **Granularite** : conformement a la RFC 8040 SS3.5.1 ("If not maintained, then the resource
+  timestamp for the datastore MUST be used instead") et SS3.5.2 (idem pour l'entity-tag), ce
+  squelette ne suit un couple `(compteur ETag, timestamp Last-Modified)` qu'au niveau de **chaque
+  datastore sysrepo dans son ensemble** (`g_revisions[]`, indexe par `sr_datastore_t`, protege par
+  un mutex, dans `sysrepo_backend.c`), pas par ressource de donnees individuelle. Une lecture de
+  n'importe quelle ressource sous `{+restconf}/data` ou `{+restconf}/ds/<name>` renvoie donc les
+  memes valeurs `ETag`/`Last-Modified` : celles de la datastore correspondante.
+- **Etat en memoire uniquement** : ce compteur/timestamp est initialise paresseusement (a l'heure
+  du premier acces) et n'est pas persiste — un redemarrage de `restconfd` reinitialise l'ETag et le
+  Last-Modified de chaque datastore. Suffisant pour detecter des collisions entre clients RESTCONF
+  concurrents pendant la duree de vie du processus, mais pas a travers un redemarrage ni des
+  modifications faites hors RESTCONF (CLI sysrepo, NETCONF, etc.) — limitation a documenter cote
+  operateurs si vous avez besoin d'une garantie plus forte.
+- **Avancement** : `bump_datastore_revision()` est appelee apres tout POST/PUT/PATCH/DELETE reussi
+  sur une ressource de configuration (y compris le remplacement/fusion complet de la datastore via
+  `sysrepo_backend_write_datastore()`), qu'il s'agisse d'une ecriture "normale" (`sysrepo_backend_write()`)
+  ou d'une suppression (`sysrepo_backend_delete()`). La datastore `operational`, en lecture seule
+  dans ce squelette, n'est donc jamais avancee (ses valeurs restent celles de l'initialisation).
+- **En-tetes de reponse** : `add_datastore_revision_headers()` (`restconf_handler.c`) ajoute `ETag`
+  (valeur citee, ex. `"3"`) et `Last-Modified` (format `HTTP-date` RFC 7231 SS7.1.1.1) a toute
+  reponse GET/HEAD sur une ressource de donnees (`handle_data_get()`), ainsi qu'aux reponses
+  201/204 de POST/PUT/PATCH (RFC 8040 Appendix B.2.1/B.2.4/B.2.3).
+- **Detection de collision** : `sysrepo_backend_check_preconditions()` compare les en-tetes de
+  requete `If-Match` (RFC 7232 SS3.1, y compris `*` et les listes separees par des virgules) et
+  `If-Unmodified-Since` (RFC 7232 SS3.4, format `HTTP-date` uniquement — les formats obsoletes RFC
+  850/asctime ne sont pas geres, et une date non parsable est ignoree par prudence, "fail-open"
+  conformement a l'esprit de la RFC 7232 SS3.4) a l'etat courant de la datastore ciblee. Cette
+  verification est appelee (`check_write_preconditions()`) en tout debut de traitement de POST,
+  PUT, PATCH et DELETE, **avant** toute ecriture cote sysrepo ; en cas d'echec, la requete est
+  rejetee avec `412 Precondition Failed` (RFC 8040 Appendix B.2.2), accompagne des en-tetes
+  `ETag`/`Last-Modified` courants (RFC 7232 SS4.2), sans corps de reponse. Si aucun des deux
+  en-tetes n'est fourni par le client, l'ecriture procede normalement (comportement HTTP par
+  defaut).
+- **Limite connue** : la RFC 8040 SS3.4.1.3 decrit un modele plus fin ("changes to configuration
+  data resources affect the timestamp and entity-tag for that resource, any ancestor data
+  resources, and the datastore resource") qu'implemente ce squelette : un ETag/Last-Modified par
+  ressource de donnees individuelle (pas seulement par datastore) permettrait une detection de
+  collision plus precise (deux clients modifiant des sous-arbres disjoints ne se genent pas). Cette
+  granularite plus fine n'est pas implementee ici, cf. "Feuille de route".
 
 ## Monitoring RESTCONF
 
@@ -340,7 +386,13 @@ curl -s http://localhost/restconf/ds/ietf-datastores:operational | jq
   `insert`/`point` (RFC 8040 SS4.8.5/SS4.8.6, insertion dans une liste/leaf-list
   `ordered-by user`) : toujours rejetes explicitement en `400 invalid-value`, aucune semantique
   d'insertion implementee pour l'instant.
-- **ETag / Last-Modified** pour collision detection: ~1-2 jours (RFC 8040 SS3.4.1/3.5.1-2).
+- ~~**ETag / Last-Modified** pour collision detection (RFC 8040 SS3.4.1/3.5.1-2)~~ -> fait (voir
+  "ETag / Last-Modified" ci-dessus) : suivi au niveau de chaque datastore (pas par ressource de
+  donnees individuelle, repli explicitement autorise par la RFC), en-tetes `ETag`/`Last-Modified`
+  sur GET/HEAD et sur les reponses POST/PUT/PATCH reussies, verification `If-Match`/
+  `If-Unmodified-Since` avant toute ecriture (POST/PUT/PATCH/DELETE) avec rejet `412 Precondition
+  Failed`. Reste a affiner (granularite par ressource plutot que par datastore, RFC 8040 SS3.4.1.3)
+  si vous en avez besoin.
 - **Authentification/autorisation** : TLS + NACM (`sr_session_set_user`, `SR_SESS_ENABLE_NACM`): ~6-10 jours et NACM
   cote sysrepo (`sr_session_set_user`/`SR_SESS_ENABLE_NACM` a etudier). l'authentification est géré par un programme externe. l'utilisateur fournie un cookie JWT (RFC7519, RFC8725 et RFC7797) contenant le nom de l'utilisateur. La clef de vérification du JWT est stocké dans le keyring kernel.   
 - **Support XML** en plus de JSON: ~4-6 jours (encoder/decoder + Accept negotiation) `Accept`/`Content-Type` existe maintenant pour
