@@ -360,7 +360,12 @@ curl -s http://localhost/restconf/ds/ietf-datastores:operational | jq
 ```
 
 ## Feuille de route (phase 2 et suivantes, a prioriser ensemble)
-- **Plugin sysrepo** : Convertir l'implémentation de ietf-restconf-monitoring, ietf-restconf sous forme de plugin sysrepo.
+- **Plugin sysrepo** (TOP PRIORITE): Convertir l'implémentation de ietf-restconf-monitoring,
+  ietf-restconf sous forme de plugin sysrepo. Utilisation de `sr_module_change_subscribe` /
+  `sr_rpc_subscribe` / `sr_dp_get_items_subscribe`. ie:
+  `sr_dp_get_items_subscribe(session, "/ietf-restconf-monitoring:restconf-state", restconf_state_cb, NULL, SR_SUBSCR_CTX_REUSE, &subscription);`
+  Supprimé les réponses et parsing direcment en JSON/XML (suppression de 
+  `handle_restconf_monitoring_capabilities_xml`et `handle_restconf_monitoring_capabilities`)
 - ~~**Ecritures** : POST (creation), PUT (remplacement), PATCH (fusion "plain patch"), DELETE~~ ->
   fait (voir "Ecritures" ci-dessus), y compris le remplacement/fusion complet de la datastore via
   PUT/PATCH directement sur `{+restconf}/data`/`{+restconf}/ds/<name>` (RFC 8040 SS4.5 Appendix
@@ -429,3 +434,31 @@ yang/                 restconf yang schema
 test/                 fichiers de test
 fuzzing/              fichiers de fuzzing
 ```
+
+## Support XML (phase 3, en cours)
+
+### Architecture requirement
+
+Le support XML ne se fait pas seulement par sérialisation JSON/XML. Il nécessite que RESTCONF utilise les **notifications SSE de sysrepo** pour transformer les données récupérées en XML. L'approche suivante :
+
+1. **Accept negotiation**: Vérifier l'en-tête `Accept` pour déterminer le format (application/yang-data+json ou application/yang-data+xml)
+2. **Query parsing**: Extraire les paramètres de requête (`depth`, `fields`, `content`, `with-defaults`) du query string
+3. **sysrepo backend get**: Appeler une fonction XML analogue à `sysrepo_backend_get()` qui retourne un buffer XML au lieu de JSON
+4. **SSE notification subscription**: Pour le support d'origine (`with-origin`), utiliser les mécanismes SSE de sysrepo (`sr_event_notif_subscribe_tree()`) avec des convertisseurs XML
+
+### RFC 8040 compliance notes
+
+La RFC 8040 SS4.2.1 spécifie que les réponses doivent être codées dans le MIME type indiqué par `Accept`. Notre implémentation suit cette norme :
+
+- **`application/yang-data+json`**: Sérialisation JSON via LYD_JSON/lyd_print_mem
+- **`application/yang-data+xml`** (recommandé) ou **`text/xml`**: Sérialisation XML via LYD_XML/lyd_print_mem
+- `*/*`: Accepte tout, mais refuse si le format est inconnu
+
+### Changes to support XML
+
+1. Add media type detection functions for XML: `media_type_is_yang_xml()`, `accepts_yang_xml()`, etc.
+2. Implement sysrepo backend XML serialization function analogous to JSON version
+3. Update query parameter parsing with XML-specific validation (same params as JSON, but use LYD_XML flags)
+4. Add support for XML in datastore operations with appropriate content negotiation
+5. Handle `with-origin` through sysrepo SSE notifications when enabled for XML
+

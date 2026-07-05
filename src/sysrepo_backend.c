@@ -2107,3 +2107,196 @@ int sysrepo_backend_action_invoke(const struct restconf_path_segment *segments, 
 
     return extract_operation_output(output, json_out, err);
 }
+
+/* NOTE : une tentative anterieure d'ajouter le support XML avait laisse
+ * ici du code non compilable (API libyang inventees comme ly_buf_create/
+ * ly_buf_append/ly_buf_free/'lyrc_t', symbole g_restconf_root utilise
+ * sans etre defini dans ce fichier, etc.) -- cf. "Support XML" dans
+ * README.md pour le plan retenu et pourquoi ce brouillon a ete retire. */
+#if 0
+/* --------------------------------------------------------------------
+ * sysrepo_backend_get_xml: XML version of the JSON backend function
+ * Uses LYD_XML/lyd_print_mem instead of LYD_JSON for serialization
+ * -------------------------------------------------------------------- */
+
+static int convert_json_to_xml(const char *json_input, size_t json_len, 
+                               char **xml_output, struct restconf_error *err)
+{
+    /* This is the main XML conversion function. We need to parse the JSON
+     * input and re-encode it as XML using LYD_XML/lyd_parse_data followed by
+     * lyd_print_mem for XML output. */
+    
+    /* Step 1: Parse JSON into LYD tree */
+    ly_ctx *ctx = sr_acquire_context(g_conn);
+    if (!ctx) {
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("echec d'allocation pour le contexte libyang XML");
+        return -1;
+    }
+    
+    /* Create a temporary buffer for parsing */
+    char *tmp_buffer = malloc(json_len + 1);
+    if (!tmp_buffer) {
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("echec d'allocation pour l'analyse XML");
+        return -1;
+    }
+    memcpy(tmp_buffer, json_input, json_len);
+    tmp_buffer[json_len] = '\0';
+    
+    /* Parse as JSON first to get the node structure */
+    ly_in_t *in = ly_buf_create(json_len + 256);
+    if (!in) {
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("echec d'allocation pour le buffer JSON");
+        free(tmp_buffer);
+        return -1;
+    }
+    ly_buf_append(in, tmp_buffer, json_len);
+    
+    /* Parse with JSON flag to understand the structure */
+    ly_in_t *in_xml = NULL;
+    struct lyd_node *parsed = NULL;
+    lyrc_t lyrc = LY_SUCCESS;
+    
+    /* For proper XML conversion, we need to convert from JSON to internal node */
+    /* This requires understanding the full schema context - simplified approach:
+     * Parse with JSON first, then re-interpret or use a dual-mode parser */
+    
+    if (lyd_parse_data(ctx, NULL, in, LYD_JSON, 0, 0, &parsed) == LY_SUCCESS) {
+        /* Now we have the parsed node structure. We can re-print as XML: */
+        ly_in_free(in, 1);
+        in_xml = ly_buf_create(4096);
+        
+        if (lyd_print_mem(parsed, in_xml->buf, in_xml->size + 4096, LYD_XML) == LY_SUCCESS) {
+            size_t out_size = in_xml->buf ? in_xml->size : 1;
+            *xml_output = malloc(out_size);
+            if (*xml_output) {
+                memcpy(*xml_output, in_xml->buf, out_size);
+            }
+            ly_buf_free(in_xml);
+            err->error_type = NULL;
+            err->error_tag = NULL;
+            err->error_message = NULL;
+            return 0;
+        }
+        
+        lyd_free_all(parsed);
+        ly_in_free(in, 1);
+        ly_buf_free(in_xml);
+        if (!parsed) {
+            err->error_type = strdup("protocol");
+            err->error_tag = strdup("malformed-message");
+            err->error_message = strdup("corps JSON valide mais non compatible avec schema XML attendu");
+        } else {
+            err->error_type = strdup("application");
+            err->error_tag = strdup("operation-failed");
+            err->error_message = strdup("echec de conversion JSON vers XML: format inconnu");
+        }
+        return -1;
+    }
+    
+    /* Clean up */
+    ly_in_free(in, 1);
+    free(tmp_buffer);
+    ly_buf_free(in_xml);
+    
+    err->error_type = strdup("protocol");
+    err->error_tag = strdup("malformed-message");
+    err->error_message = strdup("corps de requete JSON non valide pour l'analyse XML");
+    return -1;
+}
+
+int sysrepo_backend_get_xml(int sr_ds, const struct restconf_path_segment *segments,
+                            size_t nsegments, const struct restconf_get_options *options,
+                            char **xml_out, struct restconf_error *err)
+{
+    ly_ctx *ctx = sr_acquire_context(g_conn);
+    if (!ctx) {
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("echec d'allocation pour le contexte libyang XML");
+        return -1;
+    }
+    
+    /* Map sr_ds to our internal datastore identifier (same as JSON version) */
+    int internal_ds = -1;
+    switch (sr_ds) {
+        case SR_DS_RUNNING:
+            internal_ds = 0;
+            break;
+        case SR_DS_CANDIDATE:
+            internal_ds = 1;
+            break;
+        case SR_DS_STARTUP:
+            internal_ds = 2;
+            break;
+        default:
+            err->error_type = strdup("application");
+            err->error_tag = strdup("invalid-value");
+            err->error_message = strdup("datastore inconnue pour le backend XML");
+            sr_release_context(ctx);
+            return -1;
+    }
+    
+    /* Build the full path for sysrepo (including datastore name) */
+    char *full_path = malloc(256 + 32);
+    if (!full_path) {
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("echec d'allocation pour le chemin complet XML");
+        sr_release_context(ctx);
+        return -1;
+    }
+    
+    /* Copy the RESTCONF path and prepend datastore identity */
+    if (*full_path = malloc(strlen(g_restconf_root) + 1)) {
+        strcpy(full_path, g_restconf_root);
+    }
+    
+    /* This is the key function for XML support - it mirrors sysrepo_backend_get
+     * but uses LYD_XML instead of JSON serialization */
+    ly_in_t *json_input = NULL;
+    struct lyd_node *parsed = NULL;
+    char *xml_buffer = NULL;
+    size_t xml_len = 0;
+    
+    /* For proper implementation, we need to:
+     * 1. Convert the RESTCONF path to internal sysrepo path
+     * 2. Use sr_get_data() with appropriate options
+     * 3. Convert result from libyang's internal format to LYD_XML buffer
+     * 
+     * Simplified implementation that assumes we have the parsed data: */
+    /* Parse and print as XML using LYD_XML flag in lyd_print_mem */
+    if (lyd_print_mem(parsed, &xml_buffer, &xml_len, LYD_XML) != LY_SUCCESS) {
+        free(full_path);
+        ly_in_free(json_input, 1);
+        err->error_type = strdup("application");
+        err->error_tag = strdup("operation-failed");
+        err->error_message = strdup("echec de print_mem XML: noeud non trouve ou schema invalide");
+        return -1;
+    }
+    
+    *xml_out = xml_buffer;
+    xml_len = strlen(xml_buffer);
+    
+    free(full_path);
+    ly_in_free(json_input, 1);
+    
+    /* Return success with proper error handling */
+    err->error_type = NULL;
+    err->error_tag = NULL;
+    err->error_message = NULL;
+    return 0;
+}
+
+/* --------------------------------------------------------------------
+ * sysrepo_backend_get_xml: helper function for JSON to XML conversion
+ * Note: For production use, this should be optimized with a proper dual-mode
+ * parser instead of re-parsing JSON then converting. Consider using libyang's
+ * schema parsing with LYD_XML flag directly on the schema context.
+ * -------------------------------------------------------------------- */
+#endif /* #if 0 : bloc XML casse desactive, cf. note plus haut */

@@ -430,86 +430,18 @@ static int parse_get_options(const struct http_request *req, struct restconf_get
     return 0;
 }
 
-static int is_restconf_monitoring_capabilities(const struct restconf_request_path *path)
+/* Indique si 'path' cible le sous-arbre "config false" (RFC 8040 SS9)
+ * ietf-restconf-monitoring:restconf-state (capabilities, streams, ou tout
+ * futur enfant), quel que soit le nombre de sous-segments demandes. */
+static int is_restconf_monitoring_state_path(const struct restconf_request_path *path)
 {
-    if (path->nsegments < 1 || path->nsegments > 3) {
+    if (path->nsegments < 1) {
         return 0;
     }
-    if (!path->segments[0].module ||
-        strcmp(path->segments[0].module, "ietf-restconf-monitoring") != 0 ||
-        strcmp(path->segments[0].name, "restconf-state") != 0 ||
-        path->segments[0].nkeys != 0) {
-        return 0;
-    }
-    if (path->nsegments >= 2 &&
-        (path->segments[1].module ||
-         strcmp(path->segments[1].name, "capabilities") != 0 ||
-         path->segments[1].nkeys != 0)) {
-        return 0;
-    }
-    if (path->nsegments == 3 &&
-        (path->segments[2].module ||
-         strcmp(path->segments[2].name, "capability") != 0 ||
-         path->segments[2].nkeys != 0)) {
-        return 0;
-    }
-    return 1;
-}
-
-static void handle_restconf_monitoring_capabilities(const struct http_request *req,
-                                                     struct http_response *resp,
-                                                     const struct restconf_request_path *path)
-{
-    const char *allow = "GET, HEAD, OPTIONS";
-    if (is_options(req->method)) {
-        send_options(resp, allow);
-        return;
-    }
-    if (!is_get_or_head(req->method)) {
-        send_method_not_allowed(resp, allow,
-                                 "restconf-state/capabilities est une ressource operationnelle "
-                                 "en lecture seule");
-        return;
-    }
-    if (validate_no_query_params(req, resp) != 0) {
-        return;
-    }
-    if (require_yang_json_accept(req, resp) != 0) {
-        return;
-    }
-
-    /* RFC 8040 SS9.1.1 (depth, fields, with-defaults) + RFC 8527 SS3.2.1/
-     * SS3.2.2 (with-operational-defaults, with-origin) : n'annoncer que ce
-     * qui est reellement applique par sysrepo_backend_get() (cf.
-     * "Parametres de requete" dans README.md). filter/start-time/stop-time
-     * restent non implementes et donc non annonces. */
-    const char *capabilities =
-        "\"urn:ietf:params:restconf:capability:defaults:1.0?basic-mode=explicit\","
-        "\"urn:ietf:params:restconf:capability:depth:1.0\","
-        "\"urn:ietf:params:restconf:capability:fields:1.0\","
-        "\"urn:ietf:params:restconf:capability:with-defaults:1.0\","
-        "\"urn:ietf:params:restconf:capability:with-operational-defaults:1.0\","
-        "\"urn:ietf:params:restconf:capability:with-origin:1.0\"";
-    const char *fmt = NULL;
-    if (path->nsegments == 1) {
-        fmt = "{\"ietf-restconf-monitoring:restconf-state\":{\"capabilities\":"
-              "{\"capability\":[%s]}}}";
-    } else if (path->nsegments == 2) {
-        fmt = "{\"ietf-restconf-monitoring:capabilities\":{\"capability\":[%s]}}";
-    } else {
-        fmt = "{\"ietf-restconf-monitoring:capability\":[%s]}";
-    }
-
-    size_t need = strlen(fmt) + strlen(capabilities) + 1;
-    char *body = malloc(need);
-    if (!body) {
-        send_error_status(resp, 500, "application", "operation-failed", "memoire insuffisante");
-        return;
-    }
-    snprintf(body, need, fmt, capabilities);
-
-    http_response_set_status(resp, 200, "OK");
-    http_response_set_body(resp, "application/yang-data+json", body, strlen(body));
+    return path->segments[0].module &&
+           strcmp(path->segments[0].module, "ietf-restconf-monitoring") == 0 &&
+           strcmp(path->segments[0].name, "restconf-state") == 0 &&
+           path->segments[0].nkeys == 0;
 }
 
 static void handle_root(const struct http_request *req, struct http_response *resp)
@@ -627,6 +559,42 @@ static void handle_data_get(const struct http_request *req, struct http_response
 
     http_response_set_status(resp, 200, "OK");
     http_response_set_body(resp, "application/yang-data+json", json, strlen(json));
+}
+
+/* {+restconf}/data (RFC 8040, pre-NMDA) correspond ici a la datastore
+ * <running> (config uniquement, cf. "Hypotheses de conception" dans
+ * README.md) ; restconf-state est un sous-arbre "config false" (RFC 8040
+ * SS9) qui n'y existe donc pas directement. Il est desormais fourni par
+ * un plugin sysrepo (plugins/restconf_monitoring/, sr_oper_get_subscribe(),
+ * cf. "Plugin sysrepo" dans README.md) comme n'importe quelle autre
+ * donnee operationnelle : on redirige simplement la lecture vers la
+ * datastore <operational> et on delegue a handle_data_get()/
+ * sysrepo_backend_get(), sans plus construire de JSON a la main ici
+ * (l'ancien handle_restconf_monitoring_capabilities() est supprime). */
+static void handle_restconf_monitoring_state(const struct http_request *req,
+                                              struct http_response *resp,
+                                              const struct restconf_request_path *path)
+{
+    const char *allow = "GET, HEAD, OPTIONS";
+    if (is_options(req->method)) {
+        send_options(resp, allow);
+        return;
+    }
+    if (!is_get_or_head(req->method)) {
+        send_method_not_allowed(resp, allow,
+                                 "restconf-state est une ressource operationnelle en lecture "
+                                 "seule, fournie par un plugin sysrepo");
+        return;
+    }
+
+    int sr_ds = 0;
+    if (sysrepo_backend_datastore_from_identityref("ietf-datastores:operational", &sr_ds, NULL) !=
+        0) {
+        send_error_status(resp, 500, "application", "operation-failed",
+                           "datastore operationnelle introuvable");
+        return;
+    }
+    handle_data_get(req, resp, sr_ds, path, 1);
 }
 
 static void handle_data_post(const struct http_request *req, struct http_response *resp, int sr_ds,
@@ -1026,8 +994,8 @@ void restconf_handle_request(const struct http_request *req, struct http_respons
         handle_yang_library_version(req, resp);
         break;
     case RESTCONF_RES_DATA:
-        if (is_restconf_monitoring_capabilities(&path)) {
-            handle_restconf_monitoring_capabilities(req, resp, &path);
+        if (is_restconf_monitoring_state_path(&path)) {
+            handle_restconf_monitoring_state(req, resp, &path);
         } else {
             /* {+restconf}/data n'est pas la datastore operational (cf.
              * hypotheses de mapping dans README.md) : RFC 8527 SS3.1

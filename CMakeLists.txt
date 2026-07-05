@@ -117,8 +117,40 @@ target_link_libraries(restconfd PRIVATE
 # ==============================================================================
 # Installation
 # ==============================================================================
+# ==============================================================================
+# Plugin sysrepo : ietf-restconf-monitoring:restconf-state (donnee
+# operationnelle, sr_oper_get_subscribe(), cf. "Plugin sysrepo" dans
+# README.md). Bibliotheque partagee independante de restconfd : destinee a
+# etre chargee par sysrepo-plugind, pas liee a l'executable restconfd.
+# ==============================================================================
+add_library(restconf_monitoring_plugin MODULE
+    plugins/restconf_monitoring/restconf_monitoring.c
+)
+set_target_properties(restconf_monitoring_plugin PROPERTIES
+    OUTPUT_NAME restconf_monitoring
+    PREFIX ""
+)
+target_include_directories(restconf_monitoring_plugin PRIVATE
+    ${SYSREPO_INCLUDE_DIR}
+    ${LIBYANG_INCLUDE_DIR}
+)
+target_link_libraries(restconf_monitoring_plugin PRIVATE
+    ${SYSREPO_LIBRARY}
+    ${LIBYANG_LIBRARY}
+)
+
+# ==============================================================================
+# Installation
+# ==============================================================================
 install(TARGETS restconfd RUNTIME DESTINATION bin)
 install(FILES README.md LICENSE DESTINATION doc)
+
+# NB : restconf_monitoring_plugin n'est PAS installe automatiquement dans le
+# repertoire de plugins de sysrepo ("SRPD plugins path", affiche par cmake
+# lors de la configuration de sysrepo lui-meme) : ce chemin est externe a ce
+# projet et varie selon votre installation. Copiez manuellement
+# restconf_monitoring.so a cet emplacement puis redemarrez sysrepo-plugind,
+# cf. README.md.
 
 if(INSTALL_RUNTIME_LIBS)
     install(FILES ${SYSREPO_LIBRARY} ${LIBYANG_LIBRARY} ${FCGI_LIBRARY}
