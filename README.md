@@ -258,6 +258,35 @@ cmake .. -DSYSREPO_INCLUDE_DIR=/opt/sr/include -DSYSREPO_LIBRARY=/opt/sr/lib/lib
          -DFCGI_INCLUDE_DIR=/opt/fcgi2/include -DFCGI_LIBRARY=/opt/fcgi2/lib/libfcgi.so
 ```
 
+## Conteneurisation (Docker)
+
+Pour build et run dans un conteneur, consultez `docker/Dockerfile`.
+
+```sh
+docker build . -f docker/Dockerfile -t restconfd:latest
+docker run -it --rm restconfd:latest /bin/bash
+```
+
+Pour lancer le serveur RESTCONF en mode socket Unix :
+
+```sh
+docker run -d \
+   --name restconfd \
+   --network host \
+   -e FCGI_ENV=0 \
+   -v /run/restconfd.sock:/dev/fd/0 \
+   restconfd:latest "/bin/bash" && ./restconfd /dev/null 4 /restconf
+```
+
+Pour lancer le serveur RESTCONF en mode TCP (sur port 8000) :
+```sh
+docker run -d \
+   --name restconfd \
+   --network host \
+   -e FCGI_ENV=0 \
+   restconfd:latest && ./restconfd :9000 4 /restconf
+```
+
 ## Lancement (mode socket Unix, pour test manuel derriere nginx)
 
 ```sh
