@@ -249,7 +249,7 @@ int sr_plugin_init_cb(sr_session_ctx_t *session, void **private_data)
      * (parametre 'subscription' partage entre appels successifs). */
     rc = sr_oper_get_subscribe(session, "ietf-restconf-monitoring",
                                "/ietf-restconf-monitoring:restconf-state/streams",
-                               restconf_monitoring_streams_cb, NULL, SR_SUBSCR_CTX_REUSE, &g_sub);
+                               restconf_monitoring_streams_cb, NULL, NULL, &g_sub);
     if (rc != SR_ERR_OK) {
         SRPLG_LOG_ERR("restconf-monitoring",
                       "sr_oper_get_subscribe(restconf-state/streams) a echoue: %s",

@@ -143,7 +143,7 @@ target_link_libraries(restconf_monitoring_plugin PRIVATE
 # Installation
 # ==============================================================================
 install(TARGETS restconfd RUNTIME DESTINATION bin)
-install(FILES README.md LICENSE DESTINATION doc)
+install(FILES README.md COPYING COPYING.LESSER DESTINATION doc)
 
 # NB : restconf_monitoring_plugin n'est PAS installe automatiquement dans le
 # repertoire de plugins de sysrepo ("SRPD plugins path", affiche par cmake
