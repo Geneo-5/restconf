@@ -605,14 +605,13 @@ static void handle_data_post(const struct http_request *req, struct http_respons
 static void handle_data_put(const struct http_request *req, struct http_response *resp, int sr_ds,
                              const struct restconf_request_path *path)
 {
-    if (path->nsegments == 0) {
-        /* Remplacement de la datastore entiere (RFC 8040 SS4.5, exemple
-         * Appendix B.2.4) : non gere par ce squelette, cf. sysrepo_backend.c. */
-        send_error_status(resp, 501, "application", "operation-not-supported",
-                           "remplacement complet de la datastore via PUT non encore implemente");
-        return;
-    }
-
+    /* path->nsegments == 0 : remplacement complet de la datastore (RFC
+     * 8040 SS4.5, exemple Appendix B.2.4). sysrepo_backend_write()
+     * aiguille elle-meme ce cas vers sysrepo_backend_write_datastore(),
+     * qui deballe l'enveloppe JSON "ietf-restconf:data" du corps de
+     * requete. La datastore elle-meme (en tant que ressource) existe
+     * toujours deja : ce PUT est donc toujours un remplacement, jamais
+     * une creation -> 204 No Content (created reste a 0). */
     int created = 0;
     struct restconf_error err;
     memset(&err, 0, sizeof(err));
@@ -636,13 +635,11 @@ static void handle_data_put(const struct http_request *req, struct http_response
 static void handle_data_patch(const struct http_request *req, struct http_response *resp, int sr_ds,
                                const struct restconf_request_path *path)
 {
-    if (path->nsegments == 0) {
-        send_error_status(resp, 400, "protocol", "invalid-value",
-                           "PATCH necessite une ressource de donnees cible, pas la racine de "
-                           "la datastore");
-        return;
-    }
-
+    /* path->nsegments == 0 : fusion complete de la datastore (RFC 8040
+     * SS4.6.1, exemple Appendix B.2.3, "plain patch" avec l'enveloppe
+     * JSON "ietf-restconf:data"). sysrepo_backend_write() aiguille ce cas
+     * vers sysrepo_backend_write_datastore() ; aucune suppression n'est
+     * effectuee dans ce cas, conformement a la semantique "merge". */
     struct restconf_error err;
     memset(&err, 0, sizeof(err));
     int rc = sysrepo_backend_write(sr_ds, path->segments, path->nsegments, RESTCONF_WRITE_MERGE,
@@ -712,8 +709,12 @@ static void handle_data_like(const struct http_request *req, struct http_respons
                               int sr_ds, const struct restconf_request_path *path,
                               int is_operational_ds)
 {
+    /* PUT/PATCH sont maintenant supportes sur la racine d'une datastore
+     * (remplacement/fusion complets, RFC 8040 SS4.5 Appendix B.2.4 / SS4.6.1
+     * Appendix B.2.3) ; DELETE reste indefini sur cette meme racine (RFC
+     * 8040 SS4.7), d'ou son absence de l'en-tete Allow quand nsegments == 0. */
     const char *allow = path->nsegments == 0
-                            ? "GET, HEAD, POST, OPTIONS"
+                            ? "GET, HEAD, POST, PUT, PATCH, OPTIONS"
                             : "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS";
     if (is_options(req->method)) {
         send_options(resp, allow);

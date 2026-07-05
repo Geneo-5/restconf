@@ -232,4 +232,44 @@ int sysrepo_backend_action_invoke(const struct restconf_path_segment *segments, 
                                   const char *body_json, size_t body_len, char **json_out,
                                   struct restconf_error *err);
 
+/* --------------------------------------------------------------------
+ * ETag / Last-Modified (RFC 8040 SS3.4.1 Edit Collision Prevention)
+ * -------------------------------------------------------------------- */
+
+/* Ce squelette ne maintient un timestamp/entity-tag QUE au niveau de la
+ * datastore dans son ensemble (pas par ressource de donnees individuelle) :
+ * c'est explicitement permis par la RFC 8040 (SS3.5.1 "If not maintained,
+ * then the resource timestamp for the datastore MUST be used instead",
+ * SS3.5.2 idem pour l'entity-tag). Toute ecriture reussie (POST/PUT/PATCH/
+ * DELETE, y compris le remplacement/fusion complet de la datastore) sur
+ * une datastore CONFIGURATION (running/candidate/startup) avance son
+ * compteur de revision (utilise pour l'ETag) et met a jour son
+ * last-modified ; la datastore <operational>, en lecture seule dans ce
+ * squelette, n'est jamais avancee (ses valeurs restent celles de
+ * l'initialisation du processus). Thread-safe (mutex interne), coherent
+ * avec le modele "une seule connexion sysrepo partagee par tous les
+ * threads" du reste de ce fichier.
+ *
+ * 'etag_out' recoit une chaine allouee au format entete HTTP ETag DEJA
+ * quotee (ex. '"3"') ; 'last_modified_out' recoit une chaine allouee au
+ * format HTTP-date RFC 7231 SS7.1.1.1 (ex. "Sun, 06 Nov 1994 08:49:37
+ * GMT"). Les deux parametres sont optionnels (NULL accepte si l'appelant
+ * n'a besoin que de l'un des deux). */
+void sysrepo_backend_get_datastore_revision(int sr_ds, char **etag_out, char **last_modified_out);
+
+/* Compare l'ETag/Last-Modified COURANTS de la datastore sr_ds aux valeurs
+ * fournies par le client dans les en-tetes 'If-Match' (RFC 7232 SS3.1) et
+ * 'If-Unmodified-Since' (RFC 7232 SS3.4), pour la detection de collision
+ * d'edition (RFC 8040 SS3.4.1). Renvoie 1 si la requete DOIT etre rejetee
+ * (l'appelant doit alors repondre '412 Precondition Failed', RFC 8040
+ * Appendix B.2.2), 0 si elle peut proceder (aucun des deux en-tetes
+ * n'est present, ou leur valeur correspond a l'etat courant). 'if_match'/
+ * 'if_unmodified_since' peuvent etre NULL (en-tete absent). Une valeur
+ * 'If-Unmodified-Since' non parsable (format HTTP-date invalide) est
+ * ignoree (fail-open), conformement a l'esprit de la RFC 7232 SS3.4
+ * ("a recipient MUST ignore the If-Unmodified-Since header field ...
+ * when the date cannot be parsed"). */
+int sysrepo_backend_check_preconditions(int sr_ds, const char *if_match,
+                                        const char *if_unmodified_since);
+
 #endif /* RESTCONFD_SYSREPO_BACKEND_H */

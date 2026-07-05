@@ -16,11 +16,11 @@ Squelette **phase 2 (lecture + ecriture de base)** d'un serveur RESTCONF s'appuy
 | `{+restconf}` (ressource API) | GET | OK |
 | `{+restconf}/yang-library-version` | GET | OK |
 | `{+restconf}/data[/<api-path>]` | GET/HEAD | OK (voir hypothese ci-dessous) |
-| `{+restconf}/data/ietf-restconf-monitoring:restconf-state/capabilities` | GET/HEAD | OK (annonce conservative, voir "Monitoring") |
+| `{+restconf}/data/ietf-restconf-monitoring:restconf-state/capabilities` | GET/HEAD | OK (voir "Monitoring RESTCONF") |
 | `{+restconf}/ds/<datastore>[/<api-path>]` (RFC 8527) | GET/HEAD | OK pour `running`, `candidate`, `startup`, `operational` |
 | `{+restconf}/data[/<api-path>]` et `{+restconf}/ds/<name>/<api-path>` | POST (creation) | OK (voir "Ecritures" ci-dessous) ; pas sur `operational` (lecture seule) |
-| idem | PUT (remplacement) | OK sur une ressource de donnees ; PUT sur la racine de la datastore (remplacement complet) non implemente |
-| idem | PATCH ("plain patch", fusion) | OK sur une ressource de donnees ; PATCH sur la racine de la datastore non implemente |
+| idem | PUT (remplacement) | OK, y compris PUT sur la racine de la datastore (remplacement complet, RFC 8040 SS4.5 Appendix B.2.4, voir "Ecritures") |
+| idem | PATCH ("plain patch", fusion) | OK, y compris PATCH sur la racine de la datastore (fusion complete, RFC 8040 SS4.6.1 exemple B.2.3, voir "Ecritures") |
 | idem | DELETE | OK sur une ressource de donnees ; non defini sur la racine de la datastore (RFC 8040 SS4.7) |
 | Parametre `content` | GET | Partiel (voir plus bas) |
 | Parametre `depth` | GET/HEAD | OK (`unbounded` ou entier positif, via `sr_get_data(..., max_depth, ...)`) |
@@ -32,7 +32,7 @@ Squelette **phase 2 (lecture + ecriture de base)** d'un serveur RESTCONF s'appuy
 | `OPTIONS` / en-tete `Allow` | OPTIONS + erreurs 405 | OK pour les ressources RESTCONF exposees |
 | `{+restconf}/operations/<module>:<rpc>` (RPC de haut niveau, RFC 8040 SS3.6) | POST | OK (voir "RPC" ci-dessous) |
 | Actions YANG (`action`, invoquees sous `{+restconf}/data/...`/`{+restconf}/ds/<n>/...`, RFC 8040 SS3.6) | POST | OK sous `{+restconf}/ds/ietf-datastores:operational` uniquement (RFC 8527 SS3.1) ; `400 invalid-value` ailleurs (voir "RPC" ci-dessous) |
-| Tout le reste (notifications SSE, XML, `fields`, `with-defaults`, `with-origin`, `insert`/`point`, ETag/Last-Modified, NACM/authn, remplacement complet de la datastore) | — | **Non implemente**, cf. "Feuille de route" |
+| Tout le reste (notifications SSE, XML, ETag/Last-Modified, NACM/authn) | — | **Non implemente**, cf. "Feuille de route" |
 
 ## Hypotheses de conception a valider avec vous
 
@@ -65,10 +65,12 @@ renvoie `406`. Les requetes d'ecriture `POST`/`PUT`/`PATCH` exigent
 erreurs `405 operation-not-supported` ajoutent aussi `Allow`, ce qui facilite la decouverte par les
 clients sans lancer d'operation sysrepo.
 
-Les query parameters sont valides avant execution : les lectures de donnees acceptent seulement
-`content` et `depth`; les autres ressources/methodes n'acceptent aucun parametre pour l'instant.
-Ainsi `fields`, `with-defaults`, `with-origin`, `insert`, `point`, etc. renvoient `400
-invalid-value` tant que leur semantique n'est pas implementee.
+Les query parameters sont valides avant execution : les lectures de donnees (GET/HEAD sur
+`{+restconf}/data` et `{+restconf}/ds/<name>`) acceptent `content`, `depth`, `fields`,
+`with-defaults` et `with-origin` (ce dernier uniquement sur la datastore `operational`, sinon `400
+invalid-value` ; cf. `parse_get_options()`) ; les autres ressources/methodes n'acceptent aucun
+parametre pour l'instant. `insert`/`point`, `filter`, `start-time`, `stop-time` renvoient toujours
+`400 invalid-value`, leur semantique n'etant pas implementee.
 
 ## Ecritures (POST/PUT/PATCH/DELETE)
 
@@ -91,10 +93,27 @@ Implementees dans `sysrepo_backend_write()`/`sysrepo_backend_delete()` (`src/sys
   noeud fraichement analyse ; les valeurs de cle sont percent-encodees par prudence mais sans
   gestion fine de tous les caracteres reserves de la RFC 8040 SS3.5.3 (a completer si vos cles
   utilisent des caracteres inhabituels).
-- **Non gere** : remplacement/fusion de la datastore entiere via PUT/PATCH directement sur
-  `{+restconf}/data` ou `{+restconf}/ds/<name>` (RFC 8040 SS4.5, exemple Appendix B.2.4, qui
-  s'appuie sur l'enveloppe `data` du module `ietf-restconf`) ; DELETE n'est pas defini sur cette
-  meme racine (RFC 8040 SS4.7). Ces deux cas renvoient actuellement `501`/`400`.
+- **Remplacement/fusion de la datastore entiere** via PUT/PATCH directement sur `{+restconf}/data`
+  ou `{+restconf}/ds/<name>` (RFC 8040 SS4.5 exemple Appendix B.2.4 pour PUT, SS4.6.1 exemple
+  Appendix B.2.3 pour PATCH) : gere par `sysrepo_backend_write_datastore()`
+  (`src/sysrepo_backend.c`), aiguille depuis `sysrepo_backend_write()` des que `nsegments == 0` et
+  que l'operation n'est pas une creation. Le corps JSON attendu est l'enveloppe complete
+  `{"ietf-restconf:data": {...}}` (le conteneur `data` n'est qu'un template YANG `yang-data`, RFC
+  8040 SS8 : il n'existe pas comme noeud de schema reel, d'ou un petit deballage JSON minimal
+  (`extract_data_envelope()`) avant de repasser la main a `lyd_parse_data()`). Pour PUT
+  (remplacement complet), tout noeud de premier niveau present avant l'operation mais absent du
+  nouveau corps est supprime explicitement (`sr_delete_item()`) ; les noeuds de premier niveau
+  presents dans les deux arbres sont marques `ietf-netconf:operation="replace"`, ce qui fait
+  supprimer recursivement, cote sysrepo, tout descendant absent du nouveau corps. Pour PATCH
+  ("plain patch"), aucune suppression n'est effectuee : les noeuds du corps sont simplement
+  fusionnes (`merge`), conformement a la semantique "plain patch". Cote
+  `src/restconf_handler.c`, `handle_data_put()`/`handle_data_patch()` acceptent maintenant
+  `path->nsegments == 0` (auparavant rejete en `501`/`400`) ; la reponse est toujours `204 No
+  Content` pour ce cas (la ressource datastore elle-meme existe toujours, ce PUT/PATCH ne peut donc
+  jamais la "creer"). DELETE reste non defini sur cette meme racine (RFC 8040 SS4.7, `405
+  operation-not-supported`). Non teste contre un sysrepo/libyang reels (cf. "Points sensibles a la
+  version installee") : la strategie de diff "premier niveau + replace recursif" est une hypothese
+  de conception a valider.
 - L'ecriture est bloquee sur la datastore `operational` par le meme garde-fou que la lecture (cf.
   "Hypotheses de conception" ci-dessus : `read_only` dans `DS_MAP`), coherent avec le fait que
   sysrepo peuple cette datastore via des abonnements plutot que des edits RESTCONF classiques.
@@ -146,11 +165,12 @@ Implemente dans `sysrepo_backend_rpc_invoke()` (`src/sysrepo_backend.c`), aiguil
 - `{+restconf}/data/ietf-restconf-monitoring:restconf-state/capabilities/capability`
 
 Ces ressources exposent le conteneur obligatoire `restconf-state/capabilities` du module
-`ietf-restconf-monitoring` (RFC 8040 SS9.1). L'annonce est volontairement conservative :
-`urn:ietf:params:restconf:capability:defaults:1.0?basic-mode=explicit` et
-`urn:ietf:params:restconf:capability:depth:1.0` sont publies pour l'instant. Les capacites
-optionnelles liees a `fields`, `with-defaults`, `filter`, `start-time`, `stop-time`, etc. ne
-seront ajoutees que lorsque les parametres correspondants seront reellement implementes.
+`ietf-restconf-monitoring` (RFC 8040 SS9.1). Sont publiees, dans la mesure ou elles sont
+reellement appliquees par `sysrepo_backend_get()` : `defaults` (RFC 8040 SS9.1.2,
+`basic-mode=explicit`), `depth`, `fields`, `with-defaults` (RFC 8040 SS4.8.9) et,
+specifiques a la NMDA, `with-operational-defaults`/`with-origin` (RFC 8527 SS3.2.1/SS3.2.2). Les
+capacites liees a `filter`, `start-time`, `stop-time`, `insert`/`point` restent non annoncees
+tant que ces parametres ne sont pas reellement implementes (cf. "Feuille de route").
 
 ## Points sensibles a la version installee (a verifier avant de compiler)
 
@@ -183,6 +203,12 @@ publiques de sysrepo et libyang ont evolue :
    timeout notamment) et la structure precise de l'arbre `output` renvoye : le code recherche le
    noeud de schema `LYS_OUTPUT` explicitement plutot que de supposer sa position (racine ou
    enfant), mais cette hypothese meme n'a pas pu etre verifiee contre une sysrepo reelle ici.
+
+4. **`src/sysrepo_backend.c` / `sysrepo_backend_write_datastore()`** (PUT/PATCH sur la racine
+   d'une datastore) : utilise `lyd_path()` (`LYD_PATH_STD`) pour retrouver le chemin de donnees
+   exact des noeuds de premier niveau a supprimer explicitement lors d'un remplacement complet
+   (PUT). Verifiez cette signature (buffer fourni par l'appelant, valeur de retour) dans votre
+   `libyang/tree_data.h` ; non teste contre un sysrepo/libyang reels.
 
 Ces points n'ont **pas pu etre compiles/testes dans cet environnement** (pas d'acces reseau
 pour installer sysrepo/libyang/fcgi2 ici) : relisez-les avant la premiere compilation.
@@ -261,10 +287,10 @@ curl -s http://localhost/restconf/ds/ietf-datastores:operational | jq
 ## Feuille de route (phase 2 et suivantes, a prioriser ensemble)
 - **Plugin sysrepo** : Convertir l'implémentation de ietf-restconf-monitoring, ietf-restconf sous forme de plugin sysrepo.
 - ~~**Ecritures** : POST (creation), PUT (remplacement), PATCH (fusion "plain patch"), DELETE~~ ->
-  fait (voir "Ecritures" ci-dessus), a l'exception du remplacement/fusion complet de la datastore
-  via PUT/PATCH directement sur `{+restconf}/data`/`{+restconf}/ds/<name>` (RFC 8040 SS4.5
-  Appendix B.2.4), qui reste a faire (necessite de deballer l'enveloppe `ietf-restconf:data` du
-  corps de requete).
+  fait (voir "Ecritures" ci-dessus), y compris le remplacement/fusion complet de la datastore via
+  PUT/PATCH directement sur `{+restconf}/data`/`{+restconf}/ds/<name>` (RFC 8040 SS4.5 Appendix
+  B.2.4 / SS4.6.1 exemple B.2.3), via `sysrepo_backend_write_datastore()` qui deballe l'enveloppe
+  `ietf-restconf:data` du corps de requete.
 - ~~**RPC** : POST sur `{+restconf}/operations/<module>:<rpc>` -> `sr_rpc_send_tree()`~~ -> fait
   (voir "RPC" ci-dessus).
 - ~~**Actions** (`{+restconf}/data/<...>/<action>`, statement YANG `action` invoque sous une
@@ -279,25 +305,22 @@ curl -s http://localhost/restconf/ds/ietf-datastores:operational | jq
   correspond a `running` dans ce squelette, renvoie `400 invalid-value` pour une action). Non teste
   contre un sysrepo reel, cf. "Points sensibles a la version installee".
 - **Notifications** : flux SSE sur `text/event-stream` -> `sr_event_notif_subscribe_tree()`: ~5-8 jours
-- **Parametres de requete restants** : ~~`depth`~~, `fields`, `with-defaults` (RFC 8040 SS4.8.9 et
-  son cas particulier operationnel RFC 8527 SS3.2.1), `with-origin` (RFC 8527 SS3.2.2), `insert`/
-  `point`. `depth` est implemente pour GET/HEAD via le `max_depth` de `sr_get_data()`; les autres
-  parametres non supportes sont maintenant rejetes explicitement en `400 invalid-value`.
+- ~~**Parametres de requete** : `depth`, `fields`, `with-defaults` (RFC 8040 SS4.8.9 et son cas
+  particulier operationnel RFC 8527 SS3.2.1), `with-origin` (RFC 8527 SS3.2.2)~~ -> fait (voir
+  "Parametres de requete" ci-dessus et `parse_get_options()`/`sysrepo_backend_get()`). Restent
+  `insert`/`point` (RFC 8040 SS4.8.5/SS4.8.6, insertion dans une liste/leaf-list
+  `ordered-by user`) : toujours rejetes explicitement en `400 invalid-value`, aucune semantique
+  d'insertion implementee pour l'instant.
 - **ETag / Last-Modified** pour collision detection: ~1-2 jours (RFC 8040 SS3.4.1/3.5.1-2).
 - **Authentification/autorisation** : TLS + NACM (`sr_session_set_user`, `SR_SESS_ENABLE_NACM`): ~6-10 jours et NACM
   cote sysrepo (`sr_session_set_user`/`SR_SESS_ENABLE_NACM` a etudier). l'authentification est géré par un programme externe. l'utilisateur fournie un cookie JWT (RFC7519, RFC8725 et RFC7797) contenant le nom de l'utilisateur. La clef de vérification du JWT est stocké dans le keyring kernel.   
 - **Support XML** en plus de JSON: ~4-6 jours (encoder/decoder + Accept negotiation) `Accept`/`Content-Type` existe maintenant pour
   refuser proprement les representations non supportees, mais seul JSON est encode/decode pour
-  l'instant. Une premiere ebauche (`lyd_to_xml_string`/`extract_xml_string`) avait ete inseree dans
-  `src/sysrepo_backend.c` mais coupait en deux la definition de `sysrepo_backend_rpc_invoke`
-  (fichier alors non compilable) et etait de toute facon incomplete (mauvaise gestion d'erreur,
-  acces a un membre `tree->top` inexistant, `struct restconf_error` locale jamais remontee a
-  l'appelant) ; elle a ete retiree. Ce chantier reste donc entierement a refaire proprement, avec
-  ses propres fonctions statiques bien formees et une vraie remontee d'erreur via `struct
-  restconf_error *err`.
+  l'instant. Utiliser `LYD_JSON` ou `LYD_XML` pour les fonctions `lyd_parse_data` et `lyd_print_mem` en fonction de  `Accept`/`Content-Type`.
 - ~~**`restconf-state/capabilities`** (`ietf-restconf-monitoring`) pour annoncer les query
-  parameters reellement supportes (RFC 8040 SS9)~~ -> fait avec une annonce conservative
-  (`defaults` et `depth` pour l'instant).
+  parameters reellement supportes (RFC 8040 SS9)~~ -> fait, mise a jour au fil de
+  l'implementation des parametres (voir "Monitoring RESTCONF") : `defaults`, `depth`, `fields`,
+  `with-defaults`, `with-operational-defaults`, `with-origin`.
 - ~~**Support yang** : verifier au demarrage que sysrepo expose les modules IETF requis par le
   serveur RESTCONF~~ -> fait (`ietf-yang-library`, `ietf-datastores`, `ietf-restconf`,
   `ietf-restconf-monitoring`, `ietf-netconf`). L'installation automatique via `sysrepoctl` reste
@@ -305,20 +328,23 @@ curl -s http://localhost/restconf/ds/ietf-datastores:operational | jq
 - **Librairie** : Créé une librairie Resconf/sysrepo indépendant du frontend Fastcgi2.
 - **Frama-C** : Ajouter une instrumentation du code pour le prouver formellement avec Frama-C
 - **Fuzzing** : Ajouter un programme de fuzzing avec AFL++ qui valide la librairie.
+- **Test/Sample** : Créer des testes d'utilisation qui se base sur l'exemple `oven` de `sysrepo`.
 
 ## Arborescence
 
 ```
 CMakeLists.txt
-include/            en-tetes publics des modules
+include/              en-tetes publics des modules
 src/
-  main.c             boucle FCGX_Accept_r multi-threads
-  http.c             extraction FCGX_Request -> http_request / ecriture http_response
+  main.c              boucle FCGX_Accept_r multi-threads
+  http.c              extraction FCGX_Request -> http_request / ecriture http_response
   restconf_path.c     analyse syntaxique des chemins RESTCONF (api-path RFC 8040 SS3.5.3.1)
   errors.c            modele d'erreur ietf-restconf:errors (RFC 8040 SS7-8)
-  sysrepo_backend.c    connexion sysrepo, mapping datastores RFC 8527, lecture -> JSON
-  restconf_handler.c   dispatcher HTTP -> sysrepo selon le type de ressource
+  sysrepo_backend.c   connexion sysrepo, mapping datastores RFC 8527, lecture -> JSON
+  restconf_handler.c  dispatcher HTTP -> sysrepo selon le type de ressource
 etc/
   nginx-restconf.conf.example
-yang/                restconf yang schema
+yang/                 restconf yang schema
+test/                 fichiers de test
+fuzzing/              fichiers de fuzzing
 ```

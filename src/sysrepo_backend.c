@@ -30,6 +30,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <time.h>
+#include <pthread.h>
 
 static sr_conn_ctx_t *g_conn;
 
@@ -134,6 +136,213 @@ int sysrepo_backend_datastore_from_identityref(const char *identityref, int *sr_
         }
     }
     return -1;
+}
+
+/* --------------------------------------------------------------------
+ * ETag / Last-Modified (RFC 8040 SS3.4.1 Edit Collision Prevention)
+ * -------------------------------------------------------------------- */
+
+/* Ce squelette ne maintient un timestamp/entity-tag QUE au niveau de
+ * chaque datastore dans son ensemble (pas par ressource de donnees
+ * individuelle) : c'est explicitement permis par la RFC 8040 (SS3.5.1
+ * "If not maintained, then the resource timestamp for the datastore MUST
+ * be used instead", SS3.5.2 idem pour l'entity-tag). L'etat est garde en
+ * memoire process (pas persiste : redemarrer restconfd reinitialise
+ * l'ETag/Last-Modified de chaque datastore a l'heure de demarrage), ce
+ * qui est suffisant pour detecter des collisions entre clients RESTCONF
+ * concurrents pendant la duree de vie du processus mais PAS a travers un
+ * redemarrage, ni des modifications faites hors RESTCONF (CLI sysrepo,
+ * NETCONF, etc.) -- limitation a documenter cote operateurs.
+ *
+ * Indexe directement par valeur de sr_datastore_t (running/candidate/
+ * startup/operational tiennent toutes dans de petites valeurs entieres
+ * chez sysrepo) ; REVISION_TABLE_SIZE est une borne large et defensive
+ * plutot qu'une dependance a des constantes precises de sysrepo.h. */
+#define REVISION_TABLE_SIZE 8
+
+struct ds_revision {
+    int initialized;
+    time_t last_modified;
+    unsigned long etag_counter;
+};
+
+static struct ds_revision g_revisions[REVISION_TABLE_SIZE];
+static pthread_mutex_t g_revision_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static struct ds_revision *revision_slot(int sr_ds)
+{
+    if (sr_ds < 0 || sr_ds >= REVISION_TABLE_SIZE) {
+        return NULL; /* datastore hors plage prevue : pas de suivi (defensif) */
+    }
+    return &g_revisions[sr_ds];
+}
+
+/* Initialise paresseusement (au premier acces) le slot d'une datastore
+ * avec l'heure courante et le compteur 0 si ce n'est pas deja fait --
+ * evite d'exiger un appel explicite depuis sysrepo_backend_init() pour
+ * chaque valeur possible de sr_datastore_t. DOIT etre appelee avec
+ * g_revision_mutex deja tenu par l'appelant. */
+static void ensure_revision_initialized(struct ds_revision *slot)
+{
+    if (!slot->initialized) {
+        slot->last_modified = time(NULL);
+        slot->etag_counter = 0;
+        slot->initialized = 1;
+    }
+}
+
+/* A appeler apres toute ecriture reussie (POST/PUT/PATCH/DELETE, y compris
+ * le remplacement/fusion complet de la datastore) sur une datastore de
+ * CONFIGURATION. Avance l'ETag et met a jour Last-Modified a l'heure
+ * courante (RFC 8040 SS3.4.1.1 Timestamp / SS3.4.1.2 Entity-Tag /
+ * SS3.4.1.3 Update Procedure : "changes to configuration data resources
+ * affect ... the datastore resource"). */
+static void bump_datastore_revision(int sr_ds)
+{
+    struct ds_revision *slot = revision_slot(sr_ds);
+    if (!slot) {
+        return;
+    }
+    pthread_mutex_lock(&g_revision_mutex);
+    ensure_revision_initialized(slot);
+    slot->etag_counter++;
+    slot->last_modified = time(NULL);
+    pthread_mutex_unlock(&g_revision_mutex);
+}
+
+/* Formate 't' en HTTP-date (IMF-fixdate, RFC 7231 SS7.1.1.1), p.ex.
+ * "Sun, 06 Nov 1994 08:49:37 GMT". Renvoie une chaine allouee, ou NULL en
+ * cas d'echec d'allocation. */
+static char *format_http_date(time_t t)
+{
+    struct tm tm_utc;
+    gmtime_r(&t, &tm_utc);
+    char *buf = malloc(32);
+    if (!buf) {
+        return NULL;
+    }
+    strftime(buf, 32, "%a, %d %b %Y %H:%M:%S GMT", &tm_utc);
+    return buf;
+}
+
+void sysrepo_backend_get_datastore_revision(int sr_ds, char **etag_out, char **last_modified_out)
+{
+    if (etag_out) {
+        *etag_out = NULL;
+    }
+    if (last_modified_out) {
+        *last_modified_out = NULL;
+    }
+    struct ds_revision *slot = revision_slot(sr_ds);
+    if (!slot) {
+        return;
+    }
+
+    unsigned long etag_counter;
+    time_t last_modified;
+    pthread_mutex_lock(&g_revision_mutex);
+    ensure_revision_initialized(slot);
+    etag_counter = slot->etag_counter;
+    last_modified = slot->last_modified;
+    pthread_mutex_unlock(&g_revision_mutex);
+
+    if (etag_out) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "\"%lu\"", etag_counter);
+        *etag_out = strdup(buf);
+    }
+    if (last_modified_out) {
+        *last_modified_out = format_http_date(last_modified);
+    }
+}
+
+/* Analyse une chaine HTTP-date IMF-fixdate (RFC 7231 SS7.1.1.1, format
+ * produit par format_http_date() ci-dessus et par la quasi-totalite des
+ * clients HTTP modernes) en time_t UTC via strptime()/timegm() -- des
+ * extensions BSD/GNU disponibles par defaut sous glibc en mode non-strict
+ * (CMAKE_C_EXTENSIONS=ON, -std=gnu11 par defaut dans ce projet, cf.
+ * CMakeLists.txt), comme strdup()/strndup() deja utilises ailleurs dans ce
+ * fichier. Les formats obsoletes RFC 850/asctime (RFC 7231 SS7.1.1.1) ne
+ * sont volontairement pas geres. Renvoie 0 en cas de succes, -1 si la
+ * chaine ne correspond pas au format attendu. */
+static int parse_http_date(const char *s, time_t *out)
+{
+    struct tm tm;
+    memset(&tm, 0, sizeof(tm));
+    if (!strptime(s, "%a, %d %b %Y %H:%M:%S GMT", &tm)) {
+        return -1;
+    }
+    *out = timegm(&tm);
+    return 0;
+}
+
+/* Verifie si la valeur d'ETag courante de sr_ds figure dans la liste
+ * (separee par des virgules, RFC 7232 SS3.1) fournie par 'if_match'.
+ * Traite aussi le cas particulier "*" (correspond a toute ressource
+ * existante -- toujours vrai ici puisqu'une datastore existe toujours). */
+static int if_match_satisfied(const char *if_match, const char *current_etag)
+{
+    if (strcmp(if_match, "*") == 0) {
+        return 1;
+    }
+    size_t current_len = strlen(current_etag);
+    const char *p = if_match;
+    while (*p) {
+        while (*p == ' ' || *p == ',') {
+            p++;
+        }
+        if (!*p) {
+            break;
+        }
+        const char *start = p;
+        const char *comma = strchr(p, ',');
+        size_t len = comma ? (size_t)(comma - start) : strlen(start);
+        while (len > 0 && start[len - 1] == ' ') {
+            len--;
+        }
+        if (len == current_len && strncmp(start, current_etag, len) == 0) {
+            return 1;
+        }
+        p = comma ? comma + 1 : start + len;
+    }
+    return 0;
+}
+
+int sysrepo_backend_check_preconditions(int sr_ds, const char *if_match,
+                                        const char *if_unmodified_since)
+{
+    if (!if_match && !if_unmodified_since) {
+        return 0;
+    }
+
+    char *etag = NULL;
+    char *last_modified_str = NULL;
+    sysrepo_backend_get_datastore_revision(sr_ds, &etag, &last_modified_str);
+
+    int reject = 0;
+    if (if_match && etag && !if_match_satisfied(if_match, etag)) {
+        reject = 1;
+    }
+    if (!reject && if_unmodified_since) {
+        time_t client_time;
+        if (parse_http_date(if_unmodified_since, &client_time) == 0) {
+            struct ds_revision *slot = revision_slot(sr_ds);
+            if (slot) {
+                pthread_mutex_lock(&g_revision_mutex);
+                ensure_revision_initialized(slot);
+                time_t current = slot->last_modified;
+                pthread_mutex_unlock(&g_revision_mutex);
+                if (current > client_time) {
+                    reject = 1;
+                }
+            }
+        }
+        /* Date non parsable : ignoree (fail-open), RFC 7232 SS3.4. */
+    }
+
+    free(etag);
+    free(last_modified_str);
+    return reject;
 }
 
 /* Ajoute 'suffix' a *buf (chaine C dynamique), en reallouant. */
@@ -1134,6 +1343,7 @@ static int sysrepo_backend_write_datastore(int sr_ds, enum restconf_write_op op,
         return -1;
     }
 
+    bump_datastore_revision(sr_ds);
     return 0;
 }
 
@@ -1367,6 +1577,7 @@ int sysrepo_backend_write(int sr_ds, const struct restconf_path_segment *segment
         return -1;
     }
 
+    bump_datastore_revision(sr_ds);
     return 0;
 }
 
