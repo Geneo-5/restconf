@@ -8,7 +8,7 @@
 #include <unistd.h>
 #include <event2/event.h>
 #include <event2/bufferevent.h>
-#include <libyang/libyang.h> /* Nécessaire pour struct ly_ctx */
+#include <libyang/libyang.h> /* Necessaire pour struct ly_ctx */
 #include "plugin_api.h"
 #include "ipc/uds_common.h"
 
@@ -107,23 +107,23 @@ void plugin_destroy(plugin_ctx_t *ctx)
 	free(ctx);
 }
 
-/* ======================================================================
+/* ============================================================
  * Gestion du contexte libyang pour le mode Externe
- * ====================================================================== */
+ * ============================================================ */
 
 const struct ly_ctx *plugin_acquire_ly_ctx(plugin_ctx_t *ctx)
 {
-	/* En mode externe, le gateway n'a pas d'accès direct à sysrepo.
+	/* En mode externe, le gateway n'a pas d'acces direct a sysrepo.
 	 * On retourne NULL. Le routeur devra fonctionner sans contexte
-	 * (la résolution des clés de listes sera désactivée).
-	 * TODO: Implémenter un ly_ctx local dans le gateway ou le
-	 * récupérer via IPC. */
+	 * (la resolution des cles de listes sera desactivee).
+	 * TODO: Implementer un ly_ctx local dans le gateway ou le
+	 * recuperer via IPC. */
 	(void)ctx;
 	return NULL;
 }
 
 void plugin_release_ly_ctx(plugin_ctx_t *ctx)
 {
-	/* Rien à libérer puisque nous n'avons pas acquis de contexte */
+	/* Rien a liberer puisque nous n'avons pas acquis de contexte */
 	(void)ctx;
 }

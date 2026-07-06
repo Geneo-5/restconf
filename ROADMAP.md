@@ -24,7 +24,7 @@
 | :--- | :--- | :---: | :---: |
 | **1** | Fondations Réseau & Boucle d'Événements | 100% | 🟢 |
 | **2** | Sécurité, JWT & NACM | 100% | 🟢 |
-| **3** | Architecture Plugin Sysrepo (Dual-Mode) | 95% | 🟢 |
+| **3** | Architecture Plugin Sysrepo (Dual-Mode) | 55% | 🟡 |
 | **4** | Cœur RESTCONF & CRUD (RFC 8040) | 70% | 🟡 |
 | **5** | Extensions NMDA (RFC 8527) | 10% | ⚪ |
 | **6** | Notifications & SSE (RFC 8650) | 40% | 🟡 |
@@ -58,6 +58,7 @@
 | 2.3 | Vérification JWT | RFC 7519 | `EVP_DigestVerify` en mémoire (CPU pur) | `[x]` |
 | 2.4 | Mapping NACM | RFC 8040 Sec 4 | Claim `sub` -> `sr_session_set_user()` | `[x]` |
 | 2.5 | Gestion erreurs Auth | RFC 8040 Sec 7 | HTTP 401/403 + `ietf-restconf:errors` | `[x]` |
+| 2.6 | Parsing JSON robuste du payload JWT | RFC 7519 | `jwt_validator.c` extrait le claim `sub` par `strstr("\"sub\"")` (recherche de sous-chaîne, pas un vrai parseur JSON) — fragile sur des valeurs échappées ou un ordre de champs différent ; à remplacer par un parsing JSON minimal ou `libyang`/`cjson` | `[ ]` |
 
 ### Phase 3 : Architecture Plugin Sysrepo
 *Objectif : Couche d'abstraction et abonnements sysrepo.*
@@ -66,11 +67,15 @@
 | :--- | :--- | :--- | :--- | :---: |
 | 3.1 | Config CMake Dual-Mode | - | Option `BUILD_EXTERNAL_PLUGIN` | `[x]` |
 | 3.2 | Mode Interne | - | Liens statiques, appels C directs | `[x]` |
-| 3.3 | Mode Externe (IPC UDS) | - | `evconnlistener` / `bufferevent` sur `AF_UNIX` | `[x]` |
-| 3.4 | Protocole IPC | - | Framing Length-Header, magic `0x52434E46` | `[x]` |
-| 3.5 | Contexte Libyang | - | `sr_acquire_context()` / `sr_release_context()` | `[x]` |
-| 3.6 | Callbacks Oper Data | YANG `rcmon` | `sr_oper_get_subscribe` (NO_THREAD) | `[x]` |
-| 3.7 | Callbacks RPC | YANG `rsn` | `sr_rpc_subscribe_tree` (NO_THREAD) | `[x]` |
+| 3.3 | Mode Externe (IPC UDS) — connexion | - | `evconnlistener` / `bufferevent` sur `AF_UNIX` établis des deux côtés (`uds_gateway.c`, `uds_plugin.c`) | `[x]` |
+| 3.4 | Protocole IPC — framing | - | Framing Length-Header, magic `0x52434E46`, `ipc_serialize_request()`/`ipc_parse_header()` implémentés dans `uds_common.c` | `[x]` |
+| 3.5 | Contexte Libyang | - | `sr_acquire_context()` / `sr_release_context()` (mode interne uniquement ; en mode externe `plugin_acquire_ly_ctx()` renvoie toujours `NULL`, cf. 3.9) | `[~]` |
+| 3.6 | Callbacks Oper Data | YANG `rcmon` | `sr_oper_get_subscribe` (NO_THREAD) — souscription posée mais callback vide, cf. 7.1 | `[~]` |
+| 3.7 | Callbacks RPC | YANG `rsn` | `sr_rpc_subscribe_tree` (NO_THREAD) — souscription posée mais callback vide, cf. 6.1 | `[~]` |
+| 3.8 | **Mode Externe — dispatch IPC réel** | - | `uds_read_cb`/`gateway_read_cb` sont des stubs vides ; `plugin_handle_get/edit/rpc` et `plugin_subscribe_notifications` côté `uds_gateway.c` ne sérialisent/n'envoient rien (`/* TODO: Serialize and send */`). **Le mode externe ne traite aujourd'hui aucune requête de bout en bout.** | `[ ]` |
+| 3.9 | **Mode Externe — connexion sysrepo du démon** | - | `plugin_main.c` ne fait ni `sr_connect()` ni `sr_session_start()` (`/* TODO: sr_connect, sr_session_start */`) ; le démon `restconf-plugin` n'a donc aucun accès aux datastores | `[ ]` |
+| 3.10| **Mode Externe — contexte libyang à distance** | - | `plugin_acquire_ly_ctx()` renvoie `NULL` en mode externe, ce qui désactive la résolution de clés de liste dans `router.c` pour toute URI keyée ; il faut soit exposer le `ly_ctx` via IPC, soit maintenir un contexte local synchronisé côté gateway | `[ ]` |
+| 3.11| Ajouter `plugin_handle_rpc` en mode interne | RFC 8040 Sec 3.6 | Déclarée dans `plugin_api.h` et implémentée (en stub) dans `uds_gateway.c`, mais **absente de `sysrepo_plugin.c`** — bloquera le link dès que 4.10 appellera cette fonction en mode interne | `[ ]` |
 
 ### Phase 4 : Cœur RESTCONF & CRUD (RFC 8040)
 *Objectif : URI parsing, Codec, et opérations CRUD complètes.*
@@ -143,6 +148,16 @@ réel et les statuts précédemment annoncés :
 | Appels sysrepo bloquants (`sr_get_data`, `sr_apply_changes`) dans la boucle `libevent` | `sysrepo_plugin.c` | 🔴 Élevée | 7.5 |
 | `oper_get_cb` et `rpc_establish_sub_cb` sont des stubs vides | `sysrepo_plugin.c` | 🟡 Faible (déjà pressenti) | 6.1, 7.1, 7.2 |
 | RFC 8527 §3.2 (contraintes MUST par type de datastore) absent de la roadmap | `ROADMAP.md` | 🟡 Faible | 5.5 (nouveau) |
+| Mode Externe (IPC UDS) : socket connectée mais **aucun dispatch réel** des requêtes (get/edit/rpc/notif) | `uds_gateway.c`, `uds_plugin.c` | 🔴 Élevée | 3.8 (nouveau) |
+| Démon `restconf-plugin` ne se connecte jamais à sysrepo (`sr_connect` absent) | `plugin_main.c` | 🔴 Élevée | 3.9 (nouveau) |
+| `plugin_acquire_ly_ctx()` renvoie `NULL` en mode externe → toute URI avec clé de liste échoue au parsing | `uds_gateway.c`, `router.c` | 🟠 Moyenne | 3.10 (nouveau) |
+| `plugin_handle_rpc` absente du mode interne (`sysrepo_plugin.c`) alors que déclarée/utilisée côté externe | `plugin_api.h`, `sysrepo_plugin.c` | 🟠 Moyenne | 3.11 (nouveau) |
+| README : dépendance `libkeyutils` documentée alors que non utilisée (le code fait des `syscall()` bruts) | `README.md` | 🟡 Faible | ✅ Corrigé dans cette session |
+| README : exemple Nginx utilisant `grpc_pass` (framing gRPC/protobuf) pour du RESTCONF JSON/XML | `README.md` | 🟡 Faible | ✅ Corrigé dans cette session |
+| README : section Tests annonçant `ctest` alors qu'aucun `enable_testing()`/`add_test()` n'existe | `README.md`, `CMakeLists.txt` | 🟡 Faible | ✅ Corrigé (avertissement ajouté), 7.4 reste `[ ]` |
+| `CMakeLists.txt` liait `Threads::Threads` sans aucun usage de `pthread` dans le code (contradiction avec la règle mono-thread) | `CMakeLists.txt` | 🟡 Faible | ✅ Corrigé dans cette session |
+| Indentation en double-tabulation ou en espaces sur `sse_stream.c`, `uds_common.{c,h}`, `uds_gateway.c`, `uds_plugin.c`, `plugin_main.c` (viole la règle TABS de `CLAUDE.md`) | fichiers cités | 🟡 Faible | ✅ Corrigé dans cette session |
+| Fichier résiduel `.CLAUDE.md.swp` versionnable, absent de `.gitignore` | racine du dépôt | ⚪ Négligeable | ⚠️ `.gitignore` corrigé (build/, *.swp) ; **le fichier existant doit être supprimé manuellement** (`git rm -f .CLAUDE.md.swp`), aucun outil de suppression de fichier n'était disponible pour le faire depuis cette session |
 
 ---
 

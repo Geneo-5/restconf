@@ -1,3 +1,12 @@
+# Build directories (CMake out-of-source)
+build/
+build-ext/
+
+# Editor swap/backup files
+*.swp
+*.swo
+*~
+
 # Prerequisites
 *.d
 

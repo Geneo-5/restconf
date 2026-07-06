@@ -10,10 +10,10 @@ Ce projet implémente un backend RESTCONF conforme aux **RFC 8040** et **RFC 852
 
 - 🌐 **Transport h2c (HTTP/2 Cleartext)** : Le backend ne gère pas le TLS. Il communique en HTTP/2 pur avec un Reverse Proxy (Nginx, HAProxy, Envoy) qui assure la terminaison HTTPS.
 - 🧵 **Architecture 100% Mono-Thread & Non-Bloquante** : Zéro thread applicatif. Toute la magie opère dans une boucle `libevent` unique. Les descripteurs de fichiers (FD) de `sysrepo` sont intégrés directement dans `libevent` pour un traitement asynchrone des données et des notifications.
-- 🔐 **Authentification JWT via Kernel Keyring** : La vérification cryptographique des JWT (RS256/ES256) utilise les clés publiques stockées de manière sécurisée dans le **Linux Kernel Keyring** (`libkeyutils`), évitant ainsi l'exposition des clés en espace utilisateur.
+- 🔐 **Authentification JWT via Kernel Keyring** : La vérification cryptographique des JWT (signature RSA/EC générique via `EVP_DigestVerify`) utilise une clé publique stockée dans le **Linux Kernel Keyring**, lue via des `syscall()` bruts (`request_key`/`keyctl`, voir `CLAUDE.md` — **pas de dépendance à `libkeyutils`**), évitant ainsi l'exposition des clés en espace utilisateur.
 - 🧩 **Plugin Sysrepo Intégré** : La logique métier (RPCs, données opérationnelles, monitoring) est gérée par un plugin `sysrepo` chargé dynamiquement dans le même espace d'adressage et la même boucle d'événements, éliminant les coûts d'IPC.
-- 📡 **Notifications SSE sur HTTP/2** : Support natif des flux Server-Sent Events (SSE) via les streams HTTP/2 persistants (RFC 8650 / `ietf-restconf-subscribed-notifications`).
-- 🏛️ **Support NMDA (RFC 8527)** : Accès direct aux datastores `operational`, `running`, `intended` avec support des paramètres `with-origin` et `with-defaults`.
+- 📡 **Notifications SSE sur HTTP/2** : Squelette de flux Server-Sent Events (SSE) sur streams HTTP/2 persistants (RFC 8650 / `ietf-restconf-subscribed-notifications`) — **en cours d'implémentation**, voir `ROADMAP.md` Phase 6.
+- 🏛️ **Support NMDA (RFC 8527)** : Routage d'URI `/restconf/ds/<datastore>` **en cours d'implémentation** ; la sélection réelle du datastore sysrepo ainsi que `with-origin`/`with-defaults` ne sont pas encore fonctionnels — voir `ROADMAP.md` Phase 5.
 
 ---
 
@@ -68,14 +68,20 @@ Assurez-vous que les bibliothèques suivantes sont installées sur votre systèm
 - **libevent** (`libevent-dev`) : Boucle d'événements et multiplexage I/O.
 - **nghttp2** (`libnghttp2-dev`) : Protocole HTTP/2.
 - **sysrepo** & **libyang** : Moteur de données YANG et datastores.
-- **libkeyutils** : Interaction avec le keyring du noyau Linux.
 - **OpenSSL** (`libssl-dev`) : Parsing et vérification cryptographique des JWT.
 - **CMake** & **GCC/Clang** : Outils de compilation.
+
+> ℹ️ Le Kernel Keyring est interrogé via les `syscall()` `request_key`/`keyctl`
+> directement (voir `CLAUDE.md`, règle n°5) : **aucune dépendance à
+> `libkeyutils` n'est nécessaire ni utilisée** dans le code. Le paquet
+> `keyutils` (outil CLI `keyctl`) reste utile en exploitation pour injecter
+> la clé (voir section Sécurité ci-dessous), mais n'est pas une dépendance
+> de compilation.
 
 ```bash
 # Exemple sur Ubuntu/Debian
 sudo apt-get install cmake build-essential libevent-dev libnghttp2-dev \
-libsysrepo-dev libyang-dev libkeyutils-dev libssl-dev
+libsysrepo-dev libyang-dev libssl-dev
 ```
 
 ---
@@ -105,11 +111,20 @@ sudo make install
 *   **`ON` (Mode Externe - Séparation des Privilèges)** : Le plugin est compilé comme un exécutable distinct. La communication se fait via IPC (UDS).
 
 #### Mode Externe : Flux de Communication (UDS + libevent)
-Puisqu'il est interdit d'utiliser des threads, l'IPC doit être non-bloquant.
+Puisqu'il est interdit d'utiliser des threads, l'IPC doit être non-bloquant. Le flux **cible** est le suivant :
 1. **Le Plugin (Privilégié)** crée un socket Unix (`AF_UNIX`) et l'ajoute à sa propre boucle `libevent` via `evconnlistener`.
 2. **Le Gateway HTTP (Non-privilégié)** se connecte à ce UDS et l'ajoute à sa boucle `libevent` via `bufferevent_socket_new`.
 3. **Flux JWT / NACM** : Le Gateway reçoit le JWT, l'envoie au Plugin via le UDS. Le Plugin lit le Kernel Keyring, valide le JWT, et renvoie le `username` au Gateway. Le Gateway applique `sr_session_set_user()` (si les ACLs sysrepo le permettent) ou délègue la requête sysrepo au Plugin.
 4. **Flux Notifications (SSE)** : Le Plugin (qui est abonné à `sysrepo`) reçoit un événement. Il sérialise la notification et l'écrit sur le UDS. Le `libevent` du Gateway déclenche un callback `EV_READ` sur le UDS, lit le payload, et l'injecte dans le stream HTTP/2 via `nghttp2_submit_data`.
+
+> ⚠️ **État actuel** : le framing IPC (en-tête `ipc_msg_header_t`, magic
+> `0x52434E46`) est implémenté dans `ipc/uds_common.c`, et la connexion
+> UDS est établie des deux côtés. En revanche, la sérialisation/lecture
+> des messages (`plugin_handle_get/edit/rpc`, `gateway_read_cb`,
+> `uds_read_cb`) est encore à l'état de squelette (`TODO`), et le démon
+> `restconf-plugin` ne se connecte pas encore à `sysrepo`. **Le mode
+> externe n'est donc pas fonctionnel de bout en bout aujourd'hui** — voir
+> `ROADMAP.md` Phase 3 pour le détail des tâches restantes.
 
 ---
 
@@ -145,11 +160,17 @@ server {
     # ... configuration de validation du certificat client ou JWT ...
 
     location /restconf {
-        # Forward vers le backend en HTTP/2 Cleartext (h2c)
-        grpc_pass grpc://127.0.0.1:8080; 
-        
+        # Nginx >= 1.25.1 sait parler HTTP/2 cleartext (h2c) en amont
+        # nativement via le mot-clé "http2" sur l'upstream. Sur des
+        # versions plus anciennes, préférez HAProxy ou Envoy, qui gèrent
+        # le h2c vers l'amont de longue date. Le module gRPC de Nginx
+        # (`grpc_pass`) NE CONVIENT PAS ici : il impose un framing gRPC
+        # (protobuf) et non du RESTCONF JSON/XML classique.
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+
         # Injection du JWT ou de l'utilisateur extrait dans un header
-        grpc_set_header X-User-JWT $http_authorization; 
+        proxy_set_header Authorization $http_authorization;
     }
 }
 ```
@@ -203,14 +224,21 @@ Content-Type: application/yang-data+json
 
 ## 🧪 Tests et Conformité
 
-Le projet inclut une suite de tests utilisant `sysrepo` et des clients RESTCONF de référence pour valider :
+> ⚠️ **État actuel** : `test/basic.sh` contient aujourd'hui quelques appels
+> `nghttp` manuels (Root Discovery, API Resource JSON/XML) sans assertions
+> automatisées, et `CMakeLists.txt` n'active pas encore CTest
+> (`enable_testing()`/`add_test()` absents). La commande `ctest` ci-dessous
+> est donc **l'objectif visé**, pas l'état actuel — voir `ROADMAP.md`
+> Phase 7 (item 7.4).
+
+Objectif de la suite de tests, une fois l'intégration CTest faite :
 - La conformité stricte aux RFC 8040 et 8527.
 - Le comportement non-bloquant sous charge (stress-test sur la boucle `libevent`).
 - La validation des JWT et l'application du NACM (Network Configuration Access Control Model).
 
 ```bash
 cd build
-ctest --output-on-failure
+ctest --output-on-failure   # cible, pas encore câblé
 ```
 
 ---

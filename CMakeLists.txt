@@ -25,7 +25,10 @@ option(ALLOW_INSECURE_JWT
 # ==============================================================================
 find_package(PkgConfig REQUIRED)
 find_package(OpenSSL REQUIRED)
-find_package(Threads REQUIRED)
+# NOTE: pas de find_package(Threads) : le projet est strictement
+# mono-thread (voir CLAUDE.md, règle d'or n°1). Aucun symbole pthread
+# n'est utilisé dans le code ; ne pas relier Threads::Threads pour ne
+# pas laisser croire qu'un usage de threads serait toléré.
 
 # Récupération des bibliothèques via pkg-config
 pkg_check_modules(DEPS REQUIRED IMPORTED_TARGET 
@@ -67,7 +70,6 @@ target_include_directories(restconf-server PRIVATE
 target_link_libraries(restconf-server PRIVATE
 	PkgConfig::DEPS
 	OpenSSL::Crypto
-	Threads::Threads
 )
 
 target_compile_options(restconf-server PRIVATE 
@@ -121,7 +123,6 @@ if(BUILD_EXTERNAL_PLUGIN)
 	target_link_libraries(restconf-plugin PRIVATE
 		PkgConfig::DEPS
 		OpenSSL::Crypto
-		Threads::Threads
 	)
 	
 	target_compile_options(restconf-plugin PRIVATE 
