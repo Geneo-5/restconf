@@ -342,6 +342,11 @@ int router_parse_request(
 				req_out->rpc_name = strdup(rpc_path);
 			}
 		}
+	} else if (strncmp(path, "/streams/", 9) == 0) {
+		/* RFC 8040 Sec 6.3: Event Stream URIs */
+		req_out->res_type = RC_RES_EVENT_STREAM;
+		/* Le reste du path identifie le stream */
+		req_out->xpath = strdup(path + 9);
 	} else {
 		req_out->res_type = RC_RES_UNKNOWN;
 		return -1;

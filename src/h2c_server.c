@@ -45,6 +45,22 @@ typedef struct {
 	size_t offset;
 } data_source_t;
 
+/* File d'attente pour les données SSE */
+typedef struct sse_queue_item {
+	uint8_t *data;
+	size_t len;
+	struct sse_queue_item *next;
+} sse_queue_item_t;
+
+/* Structure pour un flux SSE */
+struct h2c_sse_stream_s {
+	h2c_session_t *session;
+	int32_t stream_id;
+	sse_queue_item_t *head;
+	sse_queue_item_t *tail;
+	bool deferred; /* true si le callback a renvoyé DEFERRED */
+};
+
 static ssize_t data_read_callback(
 	nghttp2_session *session UNUSED,
 	int32_t stream_id UNUSED,
@@ -338,29 +354,154 @@ int h2c_send_response(
 	return 0;
 }
 
-int h2c_send_sse_headers(
+/**
+ * @brief Callback de lecture pour les flux SSE.
+ * Renvoie NGHTTP2_ERR_DEFERRED quand la file est vide,
+ * permettant de pousser des données de manière asynchrone.
+ */
+static ssize_t sse_data_read_callback(
+	nghttp2_session *session UNUSED,
+	int32_t stream_id UNUSED,
+	uint8_t *buf, size_t length,
+	uint32_t *data_flags UNUSED,
+	nghttp2_data_source *source,
+	void *user_data UNUSED)
+{
+	h2c_sse_stream_t *stream = (h2c_sse_stream_t *)source->ptr;
+
+	if (!stream->head) {
+		/* File vide : différer jusqu'à ce que des données arrivent */
+		stream->deferred = true;
+		return NGHTTP2_ERR_DEFERRED;
+	}
+
+	/* Récupérer le premier item de la file */
+	sse_queue_item_t *item = stream->head;
+	size_t to_copy = item->len < length ? item->len : length;
+
+	memcpy(buf, item->data, to_copy);
+
+	/* Si tout a été copié, retirer l'item de la file */
+	if (to_copy == item->len) {
+		stream->head = item->next;
+		if (!stream->head) {
+			stream->tail = NULL;
+		}
+		free(item->data);
+		free(item);
+	} else {
+		/* Données partielles : ajuster l'item */
+		size_t remaining = item->len - to_copy;
+		uint8_t *new_data = malloc(remaining);
+		if (new_data) {
+			memcpy(new_data, item->data + to_copy, remaining);
+			free(item->data);
+			item->data = new_data;
+			item->len = remaining;
+		}
+	}
+
+	/* Ne jamais mettre EOF pour un flux SSE (stream infini) */
+	return (ssize_t)to_copy;
+}
+
+h2c_sse_stream_t *h2c_sse_stream_open(
 	h2c_session_t *session, int32_t stream_id)
 {
+	h2c_sse_stream_t *stream = calloc(1, sizeof(h2c_sse_stream_t));
+	if (!stream) return NULL;
+
+	stream->session = session;
+	stream->stream_id = stream_id;
+	stream->deferred = false;
+
+	/* Headers SSE */
 	nghttp2_nv hdrs[] = {
 		MAKE_NV(":status", "200", 3),
-		MAKE_NV("content-type",
-		        "text/event-stream", 17)
+		MAKE_NV("content-type", "text/event-stream", 17),
+		MAKE_NV("cache-control", "no-cache", 8)
 	};
-	nghttp2_submit_headers(
-		session->ng_session, 0, stream_id,
-		NULL, hdrs, 2, NULL);
+
+	/* Data provider pour le flux SSE */
+	nghttp2_data_provider data_prd = {0};
+	data_prd.source.ptr = stream;
+	data_prd.read_callback = sse_data_read_callback;
+
+	/* Soumettre la réponse avec headers + data provider */
+	nghttp2_submit_response(
+		session->ng_session, stream_id,
+		hdrs, 3, &data_prd);
 	nghttp2_session_send(session->ng_session);
+
+	return stream;
+}
+
+int h2c_sse_stream_push(
+	h2c_sse_stream_t *stream,
+	const uint8_t *data, size_t data_len)
+{
+	if (!stream || !data || data_len == 0) return -1;
+
+	/* Allouer un nouvel item pour la file */
+	sse_queue_item_t *item = malloc(sizeof(sse_queue_item_t));
+	if (!item) return -1;
+
+	item->data = malloc(data_len);
+	if (!item->data) {
+		free(item);
+		return -1;
+	}
+	memcpy(item->data, data, data_len);
+	item->len = data_len;
+	item->next = NULL;
+
+	/* Ajouter à la file */
+	if (stream->tail) {
+		stream->tail->next = item;
+	} else {
+		stream->head = item;
+	}
+	stream->tail = item;
+
+	/* Si le callback était en attente, le réveiller */
+	if (stream->deferred) {
+		stream->deferred = false;
+		nghttp2_session_resume_data(
+			stream->session->ng_session,
+			stream->stream_id);
+		nghttp2_session_send(stream->session->ng_session);
+	}
+
 	return 0;
 }
 
-int h2c_send_sse_data(
-	h2c_session_t *session UNUSED,
-	int32_t stream_id UNUSED,
-	const uint8_t *data UNUSED,
-	size_t data_len UNUSED)
+void h2c_sse_stream_close(h2c_sse_stream_t *stream)
 {
-	/* TODO: Implement data provider for SSE stream */
-	return 0;
+	if (!stream) return;
+
+	/* Vider la file d'attente */
+	while (stream->head) {
+		sse_queue_item_t *item = stream->head;
+		stream->head = item->next;
+		free(item->data);
+		free(item);
+	}
+
+	/* Terminer le stream HTTP/2 */
+	nghttp2_submit_rst_stream(
+		stream->session->ng_session,
+		NGHTTP2_FLAG_NONE,
+		stream->stream_id,
+		NGHTTP2_NO_ERROR);
+	nghttp2_session_send(stream->session->ng_session);
+
+	free(stream);
+}
+
+nghttp2_session *h2c_session_get_nghttp2(h2c_session_t *session)
+{
+	if (!session) return NULL;
+	return session->ng_session;
 }
 
 const char *h2c_session_get_content_type(

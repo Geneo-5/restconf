@@ -66,3 +66,4 @@ dkms.conf
 *.swp
 .codex/
 .DS_Store
+build.log

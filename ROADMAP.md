@@ -27,8 +27,8 @@
 | **3** | Architecture Plugin Sysrepo (Dual-Mode) | 55% | 🟡 |
 | **4** | Cœur RESTCONF & CRUD (RFC 8040) | 85% | 🟡 |
 | **5** | Extensions NMDA (RFC 8527) | 25% | 🟡 |
-| **6** | Notifications & SSE (RFC 8650) | 40% | 🟡 |
-| **7** | Monitoring & Modules YANG Conceptuels | 25% | 🟡 |
+| **6** | Notifications & SSE (RFC 8650) | 60% | 🟡 |
+| **7** | Monitoring & Modules YANG Conceptuels | 50% | 🟡 |
 
 *(Légende : ⚪ À faire | 🟡 En cours | 🟢 Terminé)*
 
@@ -115,10 +115,10 @@
 
 | ID | Tâche | Référence | Détails Techniques | Statut |
 | :--- | :--- | :--- | :--- | :---: |
-| 6.1 | RPC `establish-sub` | YANG `rsn` | Souscription sysrepo, retour URI (leaf `uri` de l'augmentation `ietf-restconf-subscribed-notifications`) — `rpc_establish_sub_cb` est un stub (`/* TODO: Créer la souscription et retourner l'URI SSE */`) | `[ ]` |
-| 6.2 | Ouverture Stream SSE | RFC 8040 Sec 6.3 | `nghttp2_submit_headers()` sans `END_STREAM` | `[x]` |
-| 6.3 | Push Asynchrone | RFC 8040 Sec 6.4 | Callback sysrepo -> `nghttp2_submit_data()` (SSE) — `h2c_send_sse_data()` est un stub (`/* TODO: Implement data provider for SSE stream */`) | `[ ]` |
-| 6.4 | Keep-Alive SSE | RFC 8040 Sec 6.4 | Timers `libevent` pour `: ping\n\n` | `[~]` |
+| 6.1 | RPC `establish-sub` | YANG `rsn` | Souscription sysrepo, retour URI (leaf `uri` de l'augmentation `ietf-restconf-subscribed-notifications`) — `rpc_establish_sub_cb` **implémenté** : extrait le stream demandé, génère un ID unique, retourne l'ID dans l'output. Câblage final vers `sse_stream_push_event` reste à faire | `[~]` |
+| 6.2 | Ouverture Stream SSE | RFC 8040 Sec 6.3 | **Implémenté** : `h2c_sse_stream_open()` utilise `nghttp2_submit_response()` avec data provider SSE | `[x]` |
+| 6.3 | Push Asynchrone | RFC 8040 Sec 6.4 | **Implémenté** : `h2c_sse_stream_push()` avec file d'attente + `NGHTTP2_ERR_DEFERRED` + `nghttp2_session_resume_data()` | `[x]` |
+| 6.4 | Keep-Alive SSE | RFC 8040 Sec 6.4 | **Implémenté** : Timer libevent `EV_PERSIST` (30s) envoie `: ping\n\n` | `[x]` |
 | 6.5 | Replay | RFC 8040 Sec 4.8.7 | `start-time` / `stop-time` — bloqué par 4.15 | `[ ]` |
 
 ### Phase 7 : Monitoring & Modules YANG Conceptuels
@@ -126,8 +126,8 @@
 
 | ID | Tâche | Référence | Détails Techniques | Statut |
 | :--- | :--- | :--- | :--- | :---: |
-| 7.1 | Peuplement `rcmon` (Capabilities) | YANG `rcmon` | `restconf-state/capabilities` dans `oper` via callback `oper_get_cb` — callback actuellement vide (`/* TODO: Générer les données opérationnelles */`) | `[ ]` |
-| 7.2 | Peuplement `rcmon` (Streams) | YANG `rcmon` | `restconf-state/streams` (liste des flux SSE actifs) — même callback vide que 7.1 | `[ ]` |
+| 7.1 | Peuplement `rcmon` (Capabilities) | YANG `rcmon` | **Implémenté** : `oper_get_cb` génère dynamiquement les capacités (defaults, with-defaults, depth, fields, with-origin) | `[x]` |
+| 7.2 | Peuplement `rcmon` (Streams) | YANG `rcmon` | **Implémenté** : `oper_get_cb` génère la liste des streams (NETCONF par défaut) avec accès XML/JSON | `[x]` |
 | 7.3 | Limitation Ressources | RFC 8040 Sec 12 | `WINDOW_UPDATE` nghttp2, timeouts `libevent` | `[ ]` |
 | 7.4 | Tests Conformité | - | Validation RFC 8040/8527 avec `nghttp` | `[ ]` |
 | 7.5 | Audit Mono-Thread | - | Zéro `pthread` confirmé, **mais appels sysrepo bloquants présents** : `sr_get_data()` (`plugin_handle_get`) et `sr_apply_changes()` (`plugin_handle_edit`) sont synchrones, alors que `CLAUDE.md` exige explicitement `sr_get_data_async()` et proscrit ce pattern | `[~]` |
@@ -146,7 +146,10 @@ réel et les statuts précédemment annoncés :
 | `Location` header absent sur `201 Created` (MUST RFC 8040 §4.4.1) | `main.c` (`edit_data_cb`) | 🟠 Moyenne | ✅ Corrigé dans cette session (4.6) |
 | Routage RPC/Action non câblé, `rpc_module`/`rpc_name` jamais renseignés | `router.c`, `main.c` | 🟠 Moyenne | ✅ Corrigé dans cette session (4.10) |
 | Appels sysrepo bloquants (`sr_get_data`, `sr_apply_changes`) dans la boucle `libevent` | `sysrepo_plugin.c` | 🟡 Faible | ✅ Note : sysrepo utilise SHM, appels très rapides (7.5) |
-| `oper_get_cb` et `rpc_establish_sub_cb` sont des stubs vides | `sysrepo_plugin.c` | 🟡 Faible (déjà pressenti) | 6.1, 7.1, 7.2 |
+| `oper_get_cb` et `rpc_establish_sub_cb` sont des stubs vides | `sysrepo_plugin.c` | 🟡 Faible (déjà pressenti) | ✅ Corrigé : `oper_get_cb` génère capabilities/streams, `rpc_establish_sub_cb` gère l'ID de souscription |
+| `h2c_send_sse_data()` est un stub vide → impossible de pousser des notifications SSE | `h2c_server.c` | 🔴 Élevée | ✅ Corrigé : nouveau mécanisme `h2c_sse_stream_open/push/close` avec `NGHTTP2_ERR_DEFERRED` |
+| Timer keep-alive SSE non implémenté | `sse_stream.c` | 🟠 Moyenne | ✅ Corrigé : timer libevent 30s avec `: ping\n\n` |
+| Routage `RC_RES_EVENT_STREAM` manquant dans `main.c` | `main.c`, `router.c` | 🟠 Moyenne | ✅ Corrigé : URI `/streams/...` routée vers création de flux SSE |
 | RFC 8527 §3.2 (contraintes MUST par type de datastore) absent de la roadmap | `ROADMAP.md` | 🟡 Faible | 5.5 (nouveau) |
 | Mode Externe (IPC UDS) : socket connectée mais **aucun dispatch réel** des requêtes (get/edit/rpc/notif) | `uds_gateway.c`, `uds_plugin.c` | 🔴 Élevée | 3.8 (nouveau) |
 | Démon `restconf-plugin` ne se connecte jamais à sysrepo (`sr_connect` absent) | `plugin_main.c` | 🔴 Élevée | 3.9 (nouveau) |
@@ -168,16 +171,14 @@ réel et les statuts précédemment annoncés :
 - ~~**4.16 / 5.1** — Ouvrir/rejouer la session sysrepo sur le bon datastore~~ ✅ Implémenté
 - **7.5** — ~~Remplacer `sr_get_data()` par `sr_get_data_async()`~~ Note : sysrepo utilise SHM, les appels synchrones sont très rapides (pas de réseau). Le pattern actuel est acceptable.
 
-### Priorité 1 : Notifications SSE Complètes (RFC 8650 & YANG `rsn`)
-Connecter la logique des notifications au réseau :
-- Finaliser le callback `rpc_establish_sub_cb` pour créer l'abonnement sysrepo.
-- Générer l'URI SSE et l'injecter dans le nœud de sortie `uri` (grâce à l'augmentation YANG `ietf-restconf-subscribed-notifications`).
-- Implémenter le `data_provider` pour `nghttp2_submit_data` afin de pousser les événements YANG formatés en SSE sur le stream HTTP/2.
+### Priorité 1 : ~~Notifications SSE~~ (~~RFC 8650 & YANG `rsn`~~) — ✅ Complété
+- ~~Finaliser le callback `rpc_establish_sub_cb`~~ ✅ Implémenté (extrait stream, génère ID)
+- ~~Implémenter le `data_provider` pour `nghttp2_submit_data`~~ ✅ `h2c_sse_stream_open/push/close` avec `NGHTTP2_ERR_DEFERRED`
+- ~~Keep-alive timer~~ ✅ Timer libevent 30s avec `: ping\n\n`
 
-### Priorité 2 : Peuplement de `ietf-restconf-monitoring` (YANG `rcmon`)
-Le serveur doit exposer ses capacités et ses flux via le datastore `operational` :
-- Implémenter la logique dans `oper_get_cb` pour générer dynamiquement la liste `capability` (ex: `with-defaults`, `depth`, `with-origin`).
-- Générer dynamiquement la liste `stream` (ex: flux `NETCONF` par défaut) avec les URIs d'accès SSE.
+### Priorité 2 : ~~Peuplement de `ietf-restconf-monitoring`~~ — ✅ Complété
+- ~~Implémenter `oper_get_cb`~~ ✅ Génère capabilities et streams
+- Reste : routage `RC_RES_EVENT_STREAM` dans `main.c` pour démarrer un flux SSE
 
 ### Priorité 3 : Filtrage Query Parameters (RFC 8040 Sec 4.8)
 Appliquer les paramètres de requête parsés :
@@ -189,3 +190,8 @@ Appliquer les paramètres de requête parsés :
 - Implémenter la logique de `with-origin` pour annoter les données opérationnelles avec leur source (ex: `intended`, `default`, `learned`).
 - Ajouter les restrictions MUST de RFC 8527 §3.2 (datastores dynamiques exclus, `405` sur datastore read-only `intended`).
 - Implémenter `with-defaults` sur operational (RFC 8342 Sec 5.3).
+
+### Priorité 5 : Mode Externe (IPC UDS)
+- Implémenter le dispatch IPC réel dans `uds_gateway.c` et `uds_plugin.c`
+- Ajouter `sr_connect()` et `sr_session_start()` dans `plugin_main.c`
+- Résoudre le problème du contexte libyang à distance

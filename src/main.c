@@ -9,10 +9,12 @@
 #include "plugin_api.h"
 #include "router.h"
 #include "codec.h"
+#include "sse_stream.h"
 
 typedef struct {
 	jwt_ctx_t *jwt_ctx;
 	plugin_ctx_t *plugin_ctx;
+	struct event_base *event_base;
 } app_context_t;
 
 typedef struct {
@@ -311,6 +313,49 @@ static void on_restconf_request(
 				405, "operation-not-supported",
 				"Method not allowed for RPC");
 		}
+	} else if (req.res_type == RC_RES_EVENT_STREAM) {
+		/* RFC 8040 Sec 6.3: Event Stream (SSE) */
+		if (strcmp(method, "GET") == 0) {
+			/* Vérifier le header Accept */
+			const char *accept = h2c_session_get_accept(
+				session);
+			if (accept && strstr(accept,
+			                    "text/event-stream") == NULL) {
+				send_error_response(
+					session, stream_id,
+					req.accept_type, 406,
+					"operation-not-supported",
+					"Accept must be "
+					"text/event-stream");
+				router_free_request(&req);
+				return;
+			}
+
+			/* Créer le flux SSE */
+			sse_stream_t *stream = sse_stream_create(
+				session, stream_id,
+				app->event_base);
+			if (!stream) {
+				send_error_response(
+					session, stream_id,
+					req.accept_type, 500,
+					"operation-failed",
+					"Failed to create SSE stream");
+				router_free_request(&req);
+				return;
+			}
+
+			/* TODO: Abonner le stream aux notifications
+			 * sysrepo correspondantes via le plugin.
+			 * Pour l'instant, le flux reste ouvert avec
+			 * keep-alive uniquement. */
+			(void)stream; /* Le stream reste actif */
+		} else {
+			send_error_response(
+				session, stream_id, req.accept_type,
+				405, "operation-not-supported",
+				"Only GET allowed on event streams");
+		}
 	} else {
 		send_error_response(
 			session, stream_id, req.accept_type,
@@ -344,6 +389,7 @@ int main(int argc UNUSED, char **argv UNUSED) {
 
 	/* Initialiser le plugin avec l'event base du serveur */
 	struct event_base *base = h2c_server_get_event_base(server);
+	app.event_base = base;
 	app.plugin_ctx = plugin_init(
 		base, use_external, "/var/run/restconf.sock");
 	if (!app.plugin_ctx) {

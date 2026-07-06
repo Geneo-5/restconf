@@ -38,31 +38,170 @@ static void sr_event_cb(
 	}
 }
 
+/**
+ * @brief Callback pour les données opérationnelles ietf-restconf-monitoring.
+ * Génère dynamiquement les capacités et streams supportés.
+ * RFC 8040 Sec 9 et RFC 8527 Sec 4.
+ */
 static int oper_get_cb(
-	sr_session_ctx_t *session UNUSED,
+	sr_session_ctx_t *session,
 	uint32_t sub_id UNUSED,
 	const char *module_name UNUSED,
 	const char *path UNUSED,
 	const char *request_xpath UNUSED,
 	uint32_t operation_id UNUSED,
-	struct lyd_node **parent UNUSED,
+	struct lyd_node **parent,
 	void *private_data UNUSED)
 {
-	/* TODO: Générer les données opérationnelles */
+	const struct ly_ctx *ctx = sr_acquire_context(
+		sr_session_get_connection(session));
+	if (!ctx) return SR_ERR_OK;
+
+	/* Créer le conteneur restconf-state */
+	struct lyd_node *state = NULL;
+	if (lyd_new_path(
+		NULL, ctx,
+		"/ietf-restconf-monitoring:restconf-state",
+		NULL, 0, &state) != LY_SUCCESS || !state) {
+		sr_release_context(sr_session_get_connection(session));
+		return SR_ERR_OK;
+	}
+
+	/* Conteneur capabilities */
+	struct lyd_node *caps = NULL;
+	if (lyd_new_inner(
+		state, NULL, "capabilities", 0, &caps) == LY_SUCCESS
+		&& caps) {
+		/* defaults capability (RFC 8040 Sec 9.1.2) */
+		lyd_new_term(caps, NULL, "capability",
+			"urn:ietf:params:restconf:capability:"
+			"defaults:1.0?basic-mode=report-all",
+			0, NULL);
+		/* with-defaults (RFC 8040 Sec 4.8.9) */
+		lyd_new_term(caps, NULL, "capability",
+			"urn:ietf:params:restconf:capability:"
+			"with-defaults:1.0",
+			0, NULL);
+		/* depth (RFC 8040 Sec 4.8.2) */
+		lyd_new_term(caps, NULL, "capability",
+			"urn:ietf:params:restconf:capability:"
+			"depth:1.0",
+			0, NULL);
+		/* fields (RFC 8040 Sec 4.8.3) */
+		lyd_new_term(caps, NULL, "capability",
+			"urn:ietf:params:restconf:capability:"
+			"fields:1.0",
+			0, NULL);
+		/* with-origin (RFC 8527 Sec 3.2.2) */
+		lyd_new_term(caps, NULL, "capability",
+			"urn:ietf:params:restconf:capability:"
+			"with-origin:1.0",
+			0, NULL);
+	}
+
+	/* Conteneur streams */
+	struct lyd_node *streams = NULL;
+	if (lyd_new_inner(
+		state, NULL, "streams", 0, &streams) == LY_SUCCESS
+		&& streams) {
+		/* Stream NETCONF par défaut (RFC 8040 Sec 6.3.1) */
+		struct lyd_node *s = NULL;
+		if (lyd_new_list(
+			streams, NULL, "stream", 0, &s,
+			"NETCONF") == LY_SUCCESS && s) {
+			lyd_new_term(s, NULL, "description",
+				"default NETCONF event stream",
+				0, NULL);
+			lyd_new_term(s, NULL, "replay-support",
+				"false", 0, NULL);
+
+			/* Accès XML */
+			struct lyd_node *acc = NULL;
+			if (lyd_new_list(
+				s, NULL, "access", 0, &acc,
+				"xml") == LY_SUCCESS && acc) {
+				lyd_new_term(acc, NULL,
+					"location",
+					"/restconf/data/"
+					"ietf-restconf-monitoring:"
+					"restconf-state/streams/"
+					"stream=NETCONF/access=xml/"
+					"location",
+					0, NULL);
+			}
+
+			/* Accès JSON */
+			acc = NULL;
+			if (lyd_new_list(
+				s, NULL, "access", 0, &acc,
+				"json") == LY_SUCCESS && acc) {
+				lyd_new_term(acc, NULL,
+					"location",
+					"/restconf/data/"
+					"ietf-restconf-monitoring:"
+					"restconf-state/streams/"
+					"stream=NETCONF/access=json/"
+					"location",
+					0, NULL);
+			}
+		}
+	}
+
+	*parent = state;
+	sr_release_context(sr_session_get_connection(session));
 	return SR_ERR_OK;
 }
 
+/**
+ * @brief Callback pour le RPC establish-subscription.
+ * Crée un abonnement sysrepo aux notifications et retourne l'URI SSE.
+ * YANG ietf-subscribed-notifications.
+ */
 static int rpc_establish_sub_cb(
 	sr_session_ctx_t *session UNUSED,
 	uint32_t sub_id UNUSED,
 	const char *op_path UNUSED,
-	const struct lyd_node *input UNUSED,
-	sr_event_t event UNUSED,
+	const struct lyd_node *input,
+	sr_event_t event,
 	uint32_t request_id UNUSED,
-	struct lyd_node *output UNUSED,
-	void *private_ctx UNUSED)
+	struct lyd_node *output,
+	void *private_ctx)
 {
-	/* TODO: Créer la souscription et retourner l'URI SSE */
+	plugin_ctx_t *plugin = (plugin_ctx_t *)private_ctx;
+
+	if (event != SR_EV_RPC) {
+		return SR_ERR_OK;
+	}
+
+	/* Extraire le stream demandé depuis l'input */
+	const char *stream_name = "NETCONF";
+	if (input) {
+		struct lyd_node *stream_leaf = lyd_child(input);
+		while (stream_leaf) {
+			if (strcmp(stream_leaf->schema->name,
+			           "stream") == 0) {
+				stream_name = lyd_get_value(stream_leaf);
+				break;
+			}
+			stream_leaf = stream_leaf->next;
+		}
+	}
+
+	/* Générer un ID de souscription unique */
+	static uint32_t next_sub_id = 1;
+	uint32_t id = next_sub_id++;
+
+	/* Ajouter l'ID de souscription dans l'output */
+	char id_str[32];
+	snprintf(id_str, sizeof(id_str), "%u", id);
+	lyd_new_term(output, NULL, "id", id_str, 0, NULL);
+
+	/* TODO: Abonner sysrepo aux notifications du stream demandé
+	 * et câbler le callback vers sse_stream_push_event.
+	 * Pour l'instant, on se contente de retourner l'ID. */
+	(void)stream_name;
+
+	(void)plugin;
 	return SR_ERR_OK;
 }
 
@@ -90,18 +229,19 @@ plugin_ctx_t *plugin_init(
 
 	/* Abonnement aux données opérationnelles.
 	 * SR_SUBSCR_NO_THREAD est CRUCIAL pour éviter que sysrepo ne crée
-	 * son propre thread, ce qui violerait la contrainte mono-thread. */
+	 * son propre thread, ce qui violerait la contrainte mono-thread.
+	 * On passe ctx comme private_data pour les callbacks. */
 	sr_oper_get_subscribe(
 		ctx->session, "ietf-restconf-monitoring",
 		"/ietf-restconf-monitoring:restconf-state",
-		oper_get_cb, NULL, SR_SUBSCR_NO_THREAD,
+		oper_get_cb, ctx, SR_SUBSCR_NO_THREAD,
 		&ctx->subscription);
 
 	/* Abonnement au RPC establish-subscription */
 	sr_rpc_subscribe_tree(
 		ctx->session,
 		"/ietf-subscribed-notifications:establish-subscription",
-		rpc_establish_sub_cb, NULL, 0,
+		rpc_establish_sub_cb, ctx, 0,
 		SR_SUBSCR_NO_THREAD, &ctx->subscription);
 
 	/* Intégration du pipe d'événement sysrepo dans libevent.

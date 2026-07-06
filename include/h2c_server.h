@@ -27,12 +27,36 @@ int h2c_send_response(
 	const char *location,
 	const uint8_t *body, size_t body_len);
 
-int h2c_send_sse_headers(h2c_session_t *session, int32_t stream_id);
-int h2c_send_sse_data(
-	h2c_session_t *session, int32_t stream_id,
+/* Structure opaque pour un flux SSE */
+typedef struct h2c_sse_stream_s h2c_sse_stream_t;
+
+/**
+ * @brief Démarre un flux SSE en envoyant les headers initiaux.
+ * @return Pointeur vers le flux SSE, ou NULL en cas d'erreur.
+ */
+h2c_sse_stream_t *h2c_sse_stream_open(
+	h2c_session_t *session, int32_t stream_id);
+
+/**
+ * @brief Pousse des données sur un flux SSE.
+ * @note Non-bloquant, utilise la file d'attente de nghttp2.
+ */
+int h2c_sse_stream_push(
+	h2c_sse_stream_t *stream,
 	const uint8_t *data, size_t data_len);
 
+/**
+ * @brief Ferme un flux SSE (envoie END_STREAM).
+ */
+void h2c_sse_stream_close(h2c_sse_stream_t *stream);
+
 struct event_base *h2c_server_get_event_base(h2c_server_t *server);
+
+/**
+ * @brief Récupère la session nghttp2 associée à une session h2c.
+ * Utile pour les opérations avancées (resume data, etc.).
+ */
+nghttp2_session *h2c_session_get_nghttp2(h2c_session_t *session);
 
 /* Récupère un header HTTP/2 stocké (ex: Authorization) */
 const char *h2c_session_get_header(
