@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+#define UNUSED __attribute__((unused))
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,70 +11,67 @@
 #include <event2/bufferevent.h>
 #include "ipc/uds_common.h"
 
-/* Context for the external plugin daemon */
 typedef struct {
-		struct event_base *base;
-		struct evconnlistener *listener;
-		/* TODO: Add sysrepo session, etc. */
+	struct event_base *base;
+	struct evconnlistener *listener;
 } ext_plugin_ctx_t;
 
 static void gateway_read_cb(
-		struct bufferevent *bev, void *ctx)
+	struct bufferevent *bev UNUSED, void *ctx UNUSED)
 {
-		/* TODO: Read IPC header, read payload,
-		 * dispatch to internal sysrepo functions,
-		 * serialize response and write back to bev */
+	/* TODO: Read IPC header, read payload,
+	 * dispatch to internal sysrepo functions */
 }
 
 static void gateway_event_cb(
-		struct bufferevent *bev, short events, void *ctx)
+	struct bufferevent *bev, short events, void *ctx UNUSED)
 {
-		if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
-				bufferevent_free(bev);
-		}
+	if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+		bufferevent_free(bev);
+	}
 }
 
 static void accept_gateway_cb(
-		struct evconnlistener *listener,
-		evutil_socket_t fd,
-		struct sockaddr *address,
-		int socklen,
-		void *ctx)
+	struct evconnlistener *listener UNUSED,
+	evutil_socket_t fd,
+	struct sockaddr *address UNUSED,
+	int socklen UNUSED,
+	void *ctx)
 {
-		ext_plugin_ctx_t *pctx = (ext_plugin_ctx_t *)ctx;
-		struct bufferevent *bev = bufferevent_socket_new(
-				pctx->base, fd, BEV_OPT_CLOSE_ON_FREE);
+	ext_plugin_ctx_t *pctx = (ext_plugin_ctx_t *)ctx;
+	struct bufferevent *bev = bufferevent_socket_new(
+		pctx->base, fd, BEV_OPT_CLOSE_ON_FREE);
 
-		bufferevent_setcb(
-				bev, gateway_read_cb, NULL,
-				gateway_event_cb, pctx);
-		bufferevent_enable(bev, EV_READ | EV_WRITE);
+	bufferevent_setcb(
+		bev, gateway_read_cb, NULL,
+		gateway_event_cb, pctx);
+	bufferevent_enable(bev, EV_READ | EV_WRITE);
 }
 
 int ext_plugin_init_uds(
-		struct event_base *base,
-		const char *uds_path)
+	struct event_base *base,
+	const char *uds_path)
 {
-		ext_plugin_ctx_t *ctx = calloc(
-				1, sizeof(ext_plugin_ctx_t));
-		ctx->base = base;
+	ext_plugin_ctx_t *ctx = calloc(
+		1, sizeof(ext_plugin_ctx_t));
+	ctx->base = base;
 
-		unlink(uds_path); /* Remove old socket */
+	unlink(uds_path);
 
-		struct sockaddr_un addr = { 0 };
-		addr.sun_family = AF_UNIX;
-		strncpy(addr.sun_path, uds_path,
-		        sizeof(addr.sun_path) - 1);
+	struct sockaddr_un addr = { 0 };
+	addr.sun_family = AF_UNIX;
+	strncpy(addr.sun_path, uds_path,
+		sizeof(addr.sun_path) - 1);
 
-		ctx->listener = evconnlistener_new_bind(
-				base, accept_gateway_cb, ctx,
-				LEV_OPT_REUSEABLE | LEV_OPT_CLOSE_ON_FREE,
-				-1, (struct sockaddr *)&addr,
-				sizeof(addr));
+	ctx->listener = evconnlistener_new_bind(
+		base, accept_gateway_cb, ctx,
+		LEV_OPT_REUSEABLE | LEV_OPT_CLOSE_ON_FREE,
+		-1, (struct sockaddr *)&addr,
+		sizeof(addr));
 
-		if (!ctx->listener) {
-				free(ctx);
-				return -1;
-		}
-		return 0;
+	if (!ctx->listener) {
+		free(ctx);
+		return -1;
+	}
+	return 0;
 }

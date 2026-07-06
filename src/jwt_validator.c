@@ -72,10 +72,17 @@ static int base64url_decode(
 	return 0;
 }
 
-jwt_ctx_t *jwt_validator_init(const char *key_description) {
+jwt_ctx_t *jwt_validator_init(const char *key_description)
+{
 	jwt_ctx_t *ctx = calloc(1, sizeof(jwt_ctx_t));
 	if (!ctx) return NULL;
 
+#ifdef ALLOW_INSECURE_JWT
+	fprintf(stderr, 
+		"🚨 WARNING: JWT signature verification DISABLED!\n");
+	return ctx; /* Retourne un contexte vide, pas de clé nécessaire */
+#else
+	/* 1. Chercher la clé dans le Kernel Keyring via syscall */
 	long key_id = syscall(
 		__NR_request_key, "user",
 		key_description, NULL,
@@ -89,35 +96,18 @@ jwt_ctx_t *jwt_validator_init(const char *key_description) {
 
 	long key_len = syscall(
 		__NR_keyctl, KEYCTL_READ, key_id, NULL, 0);
-
-	if (key_len < 0) {
-		free(ctx);
-		return NULL;
-	}
+	if (key_len < 0) { free(ctx); return NULL; }
 
 	char *key_buf = malloc(key_len + 1);
-	if (!key_buf) {
-		free(ctx);
-		return NULL;
-	}
+	if (!key_buf) { free(ctx); return NULL; }
 
 	long read_len = syscall(
-		__NR_keyctl, KEYCTL_READ, key_id,
-		key_buf, key_len);
-
-	if (read_len < 0) {
-		free(key_buf);
-		free(ctx);
-		return NULL;
-	}
+		__NR_keyctl, KEYCTL_READ, key_id, key_buf, key_len);
+	if (read_len < 0) { free(key_buf); free(ctx); return NULL; }
 	key_buf[read_len] = '\0';
 
 	BIO *bio = BIO_new_mem_buf(key_buf, read_len);
-	if (!bio) {
-		free(key_buf);
-		free(ctx);
-		return NULL;
-	}
+	if (!bio) { free(key_buf); free(ctx); return NULL; }
 
 	ctx->pkey = PEM_read_bio_PUBKEY(bio, NULL, NULL, NULL);
 	BIO_free(bio);
@@ -130,16 +120,17 @@ jwt_ctx_t *jwt_validator_init(const char *key_description) {
 	}
 
 	return ctx;
+#endif
 }
 
 int jwt_validator_verify(
 	jwt_ctx_t *ctx, const char *jwt_str,
 	char *username_out, size_t username_len)
 {
-	if (!ctx || !ctx->pkey || !jwt_str) return -1;
+	if (!ctx || !jwt_str) return -1;
 
 	char *jwt_copy = strdup(jwt_str);
-	char *header_b64 UNUSED = jwt_copy;
+	char *header_b64 = jwt_copy;
 	char *payload_b64 = strchr(jwt_copy, '.');
 	if (!payload_b64) { free(jwt_copy); return -1; }
 	*payload_b64++ = '\0';
@@ -148,12 +139,48 @@ int jwt_validator_verify(
 	if (!signature_b64) { free(jwt_copy); return -1; }
 	*signature_b64++ = '\0';
 
+#ifndef ALLOW_INSECURE_JWT
+	/* --- MODE PRODUCTION : Vérification cryptographique --- */
+	if (!ctx->pkey) {
+		free(jwt_copy);
+		return -1;
+	}
+
+	EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+	if (!mdctx) { free(jwt_copy); return -1; }
+
+	if (EVP_DigestVerifyInit(
+	        mdctx, NULL, EVP_sha256(), NULL,
+	        ctx->pkey) != 1) {
+		EVP_MD_CTX_free(mdctx);
+		free(jwt_copy);
+		return -1;
+	}
+
+	EVP_DigestVerifyUpdate(mdctx, header_b64, strlen(header_b64));
+	EVP_DigestVerifyUpdate(mdctx, ".", 1);
+	EVP_DigestVerifyUpdate(mdctx, payload_b64, strlen(payload_b64));
+
 	uint8_t sig[256];
 	size_t sig_len = sizeof(sig);
 	base64url_decode(
 		signature_b64, strlen(signature_b64),
 		sig, &sig_len);
 
+	int verify_result = EVP_DigestVerifyFinal(mdctx, sig, sig_len);
+	EVP_MD_CTX_free(mdctx);
+
+	if (verify_result != 1) {
+		free(jwt_copy);
+		return -1; /* Signature invalide */
+	}
+#else
+	/* --- MODE DEBUG : Ignorer la signature --- */
+	(void)signature_b64;
+	(void)header_b64;
+#endif
+
+	/* --- EXTRACTION DU PAYLOAD (Commun aux deux modes) --- */
 	uint8_t payload_json[4096];
 	size_t json_len = sizeof(payload_json);
 	base64url_decode(
@@ -161,6 +188,7 @@ int jwt_validator_verify(
 		payload_json, &json_len);
 	payload_json[json_len] = '\0';
 
+	/* Extraction basique du claim "sub" */
 	char *sub_pos = strstr((char *)payload_json, "\"sub\"");
 	if (sub_pos) {
 		sub_pos = strchr(sub_pos, ':');
@@ -184,9 +212,12 @@ int jwt_validator_verify(
 	return 0;
 }
 
-void jwt_validator_destroy(jwt_ctx_t *ctx) {
+void jwt_validator_destroy(jwt_ctx_t *ctx)
+{
 	if (ctx) {
+#ifndef ALLOW_INSECURE_JWT
 		if (ctx->pkey) EVP_PKEY_free(ctx->pkey);
+#endif
 		free(ctx);
 	}
 }

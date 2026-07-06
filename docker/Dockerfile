@@ -80,8 +80,19 @@ COPY . .
 
 RUN echo "🔨 Compilation du projet RESTCONF..." && \
     mkdir -p build && cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_EXTERNAL_PLUGIN=OFF .. && \
+    cmake .. && \
     make -j$(nproc)
 
+RUN echo "🔨 Compilation du projet RESTCONF + PLUGIN..." && \
+    mkdir -p build_plugin && cd build_plugin && \
+    cmake -DBUILD_EXTERNAL_PLUGIN=ON .. && \
+    make -j$(nproc)
+
+RUN echo "🔨 Compilation du projet RESTCONF..." && \
+    mkdir -p build_test && cd build_test && \
+    cmake -DALLOW_INSECURE_JWT=ON .. && \
+    make -j$(nproc) && \
+    make install
+
 # Message de succès
-CMD ["echo", "✅ Compilation du projet et de ses dépendances réussie avec succès !"]
+CMD ["/usr/local/bin/restconf-server", "--bind", "127.0.0.1:8080", "--keyring-id", "12345678"]

@@ -13,6 +13,7 @@ It operates exclusively over **HTTP/2 Cleartext (h2c)**, delegating TLS terminat
 3. **NO TLS/HTTPS:** The backend speaks **h2c only**. Do not implement OpenSSL TLS server logic. Trust the reverse proxy for TLS.
 4. **DUAL-MODE PLUGIN:** The sysrepo plugin must be compilable as an internal (in-process) or external (out-of-process via UDS) daemon using the CMake option `BUILD_EXTERNAL_PLUGIN`.
 5. **NO LIBKEYUTILS:** Do not use the `libkeyutils` library. You MUST use raw Linux syscalls (`syscall(__NR_request_key, ...)`, `syscall(__NR_keyctl, ...)`) to interact with the Kernel Keyring. Include `<linux/keyctl.h>` and `<sys/syscall.h>`.
+6. **INSECURE JWT MODE:** The `ALLOW_INSECURE_JWT` CMake option disables cryptographic signature verification for debugging. Do not remove the `#ifdef ALLOW_INSECURE_JWT` guards in `jwt_validator.c`. This mode MUST NEVER be enabled in production builds.
 
 ## 📏 Code Style & Formatting (STRICT)
 **All generated C code and scripts MUST strictly follow these formatting rules:**

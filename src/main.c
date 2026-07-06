@@ -136,11 +136,10 @@ static void on_restconf_request(
 		session);
 	const char *accept = h2c_session_get_accept(session);
 	
-	/* 2. Acquisition du contexte libyang (thread-safe) */
+	/* 2. Acquisition du contexte libyang et parsing URI */
 	const struct ly_ctx *ly_ctx = plugin_acquire_ly_ctx(
 		app->plugin_ctx);
 	
-	/* 3. Parsing de l'URI RESTCONF */
 	if (router_parse_request(
 	        ly_ctx, path, method, auth_header,
 	        content_type, accept, &req) != 0) {
@@ -151,11 +150,26 @@ static void on_restconf_request(
 		if (ly_ctx) plugin_release_ly_ctx(app->plugin_ctx);
 		return;
 	}
-	
-	/* Libération du contexte libyang après parsing */
 	if (ly_ctx) plugin_release_ly_ctx(app->plugin_ctx);
 
-	/* 4. Authentification JWT et NACM */
+	/* 3. Root Resource Discovery (RFC 8040 Sec 3.1)
+	 * Ne nécessite pas d'authentification. */
+	if (req.res_type == RC_RES_ROOT_DISCOVERY) {
+		const char *xrd =
+			"<?xml version='1.0' encoding='UTF-8'?>\n"
+			"<XRD xmlns='http://docs.oasis-open.org/ns/"
+			"xri/xrd-1.0'>"
+			"<Link rel='restconf' href='/restconf'/>"
+			"</XRD>";
+		h2c_send_response(
+			session, stream_id, 200,
+			"application/xrd+xml", NULL,
+			(const uint8_t *)xrd, strlen(xrd));
+		router_free_request(&req);
+		return;
+	}
+
+	/* 4. Authentification JWT et NACM (RFC 8040 Sec 2.5) */
 	char username[128] = {0};
 	if (req.username == NULL && auth_header != NULL) {
 		const char *token = strstr(auth_header, "Bearer ");
@@ -172,7 +186,49 @@ static void on_restconf_request(
 		}
 	}
 
-	/* Routage vers le plugin sysrepo */
+	/* 5. API Resource (RFC 8040 Sec 3.3 & RFC 8527 Sec 2)
+	 * Retourne la structure conceptuelle ietf-restconf. */
+	if (req.res_type == RC_RES_API) {
+		char *api_body = NULL;
+		size_t api_len = 0;
+		const char *api_ctype;
+
+		if (req.accept_type == MEDIA_TYPE_XML) {
+			api_ctype = "application/yang-data+xml";
+			api_body = strdup(
+				"<restconf xmlns=\"urn:ietf:params:xml:"
+				"ns:yang:ietf-restconf\">"
+				"<data/>"
+				"<operations/>"
+				"<yang-library-version>2019-01-04"
+				"</yang-library-version>"
+				"</restconf>");
+		} else {
+			api_ctype = "application/yang-data+json";
+			api_body = strdup(
+				"{\"ietf-restconf:restconf\":{"
+				"\"data\":{},"
+				"\"operations\":{},"
+				"\"yang-library-version\":\"2019-01-04\""
+				"}}");
+		}
+
+		if (api_body) {
+			api_len = strlen(api_body);
+			h2c_send_response(
+				session, stream_id, 200, api_ctype,
+				NULL, (const uint8_t *)api_body, api_len);
+			free(api_body);
+		} else {
+			send_error_response(
+				session, stream_id, req.accept_type,
+				500, "operation-failed", "Memory failed");
+		}
+		router_free_request(&req);
+		return;
+	}
+
+	/* 6. Routage vers le plugin sysrepo (Data / Operations) */
 	if (req.res_type == RC_RES_DATA ||
 	    req.res_type == RC_RES_DS) {
 		if (strcmp(method, "GET") == 0 ||
@@ -198,7 +254,6 @@ static void on_restconf_request(
 			ctx->stream_id = stream_id;
 			ctx->accept_type = req.accept_type;
 			
-			/* Appel asynchrone au moteur d'édition */
 			plugin_handle_edit(
 				app->plugin_ctx, &req,
 				(const uint8_t *)body, body_len,
