@@ -55,7 +55,7 @@ static void get_data_cb(
 
 	h2c_send_response(
 		ctx->session, ctx->stream_id, status,
-		ctype, (uint8_t *)body, body_len);
+		ctype, NULL, (uint8_t *)body, body_len);
 
 	if (body) free(body);
 	if (data) sr_release_data(data);
@@ -76,14 +76,54 @@ static void send_error_response(
 	codec_serialize_errors(type, tag, msg, &body, &body_len);
 	h2c_send_response(
 		session, stream_id, status, ctype,
-		(uint8_t *)body, body_len);
+		NULL, (uint8_t *)body, body_len);
 	if (body) free(body);
+}
+
+typedef struct {
+	h2c_session_t *session;
+	int32_t stream_id;
+	media_type_t accept_type;
+} edit_req_ctx_t;
+
+static void edit_data_cb(
+	int http_status,
+	const char *error_tag,
+	const char *error_msg,
+	void *user_data)
+{
+	edit_req_ctx_t *ctx = (edit_req_ctx_t *)user_data;
+	
+	if (http_status >= 200 && http_status < 300) {
+		/* Succès (201 Created ou 204 No Content) */
+		/* TODO: Générer le header Location pour 201 */
+		h2c_send_response(
+			ctx->session, ctx->stream_id,
+			http_status, NULL, NULL, NULL, 0);
+	} else {
+		/* Erreur */
+		char *body = NULL;
+		size_t body_len = 0;
+		const char *ctype = (ctx->accept_type == MEDIA_TYPE_XML) ?
+			"application/yang-data+xml" :
+			"application/yang-data+json";
+
+		codec_serialize_errors(
+			ctx->accept_type, error_tag, error_msg,
+			&body, &body_len);
+		
+		h2c_send_response(
+			ctx->session, ctx->stream_id, http_status,
+			ctype, NULL, (uint8_t *)body, body_len);
+		if (body) free(body);
+	}
+	free(ctx);
 }
 
 static void on_restconf_request(
 	h2c_session_t *session, int32_t stream_id,
 	const char *method, const char *path,
-	const char *body UNUSED, size_t body_len UNUSED,
+	const char *body, size_t body_len,
 	void *user_data)
 {
 	app_context_t *app = (app_context_t *)user_data;
@@ -132,7 +172,7 @@ static void on_restconf_request(
 		}
 	}
 
-	/* 5. Routage vers le plugin sysrepo */
+	/* Routage vers le plugin sysrepo */
 	if (req.res_type == RC_RES_DATA ||
 	    req.res_type == RC_RES_DS) {
 		if (strcmp(method, "GET") == 0 ||
@@ -147,9 +187,27 @@ static void on_restconf_request(
 			plugin_handle_get(
 				app->plugin_ctx, &req,
 				get_data_cb, ctx);
-		} else {
+		} else if (strcmp(method, "POST") == 0 ||
+		           strcmp(method, "PUT") == 0 ||
+		           strcmp(method, "PATCH") == 0 ||
+		           strcmp(method, "DELETE") == 0) {
+			
+			edit_req_ctx_t *ctx = malloc(
+				sizeof(edit_req_ctx_t));
+			ctx->session = session;
+			ctx->stream_id = stream_id;
+			ctx->accept_type = req.accept_type;
+			
+			/* Appel asynchrone au moteur d'édition */
 			plugin_handle_edit(
-				app->plugin_ctx, &req, NULL, session);
+				app->plugin_ctx, &req,
+				(const uint8_t *)body, body_len,
+				edit_data_cb, ctx);
+		} else {
+			send_error_response(
+				session, stream_id, req.accept_type,
+				405, "operation-not-supported",
+				"Method not allowed");
 		}
 	} else if (req.res_type == RC_RES_OPERATIONS) {
 		/* TODO: Gérer les RPC */

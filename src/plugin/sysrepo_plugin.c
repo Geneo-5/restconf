@@ -127,15 +127,6 @@ void plugin_handle_get(
 	if (data) sr_release_data(data);
 }
 
-void plugin_handle_edit(
-	plugin_ctx_t *ctx UNUSED,
-	const rc_request_t *req UNUSED,
-	plugin_status_cb callback UNUSED,
-	void *user_data UNUSED)
-{
-	/* TODO: Implémenter les opérations d'édition */
-}
-
 void plugin_subscribe_notifications(
 	plugin_ctx_t *ctx, plugin_notif_cb callback,
 	void *user_data)
@@ -169,4 +160,82 @@ void plugin_release_ly_ctx(plugin_ctx_t *ctx) {
 	if (ctx && ctx->conn) {
 		sr_release_context(ctx->conn);
 	}
+}
+
+void plugin_handle_edit(
+	plugin_ctx_t *ctx,
+	const rc_request_t *req,
+	const uint8_t *body,
+	size_t body_len,
+	plugin_edit_cb callback,
+	void *user_data)
+{
+	int rc = SR_ERR_OK;
+	int http_status = 204;
+	const char *error_tag = "operation-failed";
+	const char *error_msg = "Success";
+
+	if (req->username) {
+		sr_session_set_user(ctx->session, req->username);
+	}
+
+	if (strcmp(req->method, "DELETE") == 0) {
+		rc = sr_delete_item(
+			ctx->session, req->xpath, SR_EDIT_DEFAULT);
+		if (rc == SR_ERR_OK) {
+			/* Ajout du timeout (0 = défaut) */
+			rc = sr_apply_changes(ctx->session, 0);
+		}
+	} else {
+		/* POST, PUT, PATCH */
+		struct lyd_node *data = NULL;
+		rc = codec_parse_data(
+			ctx->session, (const char *)body,
+			body_len, req->req_type, &data);
+		
+		if (rc == 0 && data) {
+			const char *default_op = "merge";
+			
+			if (strcmp(req->method, "PUT") == 0) {
+				default_op = "replace";
+			} else if (strcmp(req->method, "POST") == 0) {
+				default_op = "merge";
+				http_status = 201; /* Created */
+			} else if (strcmp(req->method, "PATCH") == 0) {
+				default_op = "merge";
+			}
+
+			rc = sr_edit_batch(
+				ctx->session, data, default_op);
+			if (rc == SR_ERR_OK) {
+				/* Ajout du timeout (0 = défaut) */
+				rc = sr_apply_changes(ctx->session, 0);
+			}
+			lyd_free_all(data);
+		} else {
+			rc = SR_ERR_VALIDATION_FAILED;
+		}
+	}
+
+	/* Mapping des erreurs sysrepo vers HTTP/RESTCONF */
+	error_msg = sr_strerror(rc);
+	if (rc != SR_ERR_OK) {
+		if (rc == SR_ERR_UNAUTHORIZED) {
+			error_tag = "access-denied";
+			http_status = 403;
+		} else if (rc == SR_ERR_NOT_FOUND) {
+			error_tag = "invalid-value";
+			http_status = 404;
+		} else if (rc == SR_ERR_EXISTS) {
+			error_tag = "data-exists";
+			http_status = 409;
+		} else if (rc == SR_ERR_VALIDATION_FAILED) {
+			error_tag = "invalid-value";
+			http_status = 400;
+		} else {
+			http_status = 500;
+		}
+	}
+
+	callback(http_status, error_tag, error_msg, user_data);
 }

@@ -24,6 +24,7 @@ void h2c_server_destroy(h2c_server_t *server);
 int h2c_send_response(
 	h2c_session_t *session, int32_t stream_id,
 	int status_code, const char *content_type,
+	const char *location,
 	const uint8_t *body, size_t body_len);
 
 int h2c_send_sse_headers(h2c_session_t *session, int32_t stream_id);

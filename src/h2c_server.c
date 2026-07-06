@@ -281,16 +281,42 @@ void h2c_server_destroy(h2c_server_t *server) {
 int h2c_send_response(
 	h2c_session_t *session, int32_t stream_id,
 	int status_code, const char *content_type,
+	const char *location,
 	const uint8_t *body, size_t body_len)
 {
 	char status_str[4];
 	snprintf(status_str, sizeof(status_str), "%d", status_code);
 
-	nghttp2_nv hdrs[] = {
-		MAKE_NV(":status", status_str, strlen(status_str)),
-		MAKE_NV("content-type", content_type,
-		        strlen(content_type))
-	};
+	nghttp2_nv hdrs[3];
+	int hdr_count = 0;
+
+	/* :status */
+	hdrs[hdr_count].name = (uint8_t *)":status";
+	hdrs[hdr_count].namelen = 7;
+	hdrs[hdr_count].value = (uint8_t *)status_str;
+	hdrs[hdr_count].valuelen = strlen(status_str);
+	hdrs[hdr_count].flags = NGHTTP2_NV_FLAG_NONE;
+	hdr_count++;
+
+	/* content-type */
+	if (content_type) {
+		hdrs[hdr_count].name = (uint8_t *)"content-type";
+		hdrs[hdr_count].namelen = 12;
+		hdrs[hdr_count].value = (uint8_t *)content_type;
+		hdrs[hdr_count].valuelen = strlen(content_type);
+		hdrs[hdr_count].flags = NGHTTP2_NV_FLAG_NONE;
+		hdr_count++;
+	}
+
+	/* location */
+	if (location) {
+		hdrs[hdr_count].name = (uint8_t *)"location";
+		hdrs[hdr_count].namelen = 8;
+		hdrs[hdr_count].value = (uint8_t *)location;
+		hdrs[hdr_count].valuelen = strlen(location);
+		hdrs[hdr_count].flags = NGHTTP2_NV_FLAG_NONE;
+		hdr_count++;
+	}
 
 	nghttp2_data_provider data_prd = {0};
 	data_source_t *src = NULL;
@@ -304,9 +330,11 @@ int h2c_send_response(
 	}
 
 	nghttp2_submit_response(
-		session->ng_session, stream_id, hdrs, 2,
+		session->ng_session, stream_id, hdrs, hdr_count,
 		body ? &data_prd : NULL);
 	nghttp2_session_send(session->ng_session);
+	
+	/* Note: src est libéré dans on_frame_send_callback en production */
 	return 0;
 }
 

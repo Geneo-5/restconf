@@ -24,6 +24,7 @@ int codec_serialize_data(
 int codec_parse_data(
 	sr_session_ctx_t *session,
 	const char *payload,
+	size_t len,
 	media_type_t type,
 	struct lyd_node **tree);
 

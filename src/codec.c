@@ -55,6 +55,7 @@ int codec_serialize_data(
 int codec_parse_data(
 	sr_session_ctx_t *session,
 	const char *payload,
+	size_t len,
 	media_type_t type,
 	struct lyd_node **tree)
 {
@@ -63,7 +64,6 @@ int codec_parse_data(
 	LYD_FORMAT ly_fmt = (type == MEDIA_TYPE_XML) ?
 		LYD_XML : LYD_JSON;
 	
-	/* Acquisition correcte du contexte libyang via sysrepo */
 	const struct ly_ctx *ly_ctx = sr_acquire_context(
 		sr_session_get_connection(session));
 	if (!ly_ctx) return -1;
@@ -71,16 +71,26 @@ int codec_parse_data(
 	uint32_t parse_opts = LYD_PARSE_STRICT | LYD_PARSE_OPAQ;
 	uint32_t validate_opts = LYD_VALIDATE_PRESENT;
 
+	/* lyd_parse_data_mem attend une chaîne terminée par \0 */
+	char *null_term = malloc(len + 1);
+	if (!null_term) {
+		sr_release_context(
+			sr_session_get_connection(session));
+		return -1;
+	}
+	memcpy(null_term, payload, len);
+	null_term[len] = '\0';
+
 	if (lyd_parse_data_mem(
-	        ly_ctx, payload, ly_fmt,
+	        ly_ctx, null_term, ly_fmt,
 	        parse_opts, validate_opts, tree) != 0) {
-		/* Libération obligatoire en cas d'erreur */
+		free(null_term);
 		sr_release_context(
 			sr_session_get_connection(session));
 		return -1;
 	}
 	
-	/* Libération obligatoire après utilisation */
+	free(null_term);
 	sr_release_context(
 		sr_session_get_connection(session));
 	return 0;

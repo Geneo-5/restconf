@@ -25,10 +25,6 @@ void plugin_handle_get(
 	plugin_ctx_t *ctx, const rc_request_t *req,
 	plugin_data_cb callback, void *user_data);
 
-void plugin_handle_edit(
-	plugin_ctx_t *ctx, const rc_request_t *req,
-	plugin_status_cb callback, void *user_data);
-
 void plugin_handle_rpc(
 	plugin_ctx_t *ctx, const rc_request_t *req,
 	plugin_rpc_cb callback, void *user_data);
@@ -53,5 +49,19 @@ const struct ly_ctx *plugin_acquire_ly_ctx(plugin_ctx_t *ctx);
  * @brief Libère le contexte libyang précédemment acquis.
  */
 void plugin_release_ly_ctx(plugin_ctx_t *ctx);
+
+typedef void (*plugin_edit_cb)(
+	int http_status,
+	const char *error_tag,
+	const char *error_msg,
+	void *user_data);
+
+void plugin_handle_edit(
+	plugin_ctx_t *ctx,
+	const rc_request_t *req,
+	const uint8_t *body,
+	size_t body_len,
+	plugin_edit_cb callback,
+	void *user_data);
 
 #endif /* PLUGIN_API_H */
