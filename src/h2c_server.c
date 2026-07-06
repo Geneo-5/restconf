@@ -1,0 +1,324 @@
+#define _GNU_SOURCE
+#define UNUSED __attribute__((unused))
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <event2/event.h>
+#include <event2/listener.h>
+#include <event2/bufferevent.h>
+#include <event2/buffer.h>
+#include <nghttp2/nghttp2.h>
+#include "h2c_server.h"
+
+#define MAKE_NV(NAME, VALUE, VALUELEN) \
+	((nghttp2_nv){(uint8_t *)(NAME), (uint8_t *)(VALUE), \
+				  sizeof(NAME) - 1, VALUELEN, \
+				  NGHTTP2_NV_FLAG_NONE})
+
+struct h2c_session_s {
+	nghttp2_session *ng_session;
+	struct bufferevent *bev;
+	h2c_server_t *server;
+	char method[16];
+	char path[2048];
+	char auth_header[4096];
+	uint8_t *body;
+	size_t body_len;
+	size_t body_cap;
+	int32_t current_stream_id;
+};
+
+struct h2c_server_s {
+	struct event_base *base;
+	struct evconnlistener *listener;
+	h2c_request_cb req_cb;
+	void *user_data;
+};
+
+typedef struct {
+	const uint8_t *data;
+	size_t len;
+	size_t offset;
+} data_source_t;
+
+static ssize_t data_read_callback(
+	nghttp2_session *session UNUSED,
+	int32_t stream_id UNUSED,
+	uint8_t *buf, size_t length,
+	uint32_t *data_flags,
+	nghttp2_data_source *source,
+	void *user_data UNUSED)
+{
+	data_source_t *src = (data_source_t *)source->ptr;
+	size_t remaining = src->len - src->offset;
+	size_t to_copy = remaining < length ? remaining : length;
+	
+	memcpy(buf, src->data + src->offset, to_copy);
+	src->offset += to_copy;
+	
+	if (src->offset == src->len) {
+		*data_flags |= NGHTTP2_DATA_FLAG_EOF;
+	}
+	return (ssize_t)to_copy;
+}
+
+const char *h2c_session_get_header(
+	h2c_session_t *session, const char *name)
+{
+	if (!session || !name) return NULL;
+	if (strcasecmp(name, "Authorization") == 0) {
+		return session->auth_header[0] ?
+		       session->auth_header : NULL;
+	}
+	return NULL;
+}
+
+static ssize_t send_callback(
+	nghttp2_session *session UNUSED,
+	const uint8_t *data, size_t length,
+	int flags UNUSED, void *user_data)
+{
+	h2c_session_t *h2_session = (h2c_session_t *)user_data;
+	bufferevent_write(h2_session->bev, data, length);
+	return (ssize_t)length;
+}
+
+static int on_header_callback(
+	nghttp2_session *session UNUSED,
+	const nghttp2_frame *frame,
+	const uint8_t *name, size_t namelen,
+	const uint8_t *value, size_t valuelen,
+	uint8_t flags UNUSED, void *user_data)
+{
+	h2c_session_t *h2_session = (h2c_session_t *)user_data;
+	if (frame->hd.type != NGHTTP2_HEADERS) return 0;
+
+	if (namelen == 7 && memcmp(name, ":method", 7) == 0) {
+		snprintf(h2_session->method,
+		         sizeof(h2_session->method),
+		         "%.*s", (int)valuelen, value);
+	} else if (namelen == 5 &&
+	           memcmp(name, ":path", 5) == 0) {
+		snprintf(h2_session->path,
+		         sizeof(h2_session->path),
+		         "%.*s", (int)valuelen, value);
+	} else if (namelen == 13 &&
+	           memcmp(name, "authorization", 13) == 0) {
+		snprintf(h2_session->auth_header,
+		         sizeof(h2_session->auth_header),
+		         "%.*s", (int)valuelen, value);
+	}
+	return 0;
+}
+
+static int on_data_chunk_recv_callback(
+	nghttp2_session *session UNUSED,
+	uint8_t flags UNUSED,
+	int32_t stream_id UNUSED,
+	const uint8_t *data, size_t len,
+	void *user_data)
+{
+	h2c_session_t *h2_session = (h2c_session_t *)user_data;
+	if (h2_session->body_len + len > h2_session->body_cap) {
+		h2_session->body_cap = (h2_session->body_len + len) * 2;
+		h2_session->body = realloc(
+			h2_session->body, h2_session->body_cap);
+	}
+	memcpy(h2_session->body + h2_session->body_len, data, len);
+	h2_session->body_len += len;
+	return 0;
+}
+
+static int on_frame_recv_callback(
+	nghttp2_session *session UNUSED,
+	const nghttp2_frame *frame, void *user_data)
+{
+	h2c_session_t *h2_session = (h2c_session_t *)user_data;
+	if (frame->hd.type == NGHTTP2_HEADERS &&
+	    (frame->hd.flags & NGHTTP2_FLAG_END_STREAM)) {
+		h2_session->server->req_cb(
+			h2_session, frame->hd.stream_id,
+			h2_session->method, h2_session->path,
+			(const char *)h2_session->body,
+			h2_session->body_len,
+			h2_session->server->user_data);
+		h2_session->body_len = 0;
+	} else if (frame->hd.type == NGHTTP2_DATA &&
+	           (frame->hd.flags & NGHTTP2_FLAG_END_STREAM)) {
+		h2_session->server->req_cb(
+			h2_session, frame->hd.stream_id,
+			h2_session->method, h2_session->path,
+			(const char *)h2_session->body,
+			h2_session->body_len,
+			h2_session->server->user_data);
+		h2_session->body_len = 0;
+	}
+	return 0;
+}
+
+static void bev_read_cb(struct bufferevent *bev, void *ctx) {
+	h2c_session_t *h2_session = (h2c_session_t *)ctx;
+	struct evbuffer *input = bufferevent_get_input(bev);
+	uint8_t buf[4096];
+	int len;
+	
+	while ((len = evbuffer_remove(input, buf, sizeof(buf))) > 0) {
+		if (nghttp2_session_mem_recv(
+		        h2_session->ng_session, buf, len) < 0) {
+			bufferevent_free(bev);
+			return;
+		}
+	}
+	nghttp2_session_send(h2_session->ng_session);
+}
+
+static void bev_event_cb(
+	struct bufferevent *bev, short events, void *ctx)
+{
+	if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+		h2c_session_t *h2_session = (h2c_session_t *)ctx;
+		nghttp2_session_terminate_session(
+			h2_session->ng_session, NGHTTP2_NO_ERROR);
+		nghttp2_session_del(h2_session->ng_session);
+		bufferevent_free(bev);
+		free(h2_session->body);
+		free(h2_session);
+	}
+}
+
+static void accept_cb(
+	struct evconnlistener *listener UNUSED,
+	evutil_socket_t fd,
+	struct sockaddr *address UNUSED,
+	int socklen UNUSED, void *ctx)
+{
+	h2c_server_t *server = (h2c_server_t *)ctx;
+	struct event_base *base = evconnlistener_get_base(listener);
+	
+	h2c_session_t *h2_session = calloc(1, sizeof(h2c_session_t));
+	h2_session->server = server;
+	h2_session->bev = bufferevent_socket_new(
+		base, fd, BEV_OPT_CLOSE_ON_FREE);
+	
+	nghttp2_session_callbacks *callbacks;
+	nghttp2_session_callbacks_new(&callbacks);
+	nghttp2_session_callbacks_set_send_callback(
+		callbacks, send_callback);
+	nghttp2_session_callbacks_set_on_header_callback(
+		callbacks, on_header_callback);
+	nghttp2_session_callbacks_set_on_data_chunk_recv_callback(
+		callbacks, on_data_chunk_recv_callback);
+	nghttp2_session_callbacks_set_on_frame_recv_callback(
+		callbacks, on_frame_recv_callback);
+	
+	nghttp2_option *opts;
+	nghttp2_option_new(&opts);
+	nghttp2_option_set_no_auto_window_update(opts, 0);
+	
+	nghttp2_session_server_new(
+		&h2_session->ng_session, callbacks, h2_session);
+	nghttp2_session_callbacks_del(callbacks);
+	nghttp2_option_del(opts);
+
+	nghttp2_submit_settings(
+		h2_session->ng_session, NGHTTP2_FLAG_NONE, NULL, 0);
+	nghttp2_session_send(h2_session->ng_session);
+
+	bufferevent_setcb(
+		h2_session->bev, bev_read_cb, NULL,
+		bev_event_cb, h2_session);
+	bufferevent_enable(h2_session->bev, EV_READ | EV_WRITE);
+}
+
+h2c_server_t *h2c_server_init(
+	const char *bind_addr, uint16_t port,
+	h2c_request_cb req_cb, void *user_data)
+{
+	h2c_server_t *server = calloc(1, sizeof(h2c_server_t));
+	server->base = event_base_new();
+	server->req_cb = req_cb;
+	server->user_data = user_data;
+
+	struct sockaddr_in sin = {0};
+	sin.sin_family = AF_INET;
+	sin.sin_port = htons(port);
+	inet_pton(AF_INET, bind_addr, &sin.sin_addr);
+
+	server->listener = evconnlistener_new_bind(
+		server->base, accept_cb, server,
+		LEV_OPT_REUSEABLE | LEV_OPT_CLOSE_ON_FREE, -1,
+		(struct sockaddr *)&sin, sizeof(sin));
+	return server;
+}
+
+void h2c_server_run(h2c_server_t *server) {
+	event_base_dispatch(server->base);
+}
+
+void h2c_server_destroy(h2c_server_t *server) {
+	if (!server) return;
+	if (server->listener)
+		evconnlistener_free(server->listener);
+	if (server->base)
+		event_base_free(server->base);
+	free(server);
+}
+
+int h2c_send_response(
+	h2c_session_t *session, int32_t stream_id,
+	int status_code, const char *content_type,
+	const uint8_t *body, size_t body_len)
+{
+	char status_str[4];
+	snprintf(status_str, sizeof(status_str), "%d", status_code);
+
+	nghttp2_nv hdrs[] = {
+		MAKE_NV(":status", status_str, strlen(status_str)),
+		MAKE_NV("content-type", content_type,
+		        strlen(content_type))
+	};
+
+	nghttp2_data_provider data_prd = {0};
+	data_source_t *src = NULL;
+	if (body && body_len > 0) {
+		src = malloc(sizeof(data_source_t));
+		src->data = body;
+		src->len = body_len;
+		src->offset = 0;
+		data_prd.source.ptr = src;
+		data_prd.read_callback = data_read_callback;
+	}
+
+	nghttp2_submit_response(
+		session->ng_session, stream_id, hdrs, 2,
+		body ? &data_prd : NULL);
+	nghttp2_session_send(session->ng_session);
+	return 0;
+}
+
+int h2c_send_sse_headers(
+	h2c_session_t *session, int32_t stream_id)
+{
+	nghttp2_nv hdrs[] = {
+		MAKE_NV(":status", "200", 3),
+		MAKE_NV("content-type",
+		        "text/event-stream", 17)
+	};
+	nghttp2_submit_headers(
+		session->ng_session, 0, stream_id,
+		NULL, hdrs, 2, NULL);
+	nghttp2_session_send(session->ng_session);
+	return 0;
+}
+
+int h2c_send_sse_data(
+	h2c_session_t *session UNUSED,
+	int32_t stream_id UNUSED,
+	const uint8_t *data UNUSED,
+	size_t data_len UNUSED)
+{
+	/* TODO: Implement data provider for SSE stream */
+	return 0;
+}
