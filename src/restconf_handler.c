@@ -2,6 +2,7 @@
 #include "restconf_path.h"
 #include "sysrepo_backend.h"
 #include "errors.h"
+#include "ev_loop.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,7 @@
 #include <time.h>
 
 const char *g_restconf_root = "/restconf";
+int g_restconf_sse_use_libev = 0;
 
 static void send_error_status(struct http_response *resp, int status, const char *error_type,
                                const char *error_tag, const char *fmt, ...)
@@ -1085,6 +1087,188 @@ static void handle_streams(FCGX_Request *fcgx_request, const struct http_request
     pthread_mutex_destroy(&ctx.mutex);
 }
 
+/* --------------------------------------------------------------------
+ * Flux SSE, variante libev (README.md "Migration vers libev" Etape 4 :
+ * migration ciblee, flux SSE uniquement). Reutilise 'struct sse_ctx' et
+ * sse_notif_cb() ci-dessus tels quels (meme file FIFO protegee par
+ * mutex+condvar, remplie par le thread interne cree par sysrepo pour
+ * l'abonnement) : seule la maniere de la VIDER change. Au lieu d'un
+ * thread dedie qui boucle sur pthread_cond_timedwait(), le thread de
+ * cette requete HTTP enregistre le flux aupres de la boucle libev
+ * partagee (ev_loop.h) puis se contente d'attendre la fin du flux
+ * (deconnexion ou erreur d'ecriture) sur 'done_cond' ; c'est le thread
+ * de la boucle libev qui appelle reellement http_sse_send_event()/
+ * http_sse_send_comment(), depuis stream_flush_from_loop() ci-dessous. */
+struct sse_stream_ctx_libev {
+    struct sse_ctx fifo;      /* meme structure/semantique que handle_streams() */
+    FCGX_Request *request;
+    pthread_mutex_t done_mutex;
+    pthread_cond_t done_cond;
+    int done;
+};
+
+/* Invoque par le thread de la boucle libev (ev_loop.c), soit sur
+ * restconf_ev_notify() (nouvelle notification potentiellement en
+ * attente), soit sur le timer heartbeat, soit sur activite du fd
+ * (deconnexion probable, cf. io_cb() dans ev_loop.c). Vide la file
+ * 'fifo' sous verrou puis ecrit chaque notification en SSE ; a defaut
+ * envoie un commentaire heartbeat (meme semantique que
+ * SSE_HEARTBEAT_SECONDS dans handle_streams()). Signale 'done_cond' des
+ * qu'une ecriture echoue (client deconnecte), pour reveiller le thread
+ * de requete HTTP bloque dans handle_streams_libev(). */
+static void stream_flush_from_loop(void *user_data)
+{
+    struct sse_stream_ctx_libev *sctx = user_data;
+
+    pthread_mutex_lock(&sctx->fifo.mutex);
+    if (sctx->done) {
+        /* Deja marque termine (ex. deux reveils concurrents) : rien a
+         * faire, evite d'ecrire sur une connexion en cours de fermeture
+         * cote handle_streams_libev(). */
+        pthread_mutex_unlock(&sctx->fifo.mutex);
+        return;
+    }
+    char **to_send = sctx->fifo.pending;
+    size_t nto_send = sctx->fifo.npending;
+    sctx->fifo.pending = NULL;
+    sctx->fifo.npending = 0;
+    sctx->fifo.cap = 0;
+    pthread_mutex_unlock(&sctx->fifo.mutex);
+
+    int alive = 1;
+    if (nto_send > 0) {
+        for (size_t i = 0; i < nto_send; i++) {
+            if (alive && http_sse_send_event(sctx->request, to_send[i]) != 0) {
+                alive = 0;
+            }
+            free(to_send[i]);
+        }
+        free(to_send);
+    } else {
+        if (http_sse_send_comment(sctx->request, "keep-alive") != 0) {
+            alive = 0;
+        }
+    }
+
+    if (!alive) {
+        pthread_mutex_lock(&sctx->done_mutex);
+        sctx->done = 1;
+        pthread_cond_signal(&sctx->done_cond);
+        pthread_mutex_unlock(&sctx->done_mutex);
+    }
+}
+
+static void handle_streams_libev(FCGX_Request *fcgx_request, const struct http_request *req,
+                                  struct http_response *resp,
+                                  const struct restconf_request_path *path)
+{
+    const char *allow = "GET, HEAD, OPTIONS";
+    if (is_options(req->method)) {
+        send_options(resp, allow);
+        return;
+    }
+    if (!is_get_or_head(req->method)) {
+        send_method_not_allowed(resp, allow,
+                                 "seules les methodes GET/HEAD sont supportees sur une "
+                                 "ressource de flux");
+        return;
+    }
+    if (validate_no_query_params(req, resp) != 0) {
+        return;
+    }
+    if (!path->stream_name || !*path->stream_name) {
+        send_error_status(resp, 400, "protocol", "invalid-value",
+                           "nom de flux manquant : attendu {+restconf}/streams/<nom>");
+        return;
+    }
+    if (!http_request_wants_event_stream(req)) {
+        send_error_status(resp, 406, "protocol", "invalid-value",
+                           "cette ressource ne peut etre recuperee qu'avec "
+                           "'Accept: text/event-stream' (RFC 8040 SS6.3)");
+        return;
+    }
+    if (strcmp(req->method, "HEAD") == 0) {
+        http_response_set_status(resp, 200, "OK");
+        http_response_add_header(resp, "Content-Type: text/event-stream");
+        http_response_set_body(resp, NULL, NULL, 0);
+        return;
+    }
+
+    struct sse_stream_ctx_libev sctx;
+    memset(&sctx, 0, sizeof(sctx));
+    pthread_mutex_init(&sctx.fifo.mutex, NULL);
+    pthread_cond_init(&sctx.fifo.cond, NULL);
+    pthread_mutex_init(&sctx.done_mutex, NULL);
+    pthread_cond_init(&sctx.done_cond, NULL);
+    sctx.request = fcgx_request;
+
+    struct sysrepo_stream_subscription *sub = NULL;
+    struct restconf_error err;
+    memset(&err, 0, sizeof(err));
+    if (sysrepo_backend_stream_subscribe(path->stream_name, sse_notif_cb, &sctx.fifo, &sub,
+                                          &err) != 0) {
+        int status = 0;
+        if (err.error_tag && strcmp(err.error_tag, "invalid-value") == 0) {
+            status = 404;
+        }
+        send_restconf_error(resp, &err, status);
+        pthread_cond_destroy(&sctx.done_cond);
+        pthread_mutex_destroy(&sctx.done_mutex);
+        pthread_cond_destroy(&sctx.fifo.cond);
+        pthread_mutex_destroy(&sctx.fifo.mutex);
+        return;
+    }
+
+    /* NB (dependance a la version de fcgi2) : 'ipcFd' est le champ
+     * public du descripteur de connexion sous-jacent dans
+     * FCGX_Request (cf. fcgiapp.h du depot indique dans le fichier
+     * projet 'fastcgi2') ; a verifier si ce nom de champ venait a
+     * changer selon votre version installee, de la meme maniere que les
+     * constantes SR_OPER_NO_STATE/SR_OPER_NO_CONFIG sont a verifier cote
+     * sysrepo.h (cf. README.md, section "content=config||nonconfig"). */
+    struct restconf_ev_stream *ev_handle =
+        restconf_ev_stream_register(fcgx_request->ipcFd, stream_flush_from_loop, &sctx,
+                                     (double)SSE_HEARTBEAT_SECONDS);
+    if (!ev_handle) {
+        /* Ne devrait arriver que sur echec d'allocation memoire (la
+         * disponibilite de libev a deja ete verifiee par l'appelant,
+         * cf. restconf_handle_request()) : aucun en-tete n'a encore ete
+         * envoye, on peut donc encore repondre normalement via '*resp'. */
+        sysrepo_backend_stream_unsubscribe(sub);
+        send_error_status(resp, 500, "application", "operation-failed",
+                           "enregistrement du flux aupres de la boucle libev impossible");
+        pthread_cond_destroy(&sctx.done_cond);
+        pthread_mutex_destroy(&sctx.done_mutex);
+        pthread_cond_destroy(&sctx.fifo.cond);
+        pthread_mutex_destroy(&sctx.fifo.mutex);
+        return;
+    }
+
+    http_sse_send_headers(fcgx_request);
+    resp->already_sent = 1;
+
+    pthread_mutex_lock(&sctx.done_mutex);
+    while (!sctx.done) {
+        pthread_cond_wait(&sctx.done_cond, &sctx.done_mutex);
+    }
+    pthread_mutex_unlock(&sctx.done_mutex);
+
+    restconf_ev_stream_unregister(ev_handle);
+
+    /* Meme precaution que dans handle_streams() : desabonner AVANT de
+     * purger 'sctx.fifo.pending', pour eviter une fuite due a une
+     * derniere notification arrivee juste avant le desabonnement. */
+    sysrepo_backend_stream_unsubscribe(sub);
+    for (size_t i = 0; i < sctx.fifo.npending; i++) {
+        free(sctx.fifo.pending[i]);
+    }
+    free(sctx.fifo.pending);
+    pthread_cond_destroy(&sctx.done_cond);
+    pthread_mutex_destroy(&sctx.done_mutex);
+    pthread_cond_destroy(&sctx.fifo.cond);
+    pthread_mutex_destroy(&sctx.fifo.mutex);
+}
+
 static void handle_operations(const struct http_request *req, struct http_response *resp,
                                const struct restconf_request_path *path)
 {
@@ -1166,7 +1350,16 @@ void restconf_handle_request(FCGX_Request *fcgx_request, const struct http_reque
         handle_yang_library_version(req, resp);
         break;
     case RESTCONF_RES_STREAMS:
-        handle_streams(fcgx_request, req, resp, &path);
+        /* README.md "Migration vers libev" Etape 4 : bascule a
+         * l'execution entre le modele thread-per-flux historique et la
+         * boucle libev partagee, uniquement si le binaire a ete
+         * construit avec le support libev (-DBUILD_LIBEV=ON) ET que
+         * --sse-libev a ete passe en ligne de commande (cf. main.c). */
+        if (g_restconf_sse_use_libev && restconf_ev_available()) {
+            handle_streams_libev(fcgx_request, req, resp, &path);
+        } else {
+            handle_streams(fcgx_request, req, resp, &path);
+        }
         break;
     case RESTCONF_RES_DATA:
         if (is_restconf_monitoring_state_path(&path)) {

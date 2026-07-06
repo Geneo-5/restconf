@@ -312,4 +312,233 @@ docker run --rm -p 80:80 restconfd
 
 1. **Priorité 1 🟡**: Durcir les notifications SSE : file bornée (item 8), event loop dédiée au lieu d'un thread FastCGI par flux (item 11) -- la v1 fonctionnelle (`sr_notif_subscribe_tree()` + `{+restconf}/streams/<module>`) est en place
 2. **Priorité 2 🟡**: Auth/NACM framework integration
-3. **Priorité 3 🟢**: Sample applications + documentation utilisateur
+
+---
+
+## Migration vers libev comme Boucle d'Événements
+
+### Contexte
+
+Actuellement, `restconfd` utilise le modèle **thread-per-connection** avec :
+- `g_nthreads` (argv[2], défaut 4) contrôlant le nombre de threads workers FastCGI
+- Chaque flux SSE (`handle_streams()`) bloque son thread FastCGI jusqu'à déconnexion du client
+- Limitation pratique du nombre de flux SSE concurrents ≈ `g_nthreads` moins les threads nécessaires aux requêtes RESTCONF classiques (cf. item 11, Phase 2)
+
+L'objectif est de migrer vers **libev** (déjà listé en dépendance en-tête de ce fichier mais non utilisé par le code actuel) pour un modèle d'événements multiplexé sur un thread unique, réduisant le coût mémoire et supprimant la limite artificielle liée à `g_nthreads`.
+
+Cette section documente l'API **réelle** de libev (`ev_io`, `ev_timer`, `ev_async`, `ev_loop`/`ev_run`) telle que définie dans `ev.h`/`ev.pod`, à ne pas confondre avec une API générique.
+
+---
+
+### Étape 1 : Prérequis Libev
+
+```bash
+# Installer libev (dev headers + lib)
+apt install -y libev-dev
+
+# Vérification
+pkg-config --modversion libev
+pkg-config --cflags --libs libev
+```
+
+---
+
+### Étape 2 : Configuration CMake
+
+Ajouter à `CMakeLists.txt` :
+
+```cmake
+option(BUILD_LIBEV "Activer la boucle d'événements libev pour les flux SSE" OFF)
+
+if(BUILD_LIBEV)
+    find_library(LIBEV_LIBRARY NAMES ev)
+    find_path(LIBEV_INCLUDE_DIR NAMES ev.h)
+    if(NOT LIBEV_LIBRARY OR NOT LIBEV_INCLUDE_DIR)
+        message(FATAL_ERROR "libev introuvable (paquet libev-dev requis)")
+    endif()
+    target_include_directories(restconfd PRIVATE ${LIBEV_INCLUDE_DIR})
+    target_link_libraries(restconfd PRIVATE ${LIBEV_LIBRARY})
+    target_compile_definitions(restconfd PRIVATE LIBEV_ENABLED)
+endif()
+```
+
+**Commandes de build :**
+```bash
+mkdir build && cd build
+cmake .. -DBUILD_LIBEV=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+make && sudo make install
+```
+
+---
+
+### Étape 3 : Intégration dans le code source
+
+**API libev réelle utilisée :**
+
+| Concept | Fonction/Type libev | Usage dans `restconfd` |
+|---------|----------------------|-------------------------|
+| Boucle principale | `struct ev_loop *loop = EV_DEFAULT;` | Une seule boucle pour tous les flux SSE, exécutée par le nouveau thread dédié `ev_loop` |
+| Watcher I/O (lecture d'un fd) | `ev_io`, `ev_io_init(&w, cb, fd, EV_READ)`, `ev_io_start(loop, &w)` | Un `ev_io` par flux SSE ouvert, armé sur le fd FastCGI/socket du client |
+| Timer (heartbeat) | `ev_timer`, `ev_timer_init(&t, cb, 15., 15.)`, `ev_timer_start(loop, &t)` | Remplace le heartbeat 15s actuel (`http_sse_send_comment()`) déclenché manuellement |
+| Notification cross-thread | `ev_async`, `ev_async_init(&a, cb)`, `ev_async_start(loop, &a)`, `ev_async_send(loop, &a)` | Le callback sysrepo `stream_notif_cb()` s'exécute dans le thread sysrepo ; il pousse la notification dans la file FIFO existante puis appelle `ev_async_send()` pour réveiller la boucle libev qui écrira l'événement SSE |
+| Lancer la boucle | `ev_run(loop, 0)` | Boucle bloquante du thread dédié à libev (remplace le `while` bloquant par flux) |
+| Arrêter proprement un watcher | `ev_io_stop(loop, &w)` / `ev_timer_stop(loop, &t)` | À la déconnexion du client SSE (EOF sur le fd) |
+| Arrêter la boucle | `ev_break(loop, EVBREAK_ALL)` | À l'arrêt du serveur (SIGTERM) |
+
+**Structure de données recommandée (par flux SSE) :**
+```c
+typedef struct {
+    ev_io io_watcher;            /* armé sur le fd du client SSE */
+    ev_timer heartbeat_watcher;   /* remplace le heartbeat 15s existant */
+    int fd;                       /* fd FastCGI/socket du client */
+    char *module_name;            /* module YANG associé au flux */
+    void *fifo_queue;             /* file existante remplie par stream_notif_cb() */
+    pthread_mutex_t *fifo_mutex;  /* mutex existant partagé avec le thread sysrepo */
+} sse_stream_ctx_t;
+```
+
+**Squelette (nouveau fichier `src/ev_loop.c`) :**
+```c
+#include <ev.h>
+
+static struct ev_loop *g_loop;
+static ev_async g_notif_async;
+
+/* Appelé par ev_async_send() depuis le thread sysrepo (stream_notif_cb) */
+static void notif_async_cb(struct ev_loop *loop, ev_async *w, int revents)
+{
+    /* Parcourt les flux ayant des données en attente dans leur FIFO
+     * et écrit les événements SSE sur les fds correspondants. */
+    sse_flush_pending_notifications(loop);
+}
+
+/* Callback lecture : détecte la déconnexion client (EOF/erreur) */
+static void sse_io_cb(struct ev_loop *loop, ev_io *w, int revents)
+{
+    sse_stream_ctx_t *ctx = (sse_stream_ctx_t *)w->data;
+    char buf[1];
+    ssize_t n = recv(ctx->fd, buf, sizeof(buf), MSG_PEEK);
+    if (n <= 0) {
+        ev_io_stop(loop, &ctx->io_watcher);
+        ev_timer_stop(loop, &ctx->heartbeat_watcher);
+        sse_stream_ctx_free(ctx);
+    }
+}
+
+/* Callback heartbeat : remplace l'appel manuel toutes les 15s */
+static void sse_heartbeat_cb(struct ev_loop *loop, ev_timer *w, int revents)
+{
+    sse_stream_ctx_t *ctx = (sse_stream_ctx_t *)w->data;
+    http_sse_send_comment(ctx->fd);
+}
+
+void restconf_ev_loop_init(void)
+{
+    g_loop = ev_loop_new(EVFLAG_AUTO);
+    ev_async_init(&g_notif_async, notif_async_cb);
+    ev_async_start(g_loop, &g_notif_async);
+}
+
+/* Appelé par sysrepo_backend_stream_subscribe() à l'ouverture d'un flux */
+void restconf_ev_stream_register(sse_stream_ctx_t *ctx)
+{
+    ev_io_init(&ctx->io_watcher, sse_io_cb, ctx->fd, EV_READ);
+    ctx->io_watcher.data = ctx;
+    ev_io_start(g_loop, &ctx->io_watcher);
+
+    ev_timer_init(&ctx->heartbeat_watcher, sse_heartbeat_cb, 15., 15.);
+    ctx->heartbeat_watcher.data = ctx;
+    ev_timer_start(g_loop, &ctx->heartbeat_watcher);
+}
+
+/* Appelé par stream_notif_cb() depuis le thread sysrepo pour réveiller la boucle */
+void restconf_ev_notify(void)
+{
+    ev_async_send(g_loop, &g_notif_async);
+}
+
+/* Thread dédié : remplace le pool g_nthreads pour les flux SSE */
+void *restconf_ev_thread_main(void *unused)
+{
+    ev_run(g_loop, 0);
+    return NULL;
+}
+
+void restconf_ev_loop_stop(void)
+{
+    ev_break(g_loop, EVBREAK_ALL);
+}
+```
+
+**Important :** libev n'est pas thread-safe pour une même boucle appelée depuis plusieurs threads ; seul `ev_async_send()` est safe à appeler depuis un autre thread (ici le thread callback sysrepo). Toute écriture sur les watchers doit se faire depuis le thread qui exécute `ev_run()`.
+
+---
+
+### Étape 4 : Migration ciblée (SSE uniquement)
+
+Les requêtes RESTCONF classiques (GET/POST/PUT/PATCH/DELETE, courtes et synchrones) restent gérées par le pool de threads FastCGI existant (`g_nthreads`, argv[2]) : ce sont les flux SSE longue durée qui bénéficient de libev.
+
+| Composant | Avant (thread-per-flux) | Après (libev) |
+|-----------|--------------------------|----------------|
+| Ouverture d'un flux SSE | `pthread_create()` dédié, bloque sur `sr_notif_subscribe_tree()` + boucle FIFO | `restconf_ev_stream_register()` enregistre un `ev_io` + `ev_timer` sur la boucle unique |
+| Réception d'une notification sysrepo | Callback `stream_notif_cb()` pousse en FIFO, thread flux se réveille sur `pthread_cond_wait()` | Callback `stream_notif_cb()` pousse en FIFO puis appelle `restconf_ev_notify()` (`ev_async_send`) |
+| Heartbeat 15s | `sleep(15)` dans le thread du flux | `ev_timer` périodique |
+| Détection déconnexion client | Erreur d'écriture détectée au prochain envoi | `ev_io` sur `EV_READ` détecte l'EOF immédiatement |
+| Nombre de flux concurrents | Plafonné par `g_nthreads` | Limité seulement par les descripteurs de fichiers (`ulimit -n`) |
+
+---
+
+### Étape 5 : Tests et Validation
+
+**Points à valider :**
+1. **Concurrence** : ouvrir 500+ flux SSE simultanés (`ulimit -n` ajusté) et vérifier qu'aucun n'est refusé faute de thread disponible.
+2. **Fuites mémoire** : `valgrind --leak-check=full` sur un cycle ouverture/fermeture de flux répété.
+3. **Latence de notification** : mesurer le délai entre l'émission sysrepo (`stream_notif_cb`) et la réception côté client SSE, avant/après migration.
+4. **Robustesse fork/signal** : vérifier le comportement de `ev_loop_new(EVFLAG_AUTO)` après un `fork()` (nginx spawn de workers), au besoin appeler `ev_loop_fork()` dans le processus enfant.
+5. **Stabilité** : run de 24h avec ouverture/fermeture continue de flux SSE, sous supervision mémoire.
+
+**Commande utile pour lister les fds ouverts par le process pendant le test :**
+```bash
+ls -1 /proc/$(pgrep restconfd)/fd | wc -l
+```
+
+---
+
+### Étape 6 : Documentation et Support
+
+- Documenter dans le `README` la coexistence du pool `g_nthreads` (requêtes RESTCONF courtes) et de la boucle libev dédiée (flux SSE).
+- Ajouter un flag CLI explicite pour activer/désactiver la boucle libev pendant la transition :
+```bash
+./restconfd --sse-libev        # active la boucle libev pour les flux SSE
+./restconfd --sse-threaded     # comportement actuel (fallback)
+```
+- Documenter la dépendance à `ulimit -n` (nombre de fds) comme nouvelle limite de scalabilité, à la place de `g_nthreads`.
+
+---
+
+### Estimation d'Effort
+
+| Étape              | Effort     | Dépendances                |
+|--------------------|------------|----------------------------|
+| Prérequis Libev (paquet + CMake) | 🟢 1 jour   | `libev-dev` |
+| Squelette `src/ev_loop.c` (ev_io/ev_timer/ev_async) | 🟡 2 jours | API libev réelle ci-dessus |
+| Intégration `sysrepo_backend_stream_subscribe()`/`handle_streams()` | 🔴 3-4 jours | Remplacement du thread-par-flux par enregistrement sur la boucle unique |
+| Tests de charge et fuite mémoire | 🟡 2 jours | `valgrind`, script d'ouverture de N flux |
+| Documentation | 🟢 1 jour   | README + man pages |
+
+**Total estimé :** ~9-10 jours (rattaché à l'item 11 de la Phase 2 — event loop dédiée)
+
+---
+
+### Notes Finales
+
+**Pourquoi libev pour les flux SSE ?**
+- Le modèle thread-per-flux plafonne le nombre de clients SSE simultanés à `g_nthreads` moins les threads nécessaires aux requêtes RESTCONF classiques (limite documentée à l'item 11, Phase 2).
+- libev multiplexe un grand nombre de fds sur un seul thread via `epoll`/`kqueue` selon la plateforme, sans thread dédié par connexion.
+- L'intégration reste incrémentale : seuls les flux SSE longue durée migrent, les requêtes RESTCONF courtes restent sur le pool FastCGI existant.
+
+**Risque de migration :**
+- Toute API sysrepo appelée depuis le callback `notif_async_cb()` (thread de la boucle libev) doit rester compatible avec la session sysrepo dédiée au flux (pas de partage de session entre threads sans synchronisation).
+- Prévoir un flag `--sse-threaded` de repli en cas de régression, le temps de valider en charge.
+
+---

@@ -8,6 +8,7 @@
 #include "http.h"
 #include "restconf_handler.h"
 #include "sysrepo_backend.h"
+#include "ev_loop.h"
 
 static int g_listen_sock = -1;
 static int g_nthreads = 4;
@@ -51,20 +52,47 @@ static void *worker_main(void *arg)
 
 int main(int argc, char **argv)
 {
-    /* Usage : restconfd [chemin-socket-unix|:port] [nb-threads] [racine-restconf]
+    /* Usage : restconfd [--sse-libev|--sse-threaded] [chemin-socket-unix|:port] [nb-threads] [racine-restconf]
      *
      * Sans argument, le processus suppose qu'il est lance par le
      * serveur web via le socket FastCGI standard (fd 0), ce qui
-     * correspond au mode "spawn-fcgi"/systemd habituel avec nginx. */
-    const char *bind_spec = (argc > 1) ? argv[1] : NULL;
-    if (argc > 2) {
-        g_nthreads = atoi(argv[2]);
+     * correspond au mode "spawn-fcgi"/systemd habituel avec nginx.
+     *
+     * --sse-libev / --sse-threaded (cf. README.md "Migration vers
+     * libev") peuvent apparaitre n'importe ou dans la ligne de
+     * commande ; ils sont retires avant l'analyse positionnelle
+     * habituelle ci-dessous. --sse-libev n'a d'effet que si ce binaire
+     * a ete construit avec -DBUILD_LIBEV=ON (sinon un avertissement est
+     * affiche et le modele thread-per-flux reste utilise). */
+    char *positional[3];
+    int npositional = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--sse-libev") == 0) {
+            g_restconf_sse_use_libev = 1;
+        } else if (strcmp(argv[i], "--sse-threaded") == 0) {
+            g_restconf_sse_use_libev = 0;
+        } else if ((size_t)npositional < sizeof(positional) / sizeof(positional[0])) {
+            positional[npositional++] = argv[i];
+        }
+    }
+
+    const char *bind_spec = (npositional > 0) ? positional[0] : NULL;
+    if (npositional > 1) {
+        g_nthreads = atoi(positional[1]);
         if (g_nthreads < 1) {
             g_nthreads = 1;
         }
     }
-    if (argc > 3) {
-        g_restconf_root = argv[3];
+    if (npositional > 2) {
+        g_restconf_root = positional[2];
+    }
+
+    if (g_restconf_sse_use_libev && !restconf_ev_available()) {
+        fprintf(stderr,
+                "restconfd: --sse-libev demande mais ce binaire a ete construit sans le "
+                "support libev (recompiler avec -DBUILD_LIBEV=ON) ; repli sur le modele "
+                "thread-per-flux\n");
+        g_restconf_sse_use_libev = 0;
     }
 
     signal(SIGPIPE, SIG_IGN);
@@ -89,7 +117,14 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    fprintf(stderr, "restconfd: racine RESTCONF=%s, %d thread(s)\n", g_restconf_root, g_nthreads);
+    fprintf(stderr, "restconfd: racine RESTCONF=%s, %d thread(s), flux SSE via %s\n",
+            g_restconf_root, g_nthreads, g_restconf_sse_use_libev ? "libev" : "thread-per-flux");
+
+    if (g_restconf_sse_use_libev && restconf_ev_loop_start() != 0) {
+        fprintf(stderr, "restconfd: demarrage de la boucle libev impossible\n");
+        sysrepo_backend_destroy();
+        return 1;
+    }
 
     pthread_t *threads = calloc((size_t)g_nthreads, sizeof(pthread_t));
     for (int i = 0; i < g_nthreads; i++) {
@@ -99,6 +134,10 @@ int main(int argc, char **argv)
         pthread_join(threads[i], NULL);
     }
     free(threads);
+
+    if (g_restconf_sse_use_libev) {
+        restconf_ev_loop_stop();
+    }
 
     sysrepo_backend_destroy();
     return 0;

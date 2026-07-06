@@ -8,6 +8,15 @@
 /* Racine {+restconf} configuree (defaut "/restconf"). */
 extern const char *g_restconf_root;
 
+/* Selection a l'execution du modele de gestion des flux SSE (RFC 8040
+ * SS3.8/SS6) : 0 (defaut) = modele thread-per-flux historique ; 1 =
+ * boucle libev partagee (cf. README.md "Migration vers libev"). N'a
+ * d'effet que si restconf_ev_available() (ev_loop.h) renvoie 1, i.e. si
+ * le binaire a ete construit avec -DBUILD_LIBEV=ON ; sinon ce flag est
+ * silencieusement ignore et le modele thread-per-flux reste utilise.
+ * Positionne par main.c depuis les arguments --sse-libev/--sse-threaded. */
+extern int g_restconf_sse_use_libev;
+
 /* Traite une requete deja extraite d'une requete FastCGI et remplit
  * *resp en consequence. Gere aussi bien /.well-known/host-meta que les
  * ressources sous g_restconf_root.

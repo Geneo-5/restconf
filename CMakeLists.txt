@@ -44,6 +44,7 @@ endif()
 # ==============================================================================
 option(BUILD_TESTS "Build unit tests" OFF)               # reserve pour plus tard
 option(INSTALL_RUNTIME_LIBS "Copier les .so de sysrepo/libyang/fcgi2 a l'install" OFF)
+option(BUILD_LIBEV "Activer la boucle d'evenements libev pour les flux SSE (cf. README.md 'Migration vers libev')" OFF)
 
 # ==============================================================================
 # Dependances externes
@@ -74,6 +75,21 @@ find_path(FCGI_INCLUDE_DIR fcgiapp.h
 find_library(FCGI_LIBRARY NAMES fcgi
     HINTS /usr/local/lib /usr/lib /opt/fcgi2/lib)
 
+# --- libev (optionnel, cf. README.md "Migration vers libev") ---
+if(BUILD_LIBEV)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(PC_LIBEV QUIET libev)
+    endif()
+    find_path(LIBEV_INCLUDE_DIR ev.h
+        HINTS ${PC_LIBEV_INCLUDE_DIRS} /usr/local/include /usr/include)
+    find_library(LIBEV_LIBRARY NAMES ev
+        HINTS ${PC_LIBEV_LIBRARY_DIRS} /usr/local/lib /usr/lib)
+    if(NOT LIBEV_LIBRARY OR NOT LIBEV_INCLUDE_DIR)
+        message(FATAL_ERROR "BUILD_LIBEV=ON mais libev introuvable (paquet libev-dev requis, "
+            "cf. README.md 'Migration vers libev' Etape 1).")
+    endif()
+endif()
+
 if(NOT SYSREPO_LIBRARY OR NOT SYSREPO_INCLUDE_DIR)
     message(FATAL_ERROR "sysrepo introuvable. Compilez/installez-le (depot indique "
         "dans le fichier projet 'sysrepo') ou passez -DSYSREPO_INCLUDE_DIR=... "
@@ -98,6 +114,7 @@ add_executable(restconfd
     src/restconf_path.c
     src/sysrepo_backend.c
     src/restconf_handler.c
+    $<IF:$<BOOL:${BUILD_LIBEV}>,src/ev_loop.c,src/ev_loop_stub.c>
 )
 
 target_include_directories(restconfd PRIVATE
@@ -113,6 +130,11 @@ target_link_libraries(restconfd PRIVATE
     ${FCGI_LIBRARY}
     Threads::Threads
 )
+
+if(BUILD_LIBEV)
+    target_include_directories(restconfd PRIVATE ${LIBEV_INCLUDE_DIR})
+    target_link_libraries(restconfd PRIVATE ${LIBEV_LIBRARY})
+endif()
 
 # ==============================================================================
 # Installation
