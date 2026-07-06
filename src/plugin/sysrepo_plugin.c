@@ -159,3 +159,14 @@ void plugin_destroy(plugin_ctx_t *ctx) {
 		free(ctx);
 	}
 }
+
+const struct ly_ctx *plugin_acquire_ly_ctx(plugin_ctx_t *ctx) {
+	if (!ctx || !ctx->conn) return NULL;
+	return sr_acquire_context(ctx->conn);
+}
+
+void plugin_release_ly_ctx(plugin_ctx_t *ctx) {
+	if (ctx && ctx->conn) {
+		sr_release_context(ctx->conn);
+	}
+}

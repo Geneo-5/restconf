@@ -89,21 +89,33 @@ static void on_restconf_request(
 	app_context_t *app = (app_context_t *)user_data;
 	rc_request_t req = {0};
 	
+	/* 1. Extraction des headers HTTP/2 */
 	const char *auth_header = h2c_session_get_header(
 		session, "Authorization");
 	const char *content_type = h2c_session_get_content_type(
 		session);
 	const char *accept = h2c_session_get_accept(session);
 	
+	/* 2. Acquisition du contexte libyang (thread-safe) */
+	const struct ly_ctx *ly_ctx = plugin_acquire_ly_ctx(
+		app->plugin_ctx);
+	
+	/* 3. Parsing de l'URI RESTCONF */
 	if (router_parse_request(
-	        path, method, auth_header,
+	        ly_ctx, path, method, auth_header,
 	        content_type, accept, &req) != 0) {
 		send_error_response(
 			session, stream_id, req.accept_type,
 			400, "invalid-value", "Bad URI");
+		router_free_request(&req);
+		if (ly_ctx) plugin_release_ly_ctx(app->plugin_ctx);
 		return;
 	}
+	
+	/* Libération du contexte libyang après parsing */
+	if (ly_ctx) plugin_release_ly_ctx(app->plugin_ctx);
 
+	/* 4. Authentification JWT et NACM */
 	char username[128] = {0};
 	if (req.username == NULL && auth_header != NULL) {
 		const char *token = strstr(auth_header, "Bearer ");
@@ -120,6 +132,7 @@ static void on_restconf_request(
 		}
 	}
 
+	/* 5. Routage vers le plugin sysrepo */
 	if (req.res_type == RC_RES_DATA ||
 	    req.res_type == RC_RES_DS) {
 		if (strcmp(method, "GET") == 0 ||
@@ -138,12 +151,21 @@ static void on_restconf_request(
 			plugin_handle_edit(
 				app->plugin_ctx, &req, NULL, session);
 		}
-	} 
+	} else if (req.res_type == RC_RES_OPERATIONS) {
+		/* TODO: Gérer les RPC */
+		send_error_response(
+			session, stream_id, req.accept_type,
+			501, "operation-not-supported",
+			"RPC not implemented yet");
+	} else {
+		send_error_response(
+			session, stream_id, req.accept_type,
+			404, "invalid-value", "Resource not found");
+	}
 
 	router_free_request(&req);
 }
 
-/* Point d'entrée principal restauré */
 int main(int argc UNUSED, char **argv UNUSED) {
 	const char *bind_addr = "127.0.0.1";
 	uint16_t port = 8080;

@@ -43,4 +43,15 @@ void plugin_subscribe_notifications(
 
 void plugin_destroy(plugin_ctx_t *ctx);
 
-#endif // PLUGIN_API_H
+/**
+ * @brief Acquiert le contexte libyang de manière thread-safe.
+ * Doit être libéré avec plugin_release_ly_ctx().
+ */
+const struct ly_ctx *plugin_acquire_ly_ctx(plugin_ctx_t *ctx);
+
+/**
+ * @brief Libère le contexte libyang précédemment acquis.
+ */
+void plugin_release_ly_ctx(plugin_ctx_t *ctx);
+
+#endif /* PLUGIN_API_H */
