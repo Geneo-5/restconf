@@ -18,7 +18,23 @@ struct plugin_ctx_s {
 	void *notif_user_data;
 };
 
-/* Callback pour les données opérationnelles */
+/**
+ * @brief Callback libevent déclenché quand le pipe sysrepo est lisible.
+ * Appelle sr_subscription_process_events pour drainer le pipe et
+ * exécuter les callbacks sysrepo (RPC, oper, notif) dans le thread
+ * unique de libevent, sans jamais bloquer.
+ */
+static void sr_event_cb(
+	evutil_socket_t fd UNUSED,
+	short events UNUSED, void *ctx_ptr)
+{
+	plugin_ctx_t *plugin = (plugin_ctx_t *)ctx_ptr;
+	if (plugin->subscription) {
+		sr_subscription_process_events(
+			plugin->subscription, NULL, NULL);
+	}
+}
+
 static int oper_get_cb(
 	sr_session_ctx_t *session UNUSED,
 	uint32_t sub_id UNUSED,
@@ -29,10 +45,10 @@ static int oper_get_cb(
 	struct lyd_node **parent UNUSED,
 	void *private_data UNUSED)
 {
+	/* TODO: Générer les données opérationnelles */
 	return SR_ERR_OK;
 }
 
-/* Callback pour le RPC establish-subscription */
 static int rpc_establish_sub_cb(
 	sr_session_ctx_t *session UNUSED,
 	uint32_t sub_id UNUSED,
@@ -43,6 +59,7 @@ static int rpc_establish_sub_cb(
 	struct lyd_node *output UNUSED,
 	void *private_ctx UNUSED)
 {
+	/* TODO: Créer la souscription et retourner l'URI SSE */
 	return SR_ERR_OK;
 }
 
@@ -58,15 +75,36 @@ plugin_ctx_t *plugin_init(
 	}
 	sr_session_start(ctx->conn, SR_DS_OPERATIONAL, &ctx->session);
 
+	/* Abonnement aux données opérationnelles.
+	 * SR_SUBSCR_NO_THREAD est CRUCIAL pour éviter que sysrepo ne crée
+	 * son propre thread, ce qui violerait la contrainte mono-thread. */
 	sr_oper_get_subscribe(
 		ctx->session, "ietf-restconf-monitoring",
 		"/ietf-restconf-monitoring:restconf-state",
-		oper_get_cb, NULL, 0, &ctx->subscription);
+		oper_get_cb, NULL, SR_SUBSCR_NO_THREAD,
+		&ctx->subscription);
 
+	/* Abonnement au RPC establish-subscription */
 	sr_rpc_subscribe_tree(
 		ctx->session,
 		"/ietf-subscribed-notifications:establish-subscription",
-		rpc_establish_sub_cb, NULL, 0, 0, NULL);
+		rpc_establish_sub_cb, NULL, 0,
+		SR_SUBSCR_NO_THREAD, &ctx->subscription);
+
+	/* Intégration du pipe d'événement sysrepo dans libevent.
+	 * sr_get_event_pipe ne retourne qu'un seul FD (le read pipe). */
+	int event_pipe = -1;
+	int rc = sr_get_event_pipe(
+		ctx->subscription, &event_pipe);
+	
+	if (rc == SR_ERR_OK && event_pipe >= 0) {
+		ctx->sr_event = event_new(
+			ctx->base, event_pipe,
+			EV_READ | EV_PERSIST, sr_event_cb, ctx);
+		if (ctx->sr_event) {
+			event_add(ctx->sr_event, NULL);
+		}
+	}
 
 	return ctx;
 }
@@ -108,10 +146,14 @@ void plugin_subscribe_notifications(
 
 void plugin_destroy(plugin_ctx_t *ctx) {
 	if (ctx) {
+		/* Retirer l'événement libevent en premier */
+		if (ctx->sr_event) {
+			event_free(ctx->sr_event);
+		}
+		/* Désabonner sysrepo (ferme le pipe interne) */
 		if (ctx->subscription) {
 			sr_unsubscribe(ctx->subscription);
 		}
-		if (ctx->sr_event) event_free(ctx->sr_event);
 		if (ctx->session) sr_session_stop(ctx->session);
 		if (ctx->conn) sr_disconnect(ctx->conn);
 		free(ctx);
