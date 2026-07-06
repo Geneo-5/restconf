@@ -215,6 +215,7 @@ ctest --output-on-failure
 
 ---
 
+```
 restconf/
 ├── CMakeLists.txt
 ├── CLAUDE.md
@@ -238,6 +239,7 @@ restconf/
 │   └── plugin/
 │       ├── plugin_main.c  # Point d'entrée (main) du démon externe
 │       ├── sysrepo_plugin.c
+```
 
 ---
 
