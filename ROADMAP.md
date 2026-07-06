@@ -26,7 +26,7 @@
 | **2** | Sécurité, JWT & NACM | 100% | 🟢 |
 | **3** | Architecture Plugin Sysrepo (Dual-Mode) | 55% | 🟡 |
 | **4** | Cœur RESTCONF & CRUD (RFC 8040) | 90% | 🟡 |
-| **5** | Extensions NMDA (RFC 8527) | 25% | 🟡 |
+| **5** | Extensions NMDA (RFC 8527) | 40% | 🟡 |
 | **6** | Notifications & SSE (RFC 8650) | 60% | 🟡 |
 | **7** | Monitoring & Modules YANG Conceptuels | 50% | 🟡 |
 
@@ -92,7 +92,7 @@
 | 4.8 | Méthode DELETE | RFC 8040 Sec 4.7 | `sr_delete_item()` | `[x]` |
 | 4.9 | API Resource | YANG `ietf-restconf` | `GET /restconf` (data, operations, yang-library-version) | `[x]` |
 | 4.10| Invocation RPC / Action| RFC 8040 Sec 3.6 | `router.c` parse maintenant `rpc_module`/`rpc_name` depuis l'URI ; `main.c` route vers `RC_RES_OPERATIONS` et valide la méthode POST ; callback sysrepo reste à câbler | `[~]` |
-| 4.11| Query: content | RFC 8040 Sec 4.8.1 | **Implémenté** : `config`/`nonconfig`/`all` appliqués via `sr_get_oper_options_t` (`SR_OPER_NO_STATE`/`SR_OPER_NO_CONFIG`) dans `plugin_handle_get` | `[x]` |
+| 4.11| Query: content | RFC 8040 Sec 4.8.1 | **Implémenté** : `config`/`nonconfig`/`all` appliqués via `sr_get_oper_flag_t` (`SR_OPER_NO_STATE`/`SR_OPER_NO_CONFIG`) dans `plugin_handle_get` | `[x]` |
 | 4.12| Query: depth | RFC 8040 Sec 4.8.2 | **Implémenté** : `req->depth` transmis comme `max_depth` à `sr_get_data()` (0 = illimité si absent/`unbounded`) | `[x]` |
 | 4.13| Query: fields | RFC 8040 Sec 4.8.3 | Sélection de sous-arbres — la valeur brute est désormais stockée séparément dans `req->fields_expr` (ne collisionne plus avec `content_filter`, cf. audit) ; le parsing de l'expression `fields-expr` et son application à `codec_serialize_data`/`lyd_print_*` restent à faire | `[ ]` |
 | 4.14| ETag / Last-Modified | RFC 8040 Sec 3.4.1 | Collision prevention, `If-Match` | `[ ]` |
@@ -108,7 +108,7 @@
 | 5.2 | Query: with-origin | RFC 8527 Sec 3.2.2 | Métadonnées `origin` via plugins `libyang` sur `oper` — bloqué par 4.15 | `[ ]` |
 | 5.3 | with-defaults sur Oper| RFC 8527 Sec 3.2.1 | Valeurs "in use" (RFC 8342 Sec 5.3) — bloqué par 4.15 | `[ ]` |
 | 5.4 | YANG Library 2019+ | RFC 8527 Sec 2 | `ietf-yang-library` rév 2019-01-04+ obligatoire (actuellement seule la chaîne littérale est renvoyée dans l'API resource, aucune donnée `modules-state`/`module-set` réelle) | `[ ]` |
-| 5.5 | Opérations restreintes par datastore | RFC 8527 Sec 3.2 | **Partiellement implémenté** : `plugin_handle_edit` retourne `405` sur `operational` ; reste à gérer les datastores dynamiques et `intended` | `[~]` |
+| 5.5 | Opérations restreintes par datastore | RFC 8527 Sec 3.2 | **Implémenté** : `plugin_handle_edit` retourne `405`/`operation-not-supported` sur `operational` **et** `intended` (lecture seule par nature) ; `plugin_handle_get`/`plugin_handle_edit` retournent `400`/`invalid-value` pour toute identityref de datastore inconnue ou dynamique (`RC_DS_UNKNOWN`) ; `main.c` (`get_data_cb`) mappe désormais `SR_ERR_INVAL_ARG`→400, `SR_ERR_NOT_FOUND`→404, `SR_ERR_UNAUTHORIZED`→403 au lieu d'un `500` générique | `[x]` |
 
 ### Phase 6 : Notifications & SSE (RFC 8650)
 *Objectif : Flux d'événements asynchrones sur streams HTTP/2.*
@@ -186,10 +186,11 @@ Appliquer les paramètres de requête parsés :
 - ~~**4.12** : Limiter la profondeur avec `depth`~~ ✅ Implémenté via `max_depth` de `sr_get_data()`
 - **4.13** : Reste à parser et appliquer l'expression `fields` (complexe, syntaxe RFC 8040 Sec 4.8.3) — le champ `req->fields_expr` est disponible et n'est plus écrasé par `content_filter`
 
-### Priorité 4 : Extensions NMDA (RFC 8527)
+### Priorité 4 : Extensions NMDA (RFC 8527) — Partiellement complété
+- ~~**5.5** : Restrictions RFC 8527 §3.2 (datastores dynamiques exclus, `405` sur `operational`/`intended`)~~ ✅ Implémenté (`plugin_handle_get`/`plugin_handle_edit` + mapping d'erreurs dans `main.c`)
 - Implémenter la logique de `with-origin` pour annoter les données opérationnelles avec leur source (ex: `intended`, `default`, `learned`).
-- Ajouter les restrictions MUST de RFC 8527 §3.2 (datastores dynamiques exclus, `405` sur datastore read-only `intended`).
 - Implémenter `with-defaults` sur operational (RFC 8342 Sec 5.3).
+- **5.4** : peupler réellement `modules-state`/`module-set` (YANG Library 2019+) au lieu de la chaîne littérale actuelle.
 
 ### Priorité 5 : Mode Externe (IPC UDS)
 - Implémenter le dispatch IPC réel dans `uds_gateway.c` et `uds_plugin.c`

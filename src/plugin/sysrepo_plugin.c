@@ -287,6 +287,14 @@ void plugin_handle_get(
 	plugin_ctx_t *ctx, const rc_request_t *req,
 	plugin_data_cb callback, void *user_data)
 {
+	/* RFC 8527 Sec 3.1: seuls running/operational/intended sont
+	 * des datastores NMDA reconnus ; toute autre identityref
+	 * (datastore dynamique ou inconnu) n'est pas supportée. */
+	if (req->datastore == RC_DS_UNKNOWN) {
+		callback(NULL, SR_ERR_INVAL_ARG, user_data);
+		return;
+	}
+
 	sr_data_t *data = NULL;
 	sr_session_ctx_t *sess = select_session(
 		ctx, req->datastore);
@@ -395,10 +403,30 @@ void plugin_handle_edit(
 	sr_session_ctx_t *sess = select_session(
 		ctx, req->datastore);
 
-	/* RFC 8527 Sec 3.2: operational est en lecture seule */
+	/* RFC 8527 Sec 3.1: datastore dynamique ou identityref
+	 * non reconnue — non supporté par ce serveur. */
+	if (req->datastore == RC_DS_UNKNOWN) {
+		callback(400, "invalid-value",
+		         "Unknown or unsupported datastore",
+		         user_data);
+		return;
+	}
+
+	/* RFC 8527 Sec 3.2: certains datastores sont en lecture
+	 * seule par nature. `operational` est alimenté par les
+	 * capteurs/abonnements ; `intended` est calculé à partir
+	 * de `running` + les autres sources NMDA. Toute tentative
+	 * de modification MUST échouer avec 405 / 
+	 * operation-not-supported. */
 	if (req->datastore == RC_DS_OPERATIONAL) {
 		callback(405, "operation-not-supported",
 		         "Cannot edit operational datastore",
+		         user_data);
+		return;
+	}
+	if (req->datastore == RC_DS_INTENDED) {
+		callback(405, "operation-not-supported",
+		         "Cannot edit read-only intended datastore",
 		         user_data);
 		return;
 	}

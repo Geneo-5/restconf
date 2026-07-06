@@ -35,10 +35,26 @@ static void get_data_cb(
 		"application/yang-data+json";
 
 	if (error_code != SR_ERR_OK) {
-		status = 500;
+		const char *tag = "operation-failed";
+		const char *msg = sr_strerror(error_code);
+
+		/* RFC 8527 Sec 3.1/3.2: identityref de datastore
+		 * inconnue ou non supportée (dynamique). */
+		if (error_code == SR_ERR_INVAL_ARG) {
+			status = 400;
+			tag = "invalid-value";
+			msg = "Unknown or unsupported datastore";
+		} else if (error_code == SR_ERR_NOT_FOUND) {
+			status = 404;
+			tag = "invalid-value";
+		} else if (error_code == SR_ERR_UNAUTHORIZED) {
+			status = 403;
+			tag = "access-denied";
+		} else {
+			status = 500;
+		}
 		codec_serialize_errors(
-			ctx->accept_type, "operation-failed",
-			"Sysrepo operation failed",
+			ctx->accept_type, tag, msg,
 			&body, &body_len);
 	} else if (data && data->tree) {
 		if (codec_serialize_data(
