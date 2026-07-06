@@ -14,12 +14,62 @@ struct jwt_ctx_s {
 	EVP_PKEY *pkey;
 };
 
+/**
+ * @brief Décode une chaîne Base64URL (spécifique aux JWT) en binaire.
+ * Utilise OpenSSL (EVP_DecodeBlock) déjà lié au projet.
+ */
 static int base64url_decode(
-	const char *in UNUSED, size_t in_len UNUSED,
-	uint8_t *out UNUSED, size_t *out_len UNUSED)
+	const char *in, size_t in_len,
+	uint8_t *out, size_t *out_len)
 {
-	*out_len = 0; 
-	return 0; 
+	size_t i, pad_len;
+	char *std_b64;
+	int decoded_len;
+
+	if (!in || !out || !out_len) return -1;
+
+	/* 1. Allouer un buffer pour le Base64 standard (avec padding) */
+	/* Le padding max est de 3 caractères '=' */
+	std_b64 = malloc(in_len + 4);
+	if (!std_b64) return -1;
+
+	/* 2. Convertir Base64URL -> Base64 standard */
+	for (i = 0; i < in_len; i++) {
+		if (in[i] == '-') {
+			std_b64[i] = '+';
+		} else if (in[i] == '_') {
+			std_b64[i] = '/';
+		} else {
+			std_b64[i] = in[i];
+		}
+	}
+
+	/* 3. Rajouter le padding '=' manquant (requis par EVP_DecodeBlock) */
+	pad_len = (4 - (in_len % 4)) % 4;
+	for (i = 0; i < pad_len; i++) {
+		std_b64[in_len + i] = '=';
+	}
+	std_b64[in_len + pad_len] = '\0';
+
+	/* 4. Décoder via OpenSSL */
+	/* EVP_DecodeBlock ne gère pas les espaces, mais notre JWT n'en a pas */
+	decoded_len = EVP_DecodeBlock(
+		out, (const unsigned char *)std_b64,
+		in_len + pad_len);
+
+	free(std_b64);
+
+	if (decoded_len < 0) {
+		return -1; /* Erreur de décodage */
+	}
+
+	/* 5. Ajuster la taille de sortie (EVP_DecodeBlock inclut le padding) */
+	if (pad_len > 0 && decoded_len >= (int)pad_len) {
+		decoded_len -= pad_len;
+	}
+
+	*out_len = (size_t)decoded_len;
+	return 0;
 }
 
 jwt_ctx_t *jwt_validator_init(const char *key_description) {
