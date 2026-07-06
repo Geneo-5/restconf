@@ -20,14 +20,39 @@ It operates exclusively over **HTTP/2 Cleartext (h2c)**, delegating TLS terminat
 - **Indentation:** You MUST use **TAB** characters for indentation. The tab width is visually set to **8**. **NEVER** use spaces for indentation.
 - **Line Length:** The maximum line length is strictly **80 characters**. You MUST wrap and break lines to respect this limit. Do not exceed 80 columns.
 - **Align:** align start with **TAB** until indent length and finish with **SPACE**
-```c
-#define FIX_SAMPLE_PACKED_SIZE_MAX (DPACK_UINT8_SIZE_MAX + \
-                                    DPACK_UINT16_SIZE_MAX + \
-                                    DPACK_UINT32_SIZE_MAX)
 
-extern int
-map_sample_pack(struct dpack_encoder    * encoder,
-                const struct map_sample * sample);
+Sample code style:
+```h
+/**
+ * Find the closest upper power of 2 of a 32 bits word.
+ *
+ * @param[in] value word
+ *
+ * @return closest upper power of 2
+ *
+ * @warning
+ * When compiled with the #CONFIG_ASSERT_API build option disabled and
+ * @p value is zero, result is undefined. A zero @p value triggers an
+ * assertion otherwise.
+ */
+extern unsigned int
+stroll_pow2_up32(uint32_t value) __const __nothrow __leaf;
+```
+
+```c
+unsigned int
+stroll_pow2_up32(uint32_t value)
+{
+	/* Would overflow otherwise... */
+	stroll_pow2_assert_api(value);
+
+	if (value > (UINT32_C(1) << 31))
+		return 32;
+
+	return stroll_pow2_low32(value +
+	                         (UINT32_C(1) << stroll_pow2_low32(value)) -
+	                         1);
+}
 ```
 
 ## 🏗️ Architecture & Tech Stack
