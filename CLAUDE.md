@@ -57,146 +57,300 @@ sr_get_data(session, xpath, 0, 0, 0, &data);
 ## Syrepo sample code
 
 ```c
-#define _GNU_SOURCE
-#include <stdio.h>
+/**
+ * @file oven.c
+ * @author Michal Vasko <mvasko@cesnet.cz>
+ * @brief oven example plugin
+ *
+ * @copyright
+ * Copyright (c) 2019 CESNET, z.s.p.o.
+ *
+ * This source code is licensed under BSD 3-Clause License (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     https://opensource.org/licenses/BSD-3-Clause
+ */
+
+#define _QNX_SOURCE /* sleep() */
+
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
-#include <event2/event.h>
-#include "h2c_server.h"
-#include "jwt_validator.h"
-#include "plugin_api.h"
-#include "router.h"
+#include <unistd.h>
 
-typedef struct {
-	jwt_ctx_t *jwt_ctx;
-	plugin_ctx_t *plugin_ctx;
-} app_context_t;
+#include <libyang/libyang.h>
+#include <sysrepo.h>
 
-/* Contexte pour le callback asynchrone GET */
-typedef struct {
-	h2c_session_t *session;
-	int32_t stream_id;
-} get_req_ctx_t;
+/* no synchronization is used in this example even though most of these
+ * variables are shared between 2 threads, but the chances of encountering
+ * problems is low enough to ignore them in this case */
 
-static void get_data_cb(
-	sr_data_t *data, int error_code, void *user_data)
+/* session of our plugin, can be used until cleanup is called */
+sr_session_ctx_t *sess;
+/* structure holding all the subscriptions */
+sr_subscription_ctx_t *subscription;
+/* thread ID of the oven (thread) */
+volatile pthread_t oven_tid;
+/* oven state value determining whether the food is inside the oven or not */
+volatile int food_inside;
+/* oven state value determining whether the food is waiting for the oven to be ready */
+volatile int insert_food_on_ready;
+/* oven state value determining the current temperature of the oven */
+volatile unsigned int oven_temperature;
+/* oven config value stored locally just so that it is not needed to ask sysrepo for it all the time */
+volatile unsigned int config_temperature;
+
+static void *
+oven_thread(void *arg)
 {
-	get_req_ctx_t *ctx = (get_req_ctx_t *)user_data;
-	if (error_code != SR_ERR_OK) {
-		h2c_send_response(
-			ctx->session, ctx->stream_id, 500,
-			"application/yang-data+json",
-			(uint8_t *)"{\"ietf-restconf:errors\":{\"error\":[{\"error-tag\":\"operation-failed\"}]}}",
-			82);
-	} else {
-		/* TODO: Sérialiser data en JSON via libyang */
-		h2c_send_response(
-			ctx->session, ctx->stream_id, 200,
-			"application/yang-data+json",
-			(uint8_t *)"{}", 2);
-	}
-	if (data) sr_release_data(data);
-	free(ctx);
+    int rc;
+    unsigned int desired_temperature;
+
+    (void)arg;
+
+    while (oven_tid) {
+        sleep(1);
+        if (oven_temperature < config_temperature) {
+            /* oven is heating up 50 degrees per second until the set temperature */
+            if (oven_temperature + 50 < config_temperature) {
+                oven_temperature += 50;
+            } else {
+                oven_temperature = config_temperature;
+                /* oven reached the desired temperature, create a notification */
+                rc = sr_notif_send(sess, "/oven:oven-ready", NULL, 0, 0, 0);
+                if (rc != SR_ERR_OK) {
+                    SRPLG_LOG_ERR("oven", "Oven-ready notification generation failed: %s.", sr_strerror(rc));
+                }
+            }
+        } else if (oven_temperature > config_temperature) {
+            /* oven is cooling down but it will never be colder than the room temperature */
+            desired_temperature = (config_temperature < 25 ? 25 : config_temperature);
+            if (oven_temperature - 20 > desired_temperature) {
+                oven_temperature -= 20;
+            } else {
+                oven_temperature = desired_temperature;
+            }
+        }
+
+        if (insert_food_on_ready && (oven_temperature >= config_temperature)) {
+            /* food is inserted once the oven is ready */
+            insert_food_on_ready = 0;
+            food_inside = 1;
+            SRPLG_LOG_DBG("oven", "Food put into the oven.");
+        }
+    }
+
+    return NULL;
 }
 
-static void on_restconf_request(
-	h2c_session_t *session, int32_t stream_id,
-	const char *method, const char *path,
-	const char *body, size_t body_len, void *user_data)
+static int
+oven_config_change_cb(sr_session_ctx_t *session, uint32_t sub_id, const char *module_name, const char *xpath,
+        sr_event_t event, uint32_t request_id, void *private_data)
 {
-	app_context_t *app = (app_context_t *)user_data;
-	rc_request_t req = {0};
-	
-	const char *auth_header = h2c_session_get_header(
-		session, "Authorization");
-	
-	if (router_parse_request(
-	        path, method, auth_header, &req) != 0) {
-		h2c_send_response(
-			session, stream_id, 400,
-			"application/yang-data+json",
-			(uint8_t *)"{\"ietf-restconf:errors\":{\"error\":[{\"error-tag\":\"invalid-value\"}]}}",
-			78);
-		return;
-	}
+    int rc;
+    sr_val_t *val;
+    pthread_t tid;
 
-	char username[128] = {0};
-	if (req.username == NULL && auth_header != NULL) {
-		const char *token = strstr(auth_header, "Bearer ");
-		if (token && jwt_validator_verify(
-		        app->jwt_ctx, token + 7,
-		        username, sizeof(username)) == 0) {
-			req.username = strdup(username);
-		} else {
-			h2c_send_response(
-				session, stream_id, 401,
-				"application/yang-data+json",
-				(uint8_t *)"{\"ietf-restconf:errors\":{\"error\":[{\"error-tag\":\"access-denied\"}]}}",
-				79);
-			router_free_request(&req);
-			return;
-		}
-	}
+    (void)sub_id;
+    (void)module_name;
+    (void)xpath;
+    (void)event;
+    (void)request_id;
+    (void)private_data;
 
-	if (req.res_type == RC_RES_DATA ||
-	    req.res_type == RC_RES_DS) {
-		if (strcmp(method, "GET") == 0 ||
-		    strcmp(method, "HEAD") == 0) {
-			
-			get_req_ctx_t *ctx = malloc(sizeof(get_req_ctx_t));
-			ctx->session = session;
-			ctx->stream_id = stream_id;
-			
-			/* Appel asynchrone correct */
-			plugin_handle_get(
-				app->plugin_ctx, &req,
-				get_data_cb, ctx);
-		} else {
-			plugin_handle_edit(
-				app->plugin_ctx, &req, NULL, session);
-		}
-	} 
+    /* get the value from sysrepo, we do not care if the value did not change in our case */
+    rc = sr_get_item(session, "/oven:oven/temperature", 0, &val);
+    if (rc != SR_ERR_OK) {
+        goto sr_error;
+    }
 
-	router_free_request(&req);
+    config_temperature = val->data.uint8_val;
+    sr_free_val(val);
+
+    rc = sr_get_item(session, "/oven:oven/turned-on", 0, &val);
+    if (rc != SR_ERR_OK) {
+        goto sr_error;
+    }
+
+    if (val->data.bool_val && (oven_tid == 0)) {
+        /* the oven should be turned on and is not (create the oven thread) */
+        rc = pthread_create((pthread_t *)&oven_tid, NULL, oven_thread, NULL);
+        if (rc != 0) {
+            goto sys_error;
+        }
+    } else if (!val->data.bool_val && (oven_tid != 0)) {
+        /* the oven should be turned off but is on (stop the oven thread) */
+        tid = oven_tid;
+        oven_tid = 0;
+        rc = pthread_join(tid, NULL);
+        if (rc != 0) {
+            goto sys_error;
+        }
+
+        /* we pretend the oven cooled down immediately after being turned off */
+        oven_temperature = 25;
+    }
+    sr_free_val(val);
+
+    return SR_ERR_OK;
+
+sr_error:
+    SRPLG_LOG_ERR("oven", "Oven config change callback failed: %s.", sr_strerror(rc));
+    return rc;
+
+sys_error:
+    sr_free_val(val);
+    SRPLG_LOG_ERR("oven", "Oven config change callback failed: %s.", strerror(rc));
+    return SR_ERR_OPERATION_FAILED;
 }
 
-int main(int argc, char **argv) {
-	const char *bind_addr = "127.0.0.1";
-	uint16_t port = 8080;
-	const char *key_desc = "restconf_jwt_pubkey";
-	bool use_external = false;
+static int
+oven_state_cb(sr_session_ctx_t *session, uint32_t sub_id, const char *module_name, const char *path,
+        const char *request_xpath, uint32_t request_id, struct lyd_node **parent, void *private_data)
+{
+    const struct ly_ctx *ly_ctx;
+    char str[32];
 
-	app_context_t app = {0};
+    (void)session;
+    (void)sub_id;
+    (void)module_name;
+    (void)path;
+    (void)request_xpath;
+    (void)request_id;
+    (void)private_data;
 
-	app.jwt_ctx = jwt_validator_init(key_desc);
-	if (!app.jwt_ctx) {
-		fprintf(stderr, "Failed to init JWT validator\n");
-		return 1;
-	}
+    ly_ctx = sr_acquire_context(sr_session_get_connection(sess));
+    sprintf(str, "%u", oven_temperature);
+    lyd_new_path(NULL, ly_ctx, "/oven:oven-state/temperature", str, 0, parent);
+    lyd_new_path(*parent, NULL, "/oven:oven-state/food-inside", food_inside ? "true" : "false", 0, NULL);
+    sr_release_context(sr_session_get_connection(sess));
 
-	app.plugin_ctx = plugin_init(
-		NULL, use_external, "/var/run/restconf.sock");
-	if (!app.plugin_ctx) {
-		fprintf(stderr, "Failed to init plugin\n");
-		return 1;
-	}
-
-	h2c_server_t *server = h2c_server_init(
-		bind_addr, port, on_restconf_request, &app);
-	if (!server) {
-		fprintf(stderr, "Failed to init h2c server\n");
-		return 1;
-	}
-
-	printf("RESTCONF h2c server listening on %s:%d\n",
-	       bind_addr, port);
-	
-	h2c_server_run(server);
-
-	h2c_server_destroy(server);
-	plugin_destroy(app.plugin_ctx);
-	jwt_validator_destroy(app.jwt_ctx);
-
-	return 0;
+    return SR_ERR_OK;
 }
+
+static int
+oven_insert_food_cb(sr_session_ctx_t *session, uint32_t sub_id, const char *path, const sr_val_t *input,
+        const size_t input_cnt, sr_event_t event, uint32_t request_id, sr_val_t **output, size_t *output_cnt,
+        void *private_data)
+{
+    (void)session;
+    (void)sub_id;
+    (void)path;
+    (void)input;
+    (void)input_cnt;
+    (void)event;
+    (void)request_id;
+    (void)output;
+    (void)output_cnt;
+    (void)private_data;
+
+    if (food_inside) {
+        SRPLG_LOG_ERR("oven", "Food already in the oven.");
+        return SR_ERR_OPERATION_FAILED;
+    }
+
+    if (strcmp(input[0].data.enum_val, "on-oven-ready") == 0) {
+        if (insert_food_on_ready) {
+            SRPLG_LOG_ERR("oven", "Food already waiting for the oven to be ready.");
+            return SR_ERR_OPERATION_FAILED;
+        }
+        insert_food_on_ready = 1;
+        return SR_ERR_OK;
+    }
+
+    insert_food_on_ready = 0;
+    food_inside = 1;
+    SRPLG_LOG_DBG("oven", "Food put into the oven.");
+    return SR_ERR_OK;
+}
+
+static int
+oven_remove_food_cb(sr_session_ctx_t *session, uint32_t sub_id, const char *path, const sr_val_t *input,
+        const size_t input_cnt, sr_event_t event, uint32_t request_id, sr_val_t **output, size_t *output_cnt,
+        void *private_data)
+{
+    (void)session;
+    (void)sub_id;
+    (void)path;
+    (void)input;
+    (void)input_cnt;
+    (void)event;
+    (void)request_id;
+    (void)output;
+    (void)output_cnt;
+    (void)private_data;
+
+    if (!food_inside) {
+        SRPLG_LOG_ERR("oven", "Food not in the oven.");
+        return SR_ERR_OPERATION_FAILED;
+    }
+
+    food_inside = 0;
+    SRPLG_LOG_DBG("oven", "Food taken out of the oven.");
+    return SR_ERR_OK;
+}
+
+int
+sr_plugin_init_cb(sr_session_ctx_t *session, void **private_data)
+{
+    int rc;
+
+    (void)private_data;
+
+    /* remember the session of our plugin */
+    sess = session;
+
+    /* initialize the oven state */
+    food_inside = 0;
+    insert_food_on_ready = 0;
+    /* room temperature */
+    oven_temperature = 25;
+
+    /* subscribe for oven module changes - also causes startup oven data to be copied into running and enabling the module */
+    rc = sr_module_change_subscribe(session, "oven", NULL, oven_config_change_cb, NULL, 0,
+            SR_SUBSCR_ENABLED | SR_SUBSCR_DONE_ONLY, &subscription);
+    if (rc != SR_ERR_OK) {
+        goto error;
+    }
+
+    /* subscribe as state data provider for the oven state data */
+    rc = sr_oper_get_subscribe(session, "oven", "/oven:oven-state", oven_state_cb, NULL, 0, &subscription);
+    if (rc != SR_ERR_OK) {
+        goto error;
+    }
+
+    /* subscribe for insert-food RPC calls */
+    rc = sr_rpc_subscribe(session, "/oven:insert-food", oven_insert_food_cb, NULL, 0, 0, &subscription);
+    if (rc != SR_ERR_OK) {
+        goto error;
+    }
+
+    /* subscribe for remove-food RPC calls */
+    rc = sr_rpc_subscribe(session, "/oven:remove-food", oven_remove_food_cb, NULL, 0, 0, &subscription);
+    if (rc != SR_ERR_OK) {
+        goto error;
+    }
+
+    /* sysrepo/plugins.h provides an interface for logging */
+    SRPLG_LOG_DBG("oven", "Oven plugin initialized successfully.");
+    return SR_ERR_OK;
+
+error:
+    SRPLG_LOG_ERR("oven", "Oven plugin initialization failed: %s.", sr_strerror(rc));
+    sr_unsubscribe(subscription);
+    return rc;
+}
+
+void
+sr_plugin_cleanup_cb(sr_session_ctx_t *session, void *private_data)
+{
+    (void)session;
+    (void)private_data;
+
+    /* nothing to cleanup except freeing the subscriptions */
+    sr_unsubscribe(subscription);
+    SRPLG_LOG_DBG("oven", "Oven plugin cleanup finished.");
+}
+
 ```
