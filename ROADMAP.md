@@ -25,7 +25,7 @@
 | **1** | Fondations Réseau & Boucle d'Événements | 100% | 🟢 |
 | **2** | Sécurité, JWT & NACM | 100% | 🟢 |
 | **3** | Architecture Plugin Sysrepo (Dual-Mode) | 55% | 🟡 |
-| **4** | Cœur RESTCONF & CRUD (RFC 8040) | 85% | 🟡 |
+| **4** | Cœur RESTCONF & CRUD (RFC 8040) | 90% | 🟡 |
 | **5** | Extensions NMDA (RFC 8527) | 25% | 🟡 |
 | **6** | Notifications & SSE (RFC 8650) | 60% | 🟡 |
 | **7** | Monitoring & Modules YANG Conceptuels | 50% | 🟡 |
@@ -92,9 +92,9 @@
 | 4.8 | Méthode DELETE | RFC 8040 Sec 4.7 | `sr_delete_item()` | `[x]` |
 | 4.9 | API Resource | YANG `ietf-restconf` | `GET /restconf` (data, operations, yang-library-version) | `[x]` |
 | 4.10| Invocation RPC / Action| RFC 8040 Sec 3.6 | `router.c` parse maintenant `rpc_module`/`rpc_name` depuis l'URI ; `main.c` route vers `RC_RES_OPERATIONS` et valide la méthode POST ; callback sysrepo reste à câbler | `[~]` |
-| 4.11| Query: content | RFC 8040 Sec 4.8.1 | `config`, `nonconfig`, `all` — parsé dans `req->content_filter`, application au filtrage sysrepo reste à faire | `[~]` |
-| 4.12| Query: depth | RFC 8040 Sec 4.8.2 | Limite profondeur de l'arbre — parsé dans `req->depth`, application au filtrage libyang reste à faire | `[~]` |
-| 4.13| Query: fields | RFC 8040 Sec 4.8.3 | Sélection de sous-arbres — parsé dans `req->content_filter`, expression fields reste à parser | `[~]` |
+| 4.11| Query: content | RFC 8040 Sec 4.8.1 | **Implémenté** : `config`/`nonconfig`/`all` appliqués via `sr_get_oper_options_t` (`SR_OPER_NO_STATE`/`SR_OPER_NO_CONFIG`) dans `plugin_handle_get` | `[x]` |
+| 4.12| Query: depth | RFC 8040 Sec 4.8.2 | **Implémenté** : `req->depth` transmis comme `max_depth` à `sr_get_data()` (0 = illimité si absent/`unbounded`) | `[x]` |
+| 4.13| Query: fields | RFC 8040 Sec 4.8.3 | Sélection de sous-arbres — la valeur brute est désormais stockée séparément dans `req->fields_expr` (ne collisionne plus avec `content_filter`, cf. audit) ; le parsing de l'expression `fields-expr` et son application à `codec_serialize_data`/`lyd_print_*` restent à faire | `[ ]` |
 | 4.14| ETag / Last-Modified | RFC 8040 Sec 3.4.1 | Collision prevention, `If-Match` | `[ ]` |
 | 4.15| **Parsing Query String** | RFC 8040 Sec 3.5.1 | **Implémenté** : `:path` HTTP/2 est maintenant séparé en `path`/`query` dans `router_parse_request` ; les paramètres `content`, `depth`, `fields`, `with-defaults`, `with-origin` sont extraits | `[x]` |
 | 4.16| Sélection du datastore cible | RFC 8040 Sec 1.4, 3.4 | **Implémenté** : `/restconf/data` cible `SR_DS_RUNNING` par défaut ; sessions sysrepo créées pour `running`, `operational`, `startup` ; `select_session()` route vers la bonne session | `[x]` |
@@ -178,13 +178,13 @@ réel et les statuts précédemment annoncés :
 
 ### Priorité 2 : ~~Peuplement de `ietf-restconf-monitoring`~~ — ✅ Complété
 - ~~Implémenter `oper_get_cb`~~ ✅ Génère capabilities et streams
-- Reste : routage `RC_RES_EVENT_STREAM` dans `main.c` pour démarrer un flux SSE
+- ~~Reste : routage `RC_RES_EVENT_STREAM` dans `main.c`~~ ✅ Déjà implémenté (`main.c` crée le flux SSE sur `GET /streams/...`) ; reste à câbler l'abonnement aux notifications sysrepo réelles (cf. 6.1)
 
-### Priorité 3 : Filtrage Query Parameters (RFC 8040 Sec 4.8)
+### Priorité 3 : ~~Filtrage Query Parameters~~ (RFC 8040 Sec 4.8) — Partiellement complété
 Appliquer les paramètres de requête parsés :
-- **4.11** : Filtrer par `content` (config/nonconfig/all) en utilisant les flags libyang
-- **4.12** : Limiter la profondeur avec `depth` via `LYD_PRINT_` options ou filtrage manuel
-- **4.13** : Parser et appliquer l'expression `fields` (complexe, syntaxe RFC 8040 Sec 4.8.3)
+- ~~**4.11** : Filtrer par `content` (config/nonconfig/all)~~ ✅ Implémenté via `sr_get_oper_options_t`
+- ~~**4.12** : Limiter la profondeur avec `depth`~~ ✅ Implémenté via `max_depth` de `sr_get_data()`
+- **4.13** : Reste à parser et appliquer l'expression `fields` (complexe, syntaxe RFC 8040 Sec 4.8.3) — le champ `req->fields_expr` est disponible et n'est plus écrasé par `content_filter`
 
 ### Priorité 4 : Extensions NMDA (RFC 8527)
 - Implémenter la logique de `with-origin` pour annoter les données opérationnelles avec leur source (ex: `intended`, `default`, `learned`).

@@ -228,8 +228,7 @@ static int parse_query_params(
 				req->depth = atoi(val);
 			}
 		} else if (strcmp(key, "fields") == 0) {
-			/* TODO: parser l'expression fields */
-			req->content_filter = strdup(val);
+			req->fields_expr = strdup(val);
 		} else if (strcmp(key, "with-defaults") == 0) {
 			req->with_defaults = strdup(val);
 		} else if (strcmp(key, "with-origin") == 0) {
@@ -394,6 +393,7 @@ void router_free_request(rc_request_t *req) {
 	free(req->rpc_module);
 	free(req->rpc_name);
 	free(req->content_filter);
+	free(req->fields_expr);
 	free(req->with_defaults);
 	free(req->username);
 }

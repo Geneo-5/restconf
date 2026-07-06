@@ -33,6 +33,7 @@ typedef struct {
 	bool with_origin;
 	int depth;
 	char *content_filter;
+	char *fields_expr;
 	char *with_defaults;
 	const uint8_t *body;
 	size_t body_len;

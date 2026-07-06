@@ -295,10 +295,30 @@ void plugin_handle_get(
 		sr_session_set_user(sess, req->username);
 	}
 
+	/* RFC 8040 Sec 4.8.1 : "content" restreint les données de
+	 * configuration et/ou d'état renvoyées par le serveur. */
+	sr_get_oper_flag_t opts = 0;
+	if (req->content_filter) {
+		if (strcmp(req->content_filter, "config") == 0) {
+			opts |= SR_OPER_NO_STATE;
+		} else if (strcmp(
+				req->content_filter, "nonconfig") == 0) {
+			opts |= SR_OPER_NO_CONFIG;
+		}
+		/* "all" (valeur par défaut) : aucun filtre */
+	}
+
+	/* RFC 8040 Sec 4.8.2 : "depth" limite la profondeur des
+	 * sous-arbres retournés. depth == -1 (absent ou
+	 * "unbounded") correspond à 0 côté sysrepo (illimité). */
+	uint32_t max_depth = (req->depth > 0) ?
+		(uint32_t)req->depth : 0;
+
 	/* Note: sr_get_data() utilise la mémoire partagée (SHM)
 	 * de sysrepo, ce qui rend l'opération très rapide.
 	 * Le "blocage" est minime (accès mémoire, pas réseau). */
-	int rc = sr_get_data(sess, req->xpath, 0, 0, 0, &data);
+	int rc = sr_get_data(
+		sess, req->xpath, max_depth, 0, opts, &data);
 	
 	callback(data, rc, user_data);
 
