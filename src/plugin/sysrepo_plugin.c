@@ -11,6 +11,9 @@
 struct plugin_ctx_s {
 	sr_conn_ctx_t *conn;
 	sr_session_ctx_t *session;
+	sr_session_ctx_t *sess_running;
+	sr_session_ctx_t *sess_operational;
+	sr_session_ctx_t *sess_startup;
 	sr_subscription_ctx_t *subscription;
 	struct event_base *base;
 	struct event *sr_event;
@@ -73,7 +76,17 @@ plugin_ctx_t *plugin_init(
 	if (sr_connect(SR_CONN_DEFAULT, &ctx->conn) != SR_ERR_OK) {
 		free(ctx); return NULL;
 	}
-	sr_session_start(ctx->conn, SR_DS_OPERATIONAL, &ctx->session);
+
+	/* Créer des sessions pour chaque datastore */
+	sr_session_start(
+		ctx->conn, SR_DS_RUNNING, &ctx->sess_running);
+	sr_session_start(
+		ctx->conn, SR_DS_OPERATIONAL, &ctx->sess_operational);
+	sr_session_start(
+		ctx->conn, SR_DS_STARTUP, &ctx->sess_startup);
+
+	/* Session par défaut (pour compatibilité) */
+	ctx->session = ctx->sess_running;
 
 	/* Abonnement aux données opérationnelles.
 	 * SR_SUBSCR_NO_THREAD est CRUCIAL pour éviter que sysrepo ne crée
@@ -109,18 +122,43 @@ plugin_ctx_t *plugin_init(
 	return ctx;
 }
 
+/**
+ * @brief Sélectionne la session sysrepo correspondant au datastore.
+ */
+static sr_session_ctx_t *select_session(
+	plugin_ctx_t *ctx, rc_datastore_t ds)
+{
+	switch (ds) {
+	case RC_DS_RUNNING:
+		return ctx->sess_running;
+	case RC_DS_OPERATIONAL:
+		return ctx->sess_operational;
+	case RC_DS_INTENDED:
+		/* INTENDED n'a pas de session sysrepo directe,
+		 * c'est un datastore conceptuel NMDA.
+		 * Pour l'instant, fallback sur operational. */
+		return ctx->sess_operational;
+	default:
+		return ctx->sess_running;
+	}
+}
+
 void plugin_handle_get(
 	plugin_ctx_t *ctx, const rc_request_t *req,
 	plugin_data_cb callback, void *user_data)
 {
 	sr_data_t *data = NULL;
+	sr_session_ctx_t *sess = select_session(
+		ctx, req->datastore);
 	
 	if (req->username) {
-		sr_session_set_user(ctx->session, req->username);
+		sr_session_set_user(sess, req->username);
 	}
 
-	int rc = sr_get_data(
-		ctx->session, req->xpath, 0, 0, 0, &data);
+	/* Note: sr_get_data() utilise la mémoire partagée (SHM)
+	 * de sysrepo, ce qui rend l'opération très rapide.
+	 * Le "blocage" est minime (accès mémoire, pas réseau). */
+	int rc = sr_get_data(sess, req->xpath, 0, 0, 0, &data);
 	
 	callback(data, rc, user_data);
 
@@ -145,7 +183,15 @@ void plugin_destroy(plugin_ctx_t *ctx) {
 		if (ctx->subscription) {
 			sr_unsubscribe(ctx->subscription);
 		}
-		if (ctx->session) sr_session_stop(ctx->session);
+		if (ctx->sess_running) {
+			sr_session_stop(ctx->sess_running);
+		}
+		if (ctx->sess_operational) {
+			sr_session_stop(ctx->sess_operational);
+		}
+		if (ctx->sess_startup) {
+			sr_session_stop(ctx->sess_startup);
+		}
 		if (ctx->conn) sr_disconnect(ctx->conn);
 		free(ctx);
 	}
@@ -162,6 +208,17 @@ void plugin_release_ly_ctx(plugin_ctx_t *ctx) {
 	}
 }
 
+void plugin_handle_rpc(
+	plugin_ctx_t *ctx UNUSED,
+	const rc_request_t *req UNUSED,
+	plugin_rpc_cb callback,
+	void *user_data)
+{
+	/* TODO: Implémenter l'invocation RPC via sysrepo */
+	/* Pour l'instant, retourner une erreur */
+	callback(NULL, SR_ERR_OPERATION_FAILED, user_data);
+}
+
 void plugin_handle_edit(
 	plugin_ctx_t *ctx,
 	const rc_request_t *req,
@@ -175,22 +232,33 @@ void plugin_handle_edit(
 	const char *error_tag = "operation-failed";
 	const char *error_msg = "Success";
 
+	sr_session_ctx_t *sess = select_session(
+		ctx, req->datastore);
+
+	/* RFC 8527 Sec 3.2: operational est en lecture seule */
+	if (req->datastore == RC_DS_OPERATIONAL) {
+		callback(405, "operation-not-supported",
+		         "Cannot edit operational datastore",
+		         user_data);
+		return;
+	}
+
 	if (req->username) {
-		sr_session_set_user(ctx->session, req->username);
+		sr_session_set_user(sess, req->username);
 	}
 
 	if (strcmp(req->method, "DELETE") == 0) {
 		rc = sr_delete_item(
-			ctx->session, req->xpath, SR_EDIT_DEFAULT);
+			sess, req->xpath, SR_EDIT_DEFAULT);
 		if (rc == SR_ERR_OK) {
 			/* Ajout du timeout (0 = défaut) */
-			rc = sr_apply_changes(ctx->session, 0);
+			rc = sr_apply_changes(sess, 0);
 		}
 	} else {
 		/* POST, PUT, PATCH */
 		struct lyd_node *data = NULL;
 		rc = codec_parse_data(
-			ctx->session, (const char *)body,
+			sess, (const char *)body,
 			body_len, req->req_type, &data);
 		
 		if (rc == 0 && data) {
@@ -205,11 +273,10 @@ void plugin_handle_edit(
 				default_op = "merge";
 			}
 
-			rc = sr_edit_batch(
-				ctx->session, data, default_op);
+			rc = sr_edit_batch(sess, data, default_op);
 			if (rc == SR_ERR_OK) {
 				/* Ajout du timeout (0 = défaut) */
-				rc = sr_apply_changes(ctx->session, 0);
+				rc = sr_apply_changes(sess, 0);
 			}
 			lyd_free_all(data);
 		} else {

@@ -378,3 +378,9 @@ const char *h2c_session_get_accept(
 	return session->accept[0] ?
 	       session->accept : NULL;
 }
+
+struct event_base *h2c_server_get_event_base(h2c_server_t *server)
+{
+	if (!server) return NULL;
+	return server->base;
+}

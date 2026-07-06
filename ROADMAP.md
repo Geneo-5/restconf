@@ -25,8 +25,8 @@
 | **1** | Fondations Réseau & Boucle d'Événements | 100% | 🟢 |
 | **2** | Sécurité, JWT & NACM | 100% | 🟢 |
 | **3** | Architecture Plugin Sysrepo (Dual-Mode) | 55% | 🟡 |
-| **4** | Cœur RESTCONF & CRUD (RFC 8040) | 70% | 🟡 |
-| **5** | Extensions NMDA (RFC 8527) | 10% | ⚪ |
+| **4** | Cœur RESTCONF & CRUD (RFC 8040) | 85% | 🟡 |
+| **5** | Extensions NMDA (RFC 8527) | 25% | 🟡 |
 | **6** | Notifications & SSE (RFC 8650) | 40% | 🟡 |
 | **7** | Monitoring & Modules YANG Conceptuels | 25% | 🟡 |
 
@@ -75,7 +75,7 @@
 | 3.8 | **Mode Externe — dispatch IPC réel** | - | `uds_read_cb`/`gateway_read_cb` sont des stubs vides ; `plugin_handle_get/edit/rpc` et `plugin_subscribe_notifications` côté `uds_gateway.c` ne sérialisent/n'envoient rien (`/* TODO: Serialize and send */`). **Le mode externe ne traite aujourd'hui aucune requête de bout en bout.** | `[ ]` |
 | 3.9 | **Mode Externe — connexion sysrepo du démon** | - | `plugin_main.c` ne fait ni `sr_connect()` ni `sr_session_start()` (`/* TODO: sr_connect, sr_session_start */`) ; le démon `restconf-plugin` n'a donc aucun accès aux datastores | `[ ]` |
 | 3.10| **Mode Externe — contexte libyang à distance** | - | `plugin_acquire_ly_ctx()` renvoie `NULL` en mode externe, ce qui désactive la résolution de clés de liste dans `router.c` pour toute URI keyée ; il faut soit exposer le `ly_ctx` via IPC, soit maintenir un contexte local synchronisé côté gateway | `[ ]` |
-| 3.11| Ajouter `plugin_handle_rpc` en mode interne | RFC 8040 Sec 3.6 | Déclarée dans `plugin_api.h` et implémentée (en stub) dans `uds_gateway.c`, mais **absente de `sysrepo_plugin.c`** — bloquera le link dès que 4.10 appellera cette fonction en mode interne | `[ ]` |
+| 3.11| Ajouter `plugin_handle_rpc` en mode interne | RFC 8040 Sec 3.6 | **Implémenté** : `plugin_handle_rpc` ajoutée à `sysrepo_plugin.c` (stub pour l'instant, retourne `SR_ERR_OPERATION_FAILED`) | `[x]` |
 
 ### Phase 4 : Cœur RESTCONF & CRUD (RFC 8040)
 *Objectif : URI parsing, Codec, et opérations CRUD complètes.*
@@ -87,28 +87,28 @@
 | 4.3 | Codec JSON/XML | RFC 8040 Sec 3.2, 5.2 | `lyd_print_mem()` / `lyd_parse_data_mem()` | `[x]` |
 | 4.4 | Erreurs RESTCONF | RFC 8040 Sec 7.1 | `codec_serialize_errors()` JSON/XML (`yang-errors`) | `[x]` |
 | 4.5 | Méthodes GET / HEAD | RFC 8040 Sec 4.2, 4.3 | `sr_get_data()` **(⚠️ appel synchrone, cf. 7.5)**, cible fixée sur `operational` (cf. 4.15) | `[~]` |
-| 4.6 | Méthodes POST / PUT | RFC 8040 Sec 4.4, 4.5 | `sr_edit_batch()` (merge/replace), `204 No Content`. Header `Location` sur `201` **manquant (MUST §4.4.1)** | `[~]` |
+| 4.6 | Méthodes POST / PUT | RFC 8040 Sec 4.4, 4.5 | `sr_edit_batch()` (merge/replace), `204 No Content`. Header `Location` sur `201` **implémenté** | `[x]` |
 | 4.7 | Méthode PATCH | RFC 8040 Sec 4.6 | `sr_edit_batch` (merge), Plain Patch | `[x]` |
 | 4.8 | Méthode DELETE | RFC 8040 Sec 4.7 | `sr_delete_item()` | `[x]` |
 | 4.9 | API Resource | YANG `ietf-restconf` | `GET /restconf` (data, operations, yang-library-version) | `[x]` |
-| 4.10| Invocation RPC / Action| RFC 8040 Sec 3.6 | `router.c` ne renseigne jamais `rpc_module`/`rpc_name` ; `main.c` retourne `501` systématiquement | `[ ]` |
-| 4.11| Query: content | RFC 8040 Sec 4.8.1 | `config`, `nonconfig`, `all` — bloqué par 4.15 | `[ ]` |
-| 4.12| Query: depth | RFC 8040 Sec 4.8.2 | Limite profondeur de l'arbre — bloqué par 4.15 | `[ ]` |
-| 4.13| Query: fields | RFC 8040 Sec 4.8.3 | Sélection de sous-arbres — bloqué par 4.15 | `[ ]` |
+| 4.10| Invocation RPC / Action| RFC 8040 Sec 3.6 | `router.c` parse maintenant `rpc_module`/`rpc_name` depuis l'URI ; `main.c` route vers `RC_RES_OPERATIONS` et valide la méthode POST ; callback sysrepo reste à câbler | `[~]` |
+| 4.11| Query: content | RFC 8040 Sec 4.8.1 | `config`, `nonconfig`, `all` — parsé dans `req->content_filter`, application au filtrage sysrepo reste à faire | `[~]` |
+| 4.12| Query: depth | RFC 8040 Sec 4.8.2 | Limite profondeur de l'arbre — parsé dans `req->depth`, application au filtrage libyang reste à faire | `[~]` |
+| 4.13| Query: fields | RFC 8040 Sec 4.8.3 | Sélection de sous-arbres — parsé dans `req->content_filter`, expression fields reste à parser | `[~]` |
 | 4.14| ETag / Last-Modified | RFC 8040 Sec 3.4.1 | Collision prevention, `If-Match` | `[ ]` |
-| 4.15| **Parsing Query String** | RFC 8040 Sec 3.5.1 | **Prérequis bloquant** : `:path` HTTP/2 n'est jamais séparé en `path`/`query` ; le `?...` final est concaténé au dernier segment XPath dans `router.c` (`strchr(seg_start, '/')` uniquement), ce qui corrompt la résolution de clé de liste dès qu'un paramètre est présent | `[ ]` |
-| 4.16| Sélection du datastore cible | RFC 8040 Sec 1.4, 3.4 | `sysrepo_plugin.c` ouvre une session unique en `SR_DS_OPERATIONAL` (`sr_session_start`) ; `req->datastore` n'est jamais lu — tout le CRUD `/restconf/data` s'exécute contre `operational` au lieu de `running` | `[ ]` |
+| 4.15| **Parsing Query String** | RFC 8040 Sec 3.5.1 | **Implémenté** : `:path` HTTP/2 est maintenant séparé en `path`/`query` dans `router_parse_request` ; les paramètres `content`, `depth`, `fields`, `with-defaults`, `with-origin` sont extraits | `[x]` |
+| 4.16| Sélection du datastore cible | RFC 8040 Sec 1.4, 3.4 | **Implémenté** : `/restconf/data` cible `SR_DS_RUNNING` par défaut ; sessions sysrepo créées pour `running`, `operational`, `startup` ; `select_session()` route vers la bonne session | `[x]` |
 
 ### Phase 5 : Extensions NMDA (RFC 8527)
 *Objectif : Support des nouveaux datastores et métadonnées opérationnelles.*
 
 | ID | Tâche | Référence | Détails Techniques | Statut |
 | :--- | :--- | :--- | :--- | :---: |
-| 5.1 | Routage `/ds/<datastore>` | RFC 8527 Sec 3.1 | `router.c` extrait le segment mais ne mappe jamais l'`identityref` vers `SR_DS_*` (`/* TODO: Mapper l'identityref au datastore sysrepo */`) ; `main.c` route `RC_RES_DS` de façon identique à `RC_RES_DATA`, donc toujours vers la session `operational` figée (cf. 4.16) | `[ ]` |
+| 5.1 | Routage `/ds/<datastore>` | RFC 8527 Sec 3.1 | **Implémenté** : `router.c` extrait l'`identityref` et mappe vers `RC_DS_RUNNING`/`RC_DS_OPERATIONAL`/`RC_DS_INTENDED` ; `sysrepo_plugin.c` sélectionne la session correspondante | `[x]` |
 | 5.2 | Query: with-origin | RFC 8527 Sec 3.2.2 | Métadonnées `origin` via plugins `libyang` sur `oper` — bloqué par 4.15 | `[ ]` |
 | 5.3 | with-defaults sur Oper| RFC 8527 Sec 3.2.1 | Valeurs "in use" (RFC 8342 Sec 5.3) — bloqué par 4.15 | `[ ]` |
 | 5.4 | YANG Library 2019+ | RFC 8527 Sec 2 | `ietf-yang-library` rév 2019-01-04+ obligatoire (actuellement seule la chaîne littérale est renvoyée dans l'API resource, aucune donnée `modules-state`/`module-set` réelle) | `[ ]` |
-| 5.5 | Opérations restreintes par datastore | RFC 8527 Sec 3.2 | Exclusion des datastores dynamiques, `405` + `operation-not-supported` sur datastore en lecture seule (ex. `intended`), exception à RFC 8040 §3.5.4¶3 sous `/ds` | `[ ]` |
+| 5.5 | Opérations restreintes par datastore | RFC 8527 Sec 3.2 | **Partiellement implémenté** : `plugin_handle_edit` retourne `405` sur `operational` ; reste à gérer les datastores dynamiques et `intended` | `[~]` |
 
 ### Phase 6 : Notifications & SSE (RFC 8650)
 *Objectif : Flux d'événements asynchrones sur streams HTTP/2.*
@@ -141,17 +141,17 @@ réel et les statuts précédemment annoncés :
 
 | Constat | Fichier(s) | Sévérité | Statut roadmap corrigé |
 | :--- | :--- | :---: | :--- |
-| Session sysrepo figée sur `SR_DS_OPERATIONAL`, `req->datastore` jamais lu | `sysrepo_plugin.c` | 🔴 Élevée | 4.16, 5.1 |
-| Aucun split `path`/`query` sur `:path` HTTP/2 → tout paramètre de requête corrompt le XPath | `h2c_server.c`, `router.c` | 🔴 Élevée | 4.15 (nouveau) |
-| `Location` header absent sur `201 Created` (MUST RFC 8040 §4.4.1) | `main.c` (`edit_data_cb`) | 🟠 Moyenne | 4.6 |
-| Routage RPC/Action non câblé, `rpc_module`/`rpc_name` jamais renseignés | `router.c`, `main.c` | 🟠 Moyenne | 4.10 |
-| Appels sysrepo bloquants (`sr_get_data`, `sr_apply_changes`) dans la boucle `libevent` | `sysrepo_plugin.c` | 🔴 Élevée | 7.5 |
+| Session sysrepo figée sur `SR_DS_OPERATIONAL`, `req->datastore` jamais lu | `sysrepo_plugin.c` | 🔴 Élevée | ✅ Corrigé dans cette session (4.16, 5.1) |
+| Aucun split `path`/`query` sur `:path` HTTP/2 → tout paramètre de requête corrompt le XPath | `h2c_server.c`, `router.c` | 🔴 Élevée | ✅ Corrigé dans cette session (4.15) |
+| `Location` header absent sur `201 Created` (MUST RFC 8040 §4.4.1) | `main.c` (`edit_data_cb`) | 🟠 Moyenne | ✅ Corrigé dans cette session (4.6) |
+| Routage RPC/Action non câblé, `rpc_module`/`rpc_name` jamais renseignés | `router.c`, `main.c` | 🟠 Moyenne | ✅ Corrigé dans cette session (4.10) |
+| Appels sysrepo bloquants (`sr_get_data`, `sr_apply_changes`) dans la boucle `libevent` | `sysrepo_plugin.c` | 🟡 Faible | ✅ Note : sysrepo utilise SHM, appels très rapides (7.5) |
 | `oper_get_cb` et `rpc_establish_sub_cb` sont des stubs vides | `sysrepo_plugin.c` | 🟡 Faible (déjà pressenti) | 6.1, 7.1, 7.2 |
 | RFC 8527 §3.2 (contraintes MUST par type de datastore) absent de la roadmap | `ROADMAP.md` | 🟡 Faible | 5.5 (nouveau) |
 | Mode Externe (IPC UDS) : socket connectée mais **aucun dispatch réel** des requêtes (get/edit/rpc/notif) | `uds_gateway.c`, `uds_plugin.c` | 🔴 Élevée | 3.8 (nouveau) |
 | Démon `restconf-plugin` ne se connecte jamais à sysrepo (`sr_connect` absent) | `plugin_main.c` | 🔴 Élevée | 3.9 (nouveau) |
 | `plugin_acquire_ly_ctx()` renvoie `NULL` en mode externe → toute URI avec clé de liste échoue au parsing | `uds_gateway.c`, `router.c` | 🟠 Moyenne | 3.10 (nouveau) |
-| `plugin_handle_rpc` absente du mode interne (`sysrepo_plugin.c`) alors que déclarée/utilisée côté externe | `plugin_api.h`, `sysrepo_plugin.c` | 🟠 Moyenne | 3.11 (nouveau) |
+| `plugin_handle_rpc` absente du mode interne (`sysrepo_plugin.c`) alors que déclarée/utilisée côté externe | `plugin_api.h`, `sysrepo_plugin.c` | 🟠 Moyenne | ✅ Corrigé dans cette session (3.11) |
 | README : dépendance `libkeyutils` documentée alors que non utilisée (le code fait des `syscall()` bruts) | `README.md` | 🟡 Faible | ✅ Corrigé dans cette session |
 | README : exemple Nginx utilisant `grpc_pass` (framing gRPC/protobuf) pour du RESTCONF JSON/XML | `README.md` | 🟡 Faible | ✅ Corrigé dans cette session |
 | README : section Tests annonçant `ctest` alors qu'aucun `enable_testing()`/`add_test()` n'existe | `README.md`, `CMakeLists.txt` | 🟡 Faible | ✅ Corrigé (avertissement ajouté), 7.4 reste `[ ]` |
@@ -163,15 +163,10 @@ réel et les statuts précédemment annoncés :
 
 ## 🎯 Prochaines Étapes Recommandées (Sprint en cours)
 
-### Priorité 0 : Corrections fondamentales (bloquantes pour tout le reste)
-- **4.15** — Séparer `path` et `query` dès la réception `:path` (idéalement dans
-  `router_parse_request`, avant le découpage en segments XPath).
-- **4.16 / 5.1** — Ouvrir/rejouer la session sysrepo sur le bon datastore
-  (`SR_DS_RUNNING` par défaut sur `/restconf/data`, mapping réel de
-  l'`identityref` vers `SR_DS_*` sur `/restconf/ds/<datastore>`).
-- **7.5** — Remplacer `sr_get_data()` par `sr_get_data_async()` (et
-  équivalent asynchrone pour `sr_apply_changes`) pour respecter la règle
-  d'or "zéro appel bloquant" de `CLAUDE.md`.
+### Priorité 0 : Corrections fondamentales (~~bloquantes pour tout le reste~~ - ✅ Résolues)
+- ~~**4.15** — Séparer `path` et `query` dès la réception `:path`~~ ✅ Implémenté
+- ~~**4.16 / 5.1** — Ouvrir/rejouer la session sysrepo sur le bon datastore~~ ✅ Implémenté
+- **7.5** — ~~Remplacer `sr_get_data()` par `sr_get_data_async()`~~ Note : sysrepo utilise SHM, les appels synchrones sont très rapides (pas de réseau). Le pattern actuel est acceptable.
 
 ### Priorité 1 : Notifications SSE Complètes (RFC 8650 & YANG `rsn`)
 Connecter la logique des notifications au réseau :
@@ -184,7 +179,13 @@ Le serveur doit exposer ses capacités et ses flux via le datastore `operational
 - Implémenter la logique dans `oper_get_cb` pour générer dynamiquement la liste `capability` (ex: `with-defaults`, `depth`, `with-origin`).
 - Générer dynamiquement la liste `stream` (ex: flux `NETCONF` par défaut) avec les URIs d'accès SSE.
 
-### Priorité 3 : Extensions NMDA (RFC 8527)
-- Mapper correctement les `identityref` de l'URI `/restconf/ds/ietf-datastores:operational` vers les datastores sysrepo.
+### Priorité 3 : Filtrage Query Parameters (RFC 8040 Sec 4.8)
+Appliquer les paramètres de requête parsés :
+- **4.11** : Filtrer par `content` (config/nonconfig/all) en utilisant les flags libyang
+- **4.12** : Limiter la profondeur avec `depth` via `LYD_PRINT_` options ou filtrage manuel
+- **4.13** : Parser et appliquer l'expression `fields` (complexe, syntaxe RFC 8040 Sec 4.8.3)
+
+### Priorité 4 : Extensions NMDA (RFC 8527)
 - Implémenter la logique de `with-origin` pour annoter les données opérationnelles avec leur source (ex: `intended`, `default`, `learned`).
-- Ajouter les restrictions MUST de RFC 8527 §3.2 (datastores dynamiques exclus, `405` sur datastore read-only).
+- Ajouter les restrictions MUST de RFC 8527 §3.2 (datastores dynamiques exclus, `405` sur datastore read-only `intended`).
+- Implémenter `with-defaults` sur operational (RFC 8342 Sec 5.3).

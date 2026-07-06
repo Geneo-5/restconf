@@ -62,3 +62,7 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+*.swp
+.codex/
+.DS_Store

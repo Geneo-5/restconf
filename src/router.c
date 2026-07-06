@@ -189,6 +189,60 @@ static int parse_segment(
 	return 0;
 }
 
+/**
+ * @brief Parse les query parameters RESTCONF (RFC 8040 Sec 4.8).
+ * Extrait content, depth, fields, with-defaults, with-origin.
+ */
+static int parse_query_params(
+	const char *query, rc_request_t *req)
+{
+	if (!query || !*query) return 0;
+
+	char *q_copy = strdup(query);
+	if (!q_copy) return -1;
+
+	char *saveptr = NULL;
+	char *param = strtok_r(q_copy, "&", &saveptr);
+
+	while (param) {
+		char *eq = strchr(param, '=');
+		if (!eq) {
+			/* Paramètre sans valeur (ex: "with-origin") */
+			if (strcmp(param, "with-origin") == 0) {
+				req->with_origin = true;
+			}
+			param = strtok_r(NULL, "&", &saveptr);
+			continue;
+		}
+
+		*eq = '\0';
+		const char *key = param;
+		const char *val = eq + 1;
+
+		if (strcmp(key, "content") == 0) {
+			req->content_filter = strdup(val);
+		} else if (strcmp(key, "depth") == 0) {
+			if (strcmp(val, "unbounded") == 0) {
+				req->depth = -1;
+			} else {
+				req->depth = atoi(val);
+			}
+		} else if (strcmp(key, "fields") == 0) {
+			/* TODO: parser l'expression fields */
+			req->content_filter = strdup(val);
+		} else if (strcmp(key, "with-defaults") == 0) {
+			req->with_defaults = strdup(val);
+		} else if (strcmp(key, "with-origin") == 0) {
+			req->with_origin = true;
+		}
+
+		param = strtok_r(NULL, "&", &saveptr);
+	}
+
+	free(q_copy);
+	return 0;
+}
+
 int router_parse_request(
 	const struct ly_ctx *ctx,
 	const char *path, const char *method,
@@ -205,6 +259,20 @@ int router_parse_request(
 	req_out->req_type = codec_parse_content_type(content_type);
 	req_out->accept_type = codec_parse_accept(accept);
 
+	/* Split path et query string (RFC 8040 Sec 3.5.1) */
+	char path_buf[2048];
+	const char *query = NULL;
+	const char *qmark = strchr(path, '?');
+
+	if (qmark) {
+		size_t path_len = (size_t)(qmark - path);
+		if (path_len >= sizeof(path_buf)) return -1;
+		memcpy(path_buf, path, path_len);
+		path_buf[path_len] = '\0';
+		query = qmark + 1;
+		path = path_buf;
+	}
+
 	if (strcmp(path, "/.well-known/host-meta") == 0) {
 		req_out->res_type = RC_RES_ROOT_DISCOVERY;
 		return 0;
@@ -217,13 +285,31 @@ int router_parse_request(
 	const char *rest_path = NULL;
 	if (strncmp(path, "/restconf/data/", 15) == 0) {
 		req_out->res_type = RC_RES_DATA;
+		/* RFC 8040: /restconf/data cible running par défaut */
+		req_out->datastore = RC_DS_RUNNING;
 		rest_path = path + 15;
 	} else if (strncmp(path, "/restconf/ds/", 13) == 0) {
 		req_out->res_type = RC_RES_DS;
 		const char *ds_start = path + 13;
 		const char *ds_end = strchr(ds_start, '/');
 		if (ds_end) {
-			/* TODO: Mapper l'identityref au datastore sysrepo */
+			/* Extraire l'identityref datastore (RFC 8527) */
+			size_t ds_len = (size_t)(ds_end - ds_start);
+			char ds_identity[256];
+			if (ds_len >= sizeof(ds_identity)) return -1;
+			memcpy(ds_identity, ds_start, ds_len);
+			ds_identity[ds_len] = '\0';
+
+			/* Mapper l'identityref vers rc_datastore_t */
+			if (strstr(ds_identity, "running")) {
+				req_out->datastore = RC_DS_RUNNING;
+			} else if (strstr(ds_identity, "operational")) {
+				req_out->datastore = RC_DS_OPERATIONAL;
+			} else if (strstr(ds_identity, "intended")) {
+				req_out->datastore = RC_DS_INTENDED;
+			} else {
+				req_out->datastore = RC_DS_UNKNOWN;
+			}
 			rest_path = ds_end + 1;
 		} else {
 			return -1;
@@ -231,12 +317,45 @@ int router_parse_request(
 	} else if (strncmp(path, "/restconf/operations/", 21) == 0) {
 		req_out->res_type = RC_RES_OPERATIONS;
 		rest_path = path + 21;
+
+		/* Parser le module:rpc-name depuis l'URI operations */
+		if (rest_path && *rest_path != '\0') {
+			char rpc_path[512];
+			size_t rpc_len = strlen(rest_path);
+			if (rpc_len >= sizeof(rpc_path)) return -1;
+			memcpy(rpc_path, rest_path, rpc_len);
+			rpc_path[rpc_len] = '\0';
+
+			/* Enlever les trailing slashes */
+			while (rpc_len > 0 &&
+			       rpc_path[rpc_len - 1] == '/') {
+				rpc_path[--rpc_len] = '\0';
+			}
+
+			/* Parser module:rpc ou module:action/node */
+			char *colon = strchr(rpc_path, ':');
+			if (colon) {
+				*colon = '\0';
+				req_out->rpc_module = strdup(rpc_path);
+				req_out->rpc_name = strdup(colon + 1);
+			} else {
+				req_out->rpc_name = strdup(rpc_path);
+			}
+		}
 	} else {
 		req_out->res_type = RC_RES_UNKNOWN;
 		return -1;
 	}
 
-	if (rest_path && *rest_path != '\0') {
+	/* Parser les query parameters après extraction du path */
+	if (query && parse_query_params(query, req_out) != 0) {
+		return -1;
+	}
+
+	/* Construire le XPath pour DATA/DS uniquement */
+	if ((req_out->res_type == RC_RES_DATA ||
+	     req_out->res_type == RC_RES_DS) &&
+	    rest_path && *rest_path != '\0') {
 		char *xpath = malloc(MAX_XPATH_LEN);
 		if (!xpath) return -1;
 		xpath[0] = '\0';

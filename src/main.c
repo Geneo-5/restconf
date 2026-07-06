@@ -84,6 +84,7 @@ typedef struct {
 	h2c_session_t *session;
 	int32_t stream_id;
 	media_type_t accept_type;
+	char *location;
 } edit_req_ctx_t;
 
 static void edit_data_cb(
@@ -96,10 +97,10 @@ static void edit_data_cb(
 	
 	if (http_status >= 200 && http_status < 300) {
 		/* Succès (201 Created ou 204 No Content) */
-		/* TODO: Générer le header Location pour 201 */
+		/* RFC 8040 Sec 4.4.1: Location header pour 201 */
 		h2c_send_response(
 			ctx->session, ctx->stream_id,
-			http_status, NULL, NULL, NULL, 0);
+			http_status, NULL, ctx->location, NULL, 0);
 	} else {
 		/* Erreur */
 		char *body = NULL;
@@ -117,6 +118,7 @@ static void edit_data_cb(
 			ctype, NULL, (uint8_t *)body, body_len);
 		if (body) free(body);
 	}
+	free(ctx->location);
 	free(ctx);
 }
 
@@ -253,6 +255,26 @@ static void on_restconf_request(
 			ctx->session = session;
 			ctx->stream_id = stream_id;
 			ctx->accept_type = req.accept_type;
+
+			/* RFC 8040 Sec 4.4.1: Location header pour POST */
+			if (strcmp(method, "POST") == 0 && req.xpath) {
+				/* Construire l'URI Location */
+				char loc_buf[4096];
+				if (req.res_type == RC_RES_DS) {
+					snprintf(loc_buf,
+					         sizeof(loc_buf),
+					         "/restconf/ds/%s",
+					         req.xpath);
+				} else {
+					snprintf(loc_buf,
+					         sizeof(loc_buf),
+					         "/restconf/data%s",
+					         req.xpath);
+				}
+				ctx->location = strdup(loc_buf);
+			} else {
+				ctx->location = NULL;
+			}
 			
 			plugin_handle_edit(
 				app->plugin_ctx, &req,
@@ -265,11 +287,30 @@ static void on_restconf_request(
 				"Method not allowed");
 		}
 	} else if (req.res_type == RC_RES_OPERATIONS) {
-		/* TODO: Gérer les RPC */
-		send_error_response(
-			session, stream_id, req.accept_type,
-			501, "operation-not-supported",
-			"RPC not implemented yet");
+		/* RFC 8040 Sec 3.6: Invocation RPC/Action */
+		if (strcmp(method, "POST") == 0) {
+			if (!req.rpc_name) {
+				send_error_response(
+					session, stream_id,
+					req.accept_type, 400,
+					"invalid-value",
+					"Missing RPC name");
+				router_free_request(&req);
+				return;
+			}
+
+			/* TODO: Implémenter l'invocation RPC complète */
+			/* Pour l'instant, retourner 501 */
+			send_error_response(
+				session, stream_id, req.accept_type,
+				501, "operation-not-supported",
+				"RPC not implemented yet");
+		} else {
+			send_error_response(
+				session, stream_id, req.accept_type,
+				405, "operation-not-supported",
+				"Method not allowed for RPC");
+		}
 	} else {
 		send_error_response(
 			session, stream_id, req.accept_type,
@@ -293,17 +334,21 @@ int main(int argc UNUSED, char **argv UNUSED) {
 		return 1;
 	}
 
-	app.plugin_ctx = plugin_init(
-		NULL, use_external, "/var/run/restconf.sock");
-	if (!app.plugin_ctx) {
-		fprintf(stderr, "Failed to init plugin\n");
-		return 1;
-	}
-
+	/* Créer le serveur h2c en premier pour obtenir l'event base */
 	h2c_server_t *server = h2c_server_init(
 		bind_addr, port, on_restconf_request, &app);
 	if (!server) {
 		fprintf(stderr, "Failed to init h2c server\n");
+		return 1;
+	}
+
+	/* Initialiser le plugin avec l'event base du serveur */
+	struct event_base *base = h2c_server_get_event_base(server);
+	app.plugin_ctx = plugin_init(
+		base, use_external, "/var/run/restconf.sock");
+	if (!app.plugin_ctx) {
+		fprintf(stderr, "Failed to init plugin\n");
+		h2c_server_destroy(server);
 		return 1;
 	}
 
