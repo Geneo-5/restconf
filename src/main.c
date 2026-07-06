@@ -8,6 +8,7 @@
 #include "jwt_validator.h"
 #include "plugin_api.h"
 #include "router.h"
+#include "codec.h"
 
 typedef struct {
 	jwt_ctx_t *jwt_ctx;
@@ -17,26 +18,66 @@ typedef struct {
 typedef struct {
 	h2c_session_t *session;
 	int32_t stream_id;
+	media_type_t accept_type;
 } get_req_ctx_t;
 
 static void get_data_cb(
 	sr_data_t *data, int error_code, void *user_data)
 {
 	get_req_ctx_t *ctx = (get_req_ctx_t *)user_data;
+	char *body = NULL;
+	size_t body_len = 0;
+	int status = 200;
+	const char *ctype = (ctx->accept_type == MEDIA_TYPE_XML) ?
+		"application/yang-data+xml" :
+		"application/yang-data+json";
+
 	if (error_code != SR_ERR_OK) {
-		h2c_send_response(
-			ctx->session, ctx->stream_id, 500,
-			"application/yang-data+json",
-			(uint8_t *)"{\"ietf-restconf:errors\":{\"error\":[{\"error-tag\":\"operation-failed\"}]}}",
-			82);
+		status = 500;
+		codec_serialize_errors(
+			ctx->accept_type, "operation-failed",
+			"Sysrepo operation failed",
+			&body, &body_len);
+	} else if (data && data->tree) {
+		if (codec_serialize_data(
+		        data->tree, ctx->accept_type,
+		        &body, &body_len) != 0) {
+			status = 500;
+			codec_serialize_errors(
+				ctx->accept_type,
+				"operation-failed",
+				"Serialization failed",
+				&body, &body_len);
+		}
 	} else {
-		h2c_send_response(
-			ctx->session, ctx->stream_id, 200,
-			"application/yang-data+json",
-			(uint8_t *)"{}", 2);
+		status = 204; 
 	}
+
+	h2c_send_response(
+		ctx->session, ctx->stream_id, status,
+		ctype, (uint8_t *)body, body_len);
+
+	if (body) free(body);
 	if (data) sr_release_data(data);
 	free(ctx);
+}
+
+static void send_error_response(
+	h2c_session_t *session, int32_t stream_id,
+	media_type_t type, int status,
+	const char *tag, const char *msg)
+{
+	char *body = NULL;
+	size_t body_len = 0;
+	const char *ctype = (type == MEDIA_TYPE_XML) ?
+		"application/yang-data+xml" :
+		"application/yang-data+json";
+
+	codec_serialize_errors(type, tag, msg, &body, &body_len);
+	h2c_send_response(
+		session, stream_id, status, ctype,
+		(uint8_t *)body, body_len);
+	if (body) free(body);
 }
 
 static void on_restconf_request(
@@ -50,14 +91,16 @@ static void on_restconf_request(
 	
 	const char *auth_header = h2c_session_get_header(
 		session, "Authorization");
+	const char *content_type = h2c_session_get_content_type(
+		session);
+	const char *accept = h2c_session_get_accept(session);
 	
 	if (router_parse_request(
-	        path, method, auth_header, &req) != 0) {
-		h2c_send_response(
-			session, stream_id, 400,
-			"application/yang-data+json",
-			(uint8_t *)"{\"ietf-restconf:errors\":{\"error\":[{\"error-tag\":\"invalid-value\"}]}}",
-			78);
+	        path, method, auth_header,
+	        content_type, accept, &req) != 0) {
+		send_error_response(
+			session, stream_id, req.accept_type,
+			400, "invalid-value", "Bad URI");
 		return;
 	}
 
@@ -69,11 +112,9 @@ static void on_restconf_request(
 		        username, sizeof(username)) == 0) {
 			req.username = strdup(username);
 		} else {
-			h2c_send_response(
-				session, stream_id, 401,
-				"application/yang-data+json",
-				(uint8_t *)"{\"ietf-restconf:errors\":{\"error\":[{\"error-tag\":\"access-denied\"}]}}",
-				79);
+			send_error_response(
+				session, stream_id, req.accept_type,
+				401, "access-denied", "Invalid JWT");
 			router_free_request(&req);
 			return;
 		}
@@ -84,9 +125,11 @@ static void on_restconf_request(
 		if (strcmp(method, "GET") == 0 ||
 		    strcmp(method, "HEAD") == 0) {
 			
-			get_req_ctx_t *ctx = malloc(sizeof(get_req_ctx_t));
+			get_req_ctx_t *ctx = malloc(
+				sizeof(get_req_ctx_t));
 			ctx->session = session;
 			ctx->stream_id = stream_id;
+			ctx->accept_type = req.accept_type;
 			
 			plugin_handle_get(
 				app->plugin_ctx, &req,
@@ -100,6 +143,7 @@ static void on_restconf_request(
 	router_free_request(&req);
 }
 
+/* Point d'entrée principal restauré */
 int main(int argc UNUSED, char **argv UNUSED) {
 	const char *bind_addr = "127.0.0.1";
 	uint16_t port = 8080;

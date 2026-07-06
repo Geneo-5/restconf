@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "codec.h"
+
 // Types de ressources RESTCONF (RFC 8040 Sec 3 & RFC 8527 Sec 3.1)
 typedef enum {
 	RC_RES_ROOT_DISCOVERY,     // /.well-known/host-meta
@@ -53,14 +55,22 @@ typedef struct {
 	
 	// Identité utilisateur (extraite du JWT)
 	char *username;
+
+	/* Types de médias (RFC 8040 Sec 3.2 & 5.2) */
+	media_type_t req_type;
+	media_type_t accept_type;
 } rc_request_t;
 
 /**
  * @brief Parse l'URI et les headers d'une requête HTTP/2.
  * @return 0 en cas de succès, -1 si l'URI est invalide (Bad Request).
  */
-int router_parse_request(const char *path, const char *method, 
-						 const char *auth_header, rc_request_t *req_out);
+int router_parse_request(const char *path,
+                         const char *method,
+                         const char *auth_header,
+                         const char *content_type,
+                         const char *accept,
+                         rc_request_t *req_out);
 
 /**
  * @brief Libère la mémoire allouée dans rc_request_t (ex: xpath, username).

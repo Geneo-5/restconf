@@ -24,6 +24,8 @@ struct h2c_session_s {
 	char method[16];
 	char path[2048];
 	char auth_header[4096];
+	char content_type[128];
+	char accept[128];
 	uint8_t *body;
 	size_t body_len;
 	size_t body_cap;
@@ -108,6 +110,16 @@ static int on_header_callback(
 	           memcmp(name, "authorization", 13) == 0) {
 		snprintf(h2_session->auth_header,
 		         sizeof(h2_session->auth_header),
+		         "%.*s", (int)valuelen, value);
+	} else if (namelen == 12 &&
+	           memcmp(name, "content-type", 12) == 0) {
+		snprintf(h2_session->content_type,
+		         sizeof(h2_session->content_type),
+		         "%.*s", (int)valuelen, value);
+	} else if (namelen == 6 &&
+	           memcmp(name, "accept", 6) == 0) {
+		snprintf(h2_session->accept,
+		         sizeof(h2_session->accept),
 		         "%.*s", (int)valuelen, value);
 	}
 	return 0;
@@ -321,4 +333,20 @@ int h2c_send_sse_data(
 {
 	/* TODO: Implement data provider for SSE stream */
 	return 0;
+}
+
+const char *h2c_session_get_content_type(
+	h2c_session_t *session)
+{
+	if (!session) return NULL;
+	return session->content_type[0] ?
+	       session->content_type : NULL;
+}
+
+const char *h2c_session_get_accept(
+	h2c_session_t *session)
+{
+	if (!session) return NULL;
+	return session->accept[0] ?
+	       session->accept : NULL;
 }

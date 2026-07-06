@@ -39,6 +39,7 @@ set(CORE_SOURCES
     src/router.c
     src/jwt_validator.c
     src/sse_stream.c
+    src/codec.c
 )
 
 set(PLUGIN_SOURCES

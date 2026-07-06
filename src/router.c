@@ -8,6 +8,8 @@
 int router_parse_request(
 	const char *path, const char *method,
 	const char *auth_header UNUSED,
+	const char *content_type,
+	const char *accept,
 	rc_request_t *req_out)
 {
 	if (!path || !method || !req_out) {
@@ -16,6 +18,11 @@ int router_parse_request(
 	memset(req_out, 0, sizeof(rc_request_t));
 	req_out->method = method;
 	req_out->depth = -1;
+
+	/* Parsing des médias */
+	req_out->req_type = codec_parse_content_type(
+		content_type);
+	req_out->accept_type = codec_parse_accept(accept);
 
 	if (strcmp(path, "/.well-known/host-meta") == 0) {
 		req_out->res_type = RC_RES_ROOT_DISCOVERY;

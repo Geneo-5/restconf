@@ -11,27 +11,14 @@
 struct plugin_ctx_s {
 	sr_conn_ctx_t *conn;
 	sr_session_ctx_t *session;
-	sr_subscription_ctx_t *subscription; /* Ajouté pour gérer les abonnements */
+	sr_subscription_ctx_t *subscription;
 	struct event_base *base;
 	struct event *sr_event;
 	plugin_notif_cb notif_cb;
 	void *notif_user_data;
 };
 
-static void sr_event_cb(
-	evutil_socket_t fd UNUSED,
-	short events UNUSED, void *ctx)
-{
-	plugin_ctx_t *plugin = (plugin_ctx_t *)ctx;
-	/* Traitement asynchrone des événements sysrepo dans la boucle libevent */
-	if (plugin->subscription) {
-		sr_subscription_process_events(
-			plugin->subscription, NULL, NULL);
-	}
-}
-
-/* Callback pour les données opérationnelles (ietf-restconf-monitoring) */
-/* Signature conforme à sr_oper_get_items_cb */
+/* Callback pour les données opérationnelles */
 static int oper_get_cb(
 	sr_session_ctx_t *session UNUSED,
 	uint32_t sub_id UNUSED,
@@ -39,27 +26,24 @@ static int oper_get_cb(
 	const char *path UNUSED,
 	const char *request_xpath UNUSED,
 	uint32_t operation_id UNUSED,
-	struct lyd_node **parent,
+	struct lyd_node **parent UNUSED,
 	void *private_data UNUSED)
 {
-	/* TODO: Générer les données opérationnelles et les ajouter à *parent */
-	/* Exemple : lyd_new_term(*parent, NULL, "capability", "urn:...", NULL); */
 	return SR_ERR_OK;
 }
 
-/* Callback pour les notifications YANG */
-/* Signature conforme à sr_event_notif_cb */
-static void notif_cb_sr(
+/* Callback pour le RPC establish-subscription */
+static int rpc_establish_sub_cb(
 	sr_session_ctx_t *session UNUSED,
 	uint32_t sub_id UNUSED,
-	sr_ev_notif_type_t notif_type UNUSED, /* Correction du type */
-	const char *xpath UNUSED,
-	const sr_val_t *values UNUSED,
-	const size_t values_cnt UNUSED,
-	struct timespec *timestamp UNUSED,
-	void *private_data UNUSED)
+	const char *op_path UNUSED,
+	const struct lyd_node *input UNUSED,
+	sr_event_t event UNUSED,
+	uint32_t request_id UNUSED,
+	struct lyd_node *output UNUSED,
+	void *private_ctx UNUSED)
 {
-	/* TODO: Formater et pousser la notification via le plugin_ctx */
+	return SR_ERR_OK;
 }
 
 plugin_ctx_t *plugin_init(
@@ -74,14 +58,15 @@ plugin_ctx_t *plugin_init(
 	}
 	sr_session_start(ctx->conn, SR_DS_OPERATIONAL, &ctx->session);
 
-	/* Abonnement aux données opérationnelles */
-	/* Signature conforme à sr_oper_get_subscribe */
 	sr_oper_get_subscribe(
 		ctx->session, "ietf-restconf-monitoring",
 		"/ietf-restconf-monitoring:restconf-state",
 		oper_get_cb, NULL, 0, &ctx->subscription);
 
-	/* TODO: Intégrer le FD de subscription dans libevent si nécessaire */
+	sr_rpc_subscribe_tree(
+		ctx->session,
+		"/ietf-subscribed-notifications:establish-subscription",
+		rpc_establish_sub_cb, NULL, 0, 0, NULL);
 
 	return ctx;
 }
@@ -92,16 +77,13 @@ void plugin_handle_get(
 {
 	sr_data_t *data = NULL;
 	
-	/* Application du contexte utilisateur pour le NACM */
 	if (req->username) {
 		sr_session_set_user(ctx->session, req->username);
 	}
 
-	/* Récupération des données */
 	int rc = sr_get_data(
 		ctx->session, req->xpath, 0, 0, 0, &data);
 	
-	/* Appel du callback pour envoyer la réponse HTTP/2 */
 	callback(data, rc, user_data);
 
 	if (data) sr_release_data(data);
@@ -113,7 +95,7 @@ void plugin_handle_edit(
 	plugin_status_cb callback UNUSED,
 	void *user_data UNUSED)
 {
-	/* TODO: Implémenter les opérations d'édition (POST/PUT/PATCH/DELETE) */
+	/* TODO: Implémenter les opérations d'édition */
 }
 
 void plugin_subscribe_notifications(
@@ -122,14 +104,10 @@ void plugin_subscribe_notifications(
 {
 	ctx->notif_cb = callback;
 	ctx->notif_user_data = user_data;
-	
-	/* L'abonnement aux notifications peut être ajouté ici via 
-	   sr_event_notif_subscribe quand la logique sera implémentée */
 }
 
 void plugin_destroy(plugin_ctx_t *ctx) {
 	if (ctx) {
-		/* Désabonnement propre */
 		if (ctx->subscription) {
 			sr_unsubscribe(ctx->subscription);
 		}

@@ -37,4 +37,16 @@ struct event_base *h2c_server_get_event_base(h2c_server_t *server);
 const char *h2c_session_get_header(
 	h2c_session_t *session, const char *name);
 
+/**
+ * @brief Récupère le header Content-Type de la requête.
+ */
+const char *h2c_session_get_content_type(
+	h2c_session_t *session);
+
+/**
+ * @brief Récupère le header Accept de la requête.
+ */
+const char *h2c_session_get_accept(
+	h2c_session_t *session);
+
 #endif // H2C_SERVER_H
