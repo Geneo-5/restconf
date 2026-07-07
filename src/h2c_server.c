@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <sys/un.h>
 #include <event2/event.h>
 #include <event2/listener.h>
 #include <event2/bufferevent.h>
@@ -278,6 +279,29 @@ h2c_server_t *h2c_server_init(
 		server->base, accept_cb, server,
 		LEV_OPT_REUSEABLE | LEV_OPT_CLOSE_ON_FREE, -1,
 		(struct sockaddr *)&sin, sizeof(sin));
+	return server;
+}
+
+h2c_server_t *h2c_server_init_uds(
+	const char *uds_path,
+	h2c_request_cb req_cb, void *user_data)
+{
+	h2c_server_t *server = calloc(1, sizeof(h2c_server_t));
+	server->base = event_base_new();
+	server->req_cb = req_cb;
+	server->user_data = user_data;
+
+	/* Supprimer la socket si elle existe déjà */
+	unlink(uds_path);
+
+	struct sockaddr_un sun = {0};
+	sun.sun_family = AF_UNIX;
+	strncpy(sun.sun_path, uds_path, sizeof(sun.sun_path) - 1);
+
+	server->listener = evconnlistener_new_bind(
+		server->base, accept_cb, server,
+		LEV_OPT_REUSEABLE | LEV_OPT_CLOSE_ON_FREE, -1,
+		(struct sockaddr *)&sun, sizeof(sun));
 	return server;
 }
 

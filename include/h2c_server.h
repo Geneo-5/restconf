@@ -18,6 +18,17 @@ h2c_server_t *h2c_server_init(
 	const char *bind_addr, uint16_t port,
 	h2c_request_cb req_cb, void *user_data);
 
+/**
+ * @brief Initialise le serveur h2c sur une socket Unix (UDS).
+ * @param uds_path Chemin vers la socket Unix (ex: /var/run/restconf.sock)
+ * @param req_cb Callback pour traiter les requêtes HTTP/2
+ * @param user_data Pointeur vers le contexte applicatif
+ * @return Pointeur vers le serveur, ou NULL en cas d'erreur
+ */
+h2c_server_t *h2c_server_init_uds(
+	const char *uds_path,
+	h2c_request_cb req_cb, void *user_data);
+
 void h2c_server_run(h2c_server_t *server);
 void h2c_server_destroy(h2c_server_t *server);
 

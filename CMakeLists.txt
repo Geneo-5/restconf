@@ -24,6 +24,10 @@ option(ALLOW_INSECURE_JWT
 # Valeurs: 0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=FATAL
 set(LOG_LEVEL "2" CACHE STRING "Compile-time maximum log level (0=TRACE to 5=FATAL)")
 
+# Option 4 : Chemin de la socket Unix pour l'IPC serveur ↔ plugin externe
+set(PLUGIN_UDS_PATH "/var/run/restconf-plugin.sock" CACHE STRING
+	"Unix socket path for IPC between restconf-server and restconf-plugin")
+
 # ==============================================================================
 # Dépendances
 # ==============================================================================
@@ -81,7 +85,8 @@ target_compile_options(restconf-server PRIVATE
 	-Wall -Wextra -Wpedantic)
 
 target_compile_definitions(restconf-server PRIVATE
-	RC_COMPILE_TIME_LOG_LEVEL=${LOG_LEVEL})
+	RC_COMPILE_TIME_LOG_LEVEL=${LOG_LEVEL}
+	PLUGIN_UDS_PATH="${PLUGIN_UDS_PATH}")
 
 # Gestion de l'option JWT Insecure
 if(ALLOW_INSECURE_JWT)
@@ -138,7 +143,8 @@ if(BUILD_EXTERNAL_PLUGIN)
 		-Wall -Wextra -Wpedantic)
 	
 	target_compile_definitions(restconf-plugin PRIVATE
-		RC_COMPILE_TIME_LOG_LEVEL=${LOG_LEVEL})
+		RC_COMPILE_TIME_LOG_LEVEL=${LOG_LEVEL}
+		PLUGIN_UDS_PATH="${PLUGIN_UDS_PATH}")
 
 	if(ALLOW_INSECURE_JWT)
 		target_compile_definitions(restconf-plugin PRIVATE 

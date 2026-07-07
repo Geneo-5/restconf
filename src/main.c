@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
+#include <unistd.h>
 #include <getopt.h>
 #include <event2/event.h>
 #include "h2c_server.h"
@@ -517,15 +519,24 @@ static void print_usage(const char *prog) {
 	fprintf(stderr, "Options:\n");
 	fprintf(stderr, "  -a <addr>   Bind address (default: 127.0.0.1)\n");
 	fprintf(stderr, "  -p <port>   Port to listen on (default: 8080)\n");
+	fprintf(stderr, "  -u <path>   Listen on Unix socket (h2c) instead of TCP\n");
+	fprintf(stderr, "  -k <desc>   JWT key descriptor (default: restconf_jwt_pubkey)\n");
+	fprintf(stderr, "  -d          Run as daemon (background)\n");
 	fprintf(stderr, "  -s          Use syslog instead of stdout\n");
 	fprintf(stderr, "  -v <level>  Runtime log level (0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=FATAL)\n");
 	fprintf(stderr, "  -h          Show this help\n");
+#ifdef USE_EXTERNAL_PLUGIN
+	fprintf(stderr, "\n");
+	fprintf(stderr, "IPC socket to plugin (compiled-in): %s\n", PLUGIN_UDS_PATH);
+#endif
 }
 
 int main(int argc, char **argv) {
 	const char *bind_addr = "127.0.0.1";
 	uint16_t port = 8080;
+	const char *uds_path = NULL;
 	const char *key_desc = "restconf_jwt_pubkey";
+	bool daemonize = false;
 #ifdef USE_EXTERNAL_PLUGIN
 	bool use_external = true;
 #else
@@ -535,13 +546,22 @@ int main(int argc, char **argv) {
 	int runtime_log_level = RC_COMPILE_TIME_LOG_LEVEL;
 
 	int opt;
-	while ((opt = getopt(argc, argv, "a:p:sv:h")) != -1) {
+	while ((opt = getopt(argc, argv, "a:p:u:k:sdv:h")) != -1) {
 		switch (opt) {
 			case 'a':
 				bind_addr = optarg;
 				break;
 			case 'p':
 				port = (uint16_t)atoi(optarg);
+				break;
+			case 'u':
+				uds_path = optarg;
+				break;
+			case 'k':
+				key_desc = optarg;
+				break;
+			case 'd':
+				daemonize = true;
 				break;
 			case 's':
 				log_target = RC_LOG_TARGET_SYSLOG;
@@ -555,6 +575,18 @@ int main(int argc, char **argv) {
 			default:
 				print_usage(argv[0]);
 				return 1;
+		}
+	}
+
+	/* Mode daemon : fork en arrière-plan */
+	if (daemonize) {
+		if (daemon(0, 0) != 0) {
+			perror("daemon");
+			return 1;
+		}
+		/* En mode daemon, forcer syslog si stdout était demandé */
+		if (log_target == RC_LOG_TARGET_STDOUT) {
+			log_target = RC_LOG_TARGET_SYSLOG;
 		}
 	}
 
@@ -573,25 +605,38 @@ int main(int argc, char **argv) {
 	}
 
 	/* Créer le serveur h2c en premier pour obtenir l'event base */
-	h2c_server_t *server = h2c_server_init(
-		bind_addr, port, on_restconf_request, &app);
-	if (!server) {
-		RC_FATAL("Failed to init h2c server on %s:%d", bind_addr, port);
-		return 1;
+	h2c_server_t *server;
+	if (uds_path) {
+		server = h2c_server_init_uds(
+			uds_path, on_restconf_request, &app);
+		if (!server) {
+			RC_FATAL("Failed to init h2c server on Unix socket %s", uds_path);
+			jwt_validator_destroy(app.jwt_ctx);
+			return 1;
+		}
+		RC_INFO("RESTCONF h2c server listening on Unix socket %s", uds_path);
+	} else {
+		server = h2c_server_init(
+			bind_addr, port, on_restconf_request, &app);
+		if (!server) {
+			RC_FATAL("Failed to init h2c server on %s:%d", bind_addr, port);
+			jwt_validator_destroy(app.jwt_ctx);
+			return 1;
+		}
+		RC_INFO("RESTCONF h2c server listening on %s:%d", bind_addr, port);
 	}
 
 	/* Initialiser le plugin avec l'event base du serveur */
 	struct event_base *base = h2c_server_get_event_base(server);
 	app.event_base = base;
 	app.plugin_ctx = plugin_init(
-		base, use_external, "/var/run/restconf.sock");
+		base, use_external, PLUGIN_UDS_PATH);
 	if (!app.plugin_ctx) {
 		RC_FATAL("Failed to init plugin");
 		h2c_server_destroy(server);
+		jwt_validator_destroy(app.jwt_ctx);
 		return 1;
 	}
-
-	RC_INFO("RESTCONF h2c server listening on %s:%d", bind_addr, port);
 	
 	h2c_server_run(server);
 

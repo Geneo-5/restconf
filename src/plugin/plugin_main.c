@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <signal.h>
+#include <unistd.h>
 #include <getopt.h>
 #include <event2/event.h>
 #include <sysrepo.h>
@@ -22,23 +24,26 @@ static void sigint_cb(
 static void print_usage(const char *prog) {
 	fprintf(stderr, "Usage: %s [options]\n", prog);
 	fprintf(stderr, "Options:\n");
-	fprintf(stderr, "  -u <path>   UDS socket path (default: /var/run/restconf-plugin.sock)\n");
+	fprintf(stderr, "  -d          Run as daemon (background)\n");
 	fprintf(stderr, "  -s          Use syslog instead of stdout\n");
 	fprintf(stderr, "  -v <level>  Runtime log level (0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=FATAL)\n");
 	fprintf(stderr, "  -h          Show this help\n");
+	fprintf(stderr, "\n");
+	fprintf(stderr, "IPC socket path (compiled-in): %s\n", PLUGIN_UDS_PATH);
+	fprintf(stderr, "  Override at compile time with: -DPLUGIN_UDS_PATH=<path>\n");
 }
 
 int main(int argc, char **argv)
 {
-	const char *uds_path = "/var/run/restconf-plugin.sock";
+	bool daemonize = false;
 	rc_log_target_t log_target = RC_LOG_TARGET_STDOUT;
 	int runtime_log_level = RC_COMPILE_TIME_LOG_LEVEL;
 
 	int opt;
-	while ((opt = getopt(argc, argv, "u:sv:h")) != -1) {
+	while ((opt = getopt(argc, argv, "sdv:h")) != -1) {
 		switch (opt) {
-			case 'u':
-				uds_path = optarg;
+			case 'd':
+				daemonize = true;
 				break;
 			case 's':
 				log_target = RC_LOG_TARGET_SYSLOG;
@@ -52,6 +57,18 @@ int main(int argc, char **argv)
 			default:
 				print_usage(argv[0]);
 				return 1;
+		}
+	}
+
+	/* Mode daemon : fork en arrière-plan */
+	if (daemonize) {
+		if (daemon(0, 0) != 0) {
+			perror("daemon");
+			return 1;
+		}
+		/* En mode daemon, forcer syslog si stdout était demandé */
+		if (log_target == RC_LOG_TARGET_STDOUT) {
+			log_target = RC_LOG_TARGET_SYSLOG;
 		}
 	}
 
@@ -74,12 +91,12 @@ int main(int argc, char **argv)
 	/* TODO: sr_connect, sr_session_start */
 
 	/* Initialize UDS listener */
-	if (ext_plugin_init_uds(base, uds_path) != 0) {
-		RC_FATAL("Failed to init UDS on %s", uds_path);
+	if (ext_plugin_init_uds(base, PLUGIN_UDS_PATH) != 0) {
+		RC_FATAL("Failed to init UDS on %s", PLUGIN_UDS_PATH);
 		return 1;
 	}
 
-	RC_INFO("External RESTCONF plugin listening on %s", uds_path);
+	RC_INFO("External RESTCONF plugin listening on %s", PLUGIN_UDS_PATH);
 
 	/* Run the single-threaded event loop */
 	event_base_dispatch(base);

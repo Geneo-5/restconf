@@ -104,6 +104,28 @@ sudo make install
 # Génère deux exécutables : ./restconf-server et ./restconf-plugin
 ```
 
+### Options CMake
+
+| Option | Description | Défaut |
+|--------|-------------|--------|
+| `BUILD_EXTERNAL_PLUGIN` | Compiler le plugin comme exécutable séparé (UDS IPC) | `OFF` |
+| `ALLOW_INSECURE_JWT` | Désactiver la vérification JWT (mode debug non sécurisé) | `OFF` |
+| `LOG_LEVEL` | Niveau de log maximum à la compilation (0=TRACE à 5=FATAL) | `2` (INFO) |
+| `PLUGIN_UDS_PATH` | Chemin de la socket Unix pour l'IPC serveur ↔ plugin | `/var/run/restconf-plugin.sock` |
+
+**Exemples :**
+
+```bash
+# Compilation production (logs ERROR/FATAL uniquement, plugin externe)
+cmake -B build_prod -DLOG_LEVEL=4 -DBUILD_EXTERNAL_PLUGIN=ON ..
+make -C build_prod -j$(nproc)
+
+# Compilation développement (tous les logs, chemin IPC personnalisé)
+cmake -B build_dev -DLOG_LEVEL=0 -DBUILD_EXTERNAL_PLUGIN=ON \
+      -DPLUGIN_UDS_PATH=/tmp/restconf.sock ..
+make -C build_dev -j$(nproc)
+```
+
 ### 🏗️ Architecture Dual-Mode (CMake Option)
 
 #### Option CMake : `BUILD_EXTERNAL_PLUGIN`
@@ -179,12 +201,82 @@ server {
 
 ## 🚀 Démarrage
 
+### Ligne de commande
+
+#### `restconf-server`
+
 ```bash
-# Lancer le démon sysrepo si ce n'est pas déjà fait
+Usage: restconf-server [options]
+Options:
+  -a <addr>   Adresse d'écoute TCP h2c (défaut: 127.0.0.1)
+  -p <port>   Port d'écoute TCP h2c (défaut: 8080)
+  -u <path>   Écouter sur socket Unix (h2c) au lieu de TCP
+  -k <desc>   Nom du descripteur de clé JWT dans le keyring (défaut: restconf_jwt_pubkey)
+  -d          Mode daemon (fork en arrière-plan, force syslog)
+  -s          Utiliser syslog au lieu de stdout
+  -v <level>  Niveau de log à l'exécution (0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=FATAL)
+  -h          Afficher l'aide
+```
+
+> ℹ️ En mode externe (`BUILD_EXTERNAL_PLUGIN=ON`), l'aide affiche
+> également le chemin de la socket IPC vers le plugin, fixé à la
+> compilation via `PLUGIN_UDS_PATH`.
+
+**Exemples :**
+
+```bash
+# Mode TCP (par défaut) — le reverse proxy forward le h2c ici
+./restconf-server -a 0.0.0.0 -p 8443
+
+# Mode socket Unix h2c — le reverse proxy se connecte à cette socket
+./restconf-server -u /var/run/restconf-h2c.sock
+
+# Mode daemon avec syslog et clé JWT personnalisée
+./restconf-server -u /var/run/restconf-h2c.sock -k my_custom_key -d
+
+# Mode développement avec tous les logs
+./restconf-server -v 0
+```
+
+#### `restconf-plugin` (mode externe uniquement)
+
+```bash
+Usage: restconf-plugin [options]
+Options:
+  -d          Mode daemon (fork en arrière-plan, force syslog)
+  -s          Utiliser syslog au lieu de stdout
+  -v <level>  Niveau de log à l'exécution (0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=FATAL)
+  -h          Afficher l'aide
+```
+
+> ℹ️ Le chemin de la socket IPC est **fixé à la compilation** via
+> l'option CMake `PLUGIN_UDS_PATH` (défaut :
+> `/var/run/restconf-plugin.sock`). Il n'y a pas d'option `-u` pour
+> le surcharger à l'exécution : le serveur et le plugin doivent
+> toujours utiliser le même chemin, garanti par la compilation.
+
+**Exemples :**
+
+```bash
+# Lancer le plugin externe (utilise PLUGIN_UDS_PATH compilé)
+./restconf-plugin
+
+# Mode daemon avec syslog
+./restconf-plugin -d -s
+```
+
+### Démarrage complet
+
+```bash
+# 1. Lancer le démon sysrepo si ce n'est pas déjà fait
 sysrepod &
 
-# Lancer le serveur RESTCONF
-./restconf-h2c-server --bind 127.0.0.1:8080 --keyring-id 12345678
+# 2a. Mode interne (monolithique)
+./restconf-server -a 127.0.0.1 -p 8080
+
+# 2b. Mode externe (séparation des privilèges)
+./restconf-plugin &   # écoute sur PLUGIN_UDS_PATH
+./restconf-server -a 127.0.0.1 -p 8080   # se connecte à PLUGIN_UDS_PATH
 ```
 
 ---
