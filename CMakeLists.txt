@@ -20,6 +20,10 @@ option(BUILD_EXTERNAL_PLUGIN
 option(ALLOW_INSECURE_JWT 
 	"Disable JWT signature verification (UNSAFE DEBUG MODE)" OFF)
 
+# Option 3 : Niveau de log à la compilation (pour optimiser la taille du code)
+# Valeurs: 0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=FATAL
+set(LOG_LEVEL "2" CACHE STRING "Compile-time maximum log level (0=TRACE to 5=FATAL)")
+
 # ==============================================================================
 # Dépendances
 # ==============================================================================
@@ -48,6 +52,7 @@ set(CORE_SOURCES
 	src/jwt_validator.c
 	src/sse_stream.c
 	src/codec.c
+	src/logger.c
 )
 
 set(PLUGIN_SOURCES
@@ -74,6 +79,9 @@ target_link_libraries(restconf-server PRIVATE
 
 target_compile_options(restconf-server PRIVATE 
 	-Wall -Wextra -Wpedantic)
+
+target_compile_definitions(restconf-server PRIVATE
+	RC_COMPILE_TIME_LOG_LEVEL=${LOG_LEVEL})
 
 # Gestion de l'option JWT Insecure
 if(ALLOW_INSECURE_JWT)
@@ -114,6 +122,7 @@ if(BUILD_EXTERNAL_PLUGIN)
 		src/ipc/uds_plugin.c
 		${IPC_COMMON_SOURCES}
 		src/codec.c       # <--- AJOUT INDISPENSABLE
+		src/logger.c
 	)
 	
 	target_include_directories(restconf-plugin PRIVATE
@@ -127,6 +136,9 @@ if(BUILD_EXTERNAL_PLUGIN)
 	
 	target_compile_options(restconf-plugin PRIVATE 
 		-Wall -Wextra -Wpedantic)
+	
+	target_compile_definitions(restconf-plugin PRIVATE
+		RC_COMPILE_TIME_LOG_LEVEL=${LOG_LEVEL})
 
 	if(ALLOW_INSECURE_JWT)
 		target_compile_definitions(restconf-plugin PRIVATE 

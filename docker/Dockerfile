@@ -95,4 +95,4 @@ RUN echo "🔨 Compilation du projet RESTCONF..." && \
     make install
 
 # Message de succès
-CMD ["/usr/local/bin/restconf-server", "--bind", "127.0.0.1:8080", "--keyring-id", "12345678"]
+CMD ["/usr/local/bin/restconf-server"]

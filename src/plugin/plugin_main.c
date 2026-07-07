@@ -1,8 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <getopt.h>
 #include <event2/event.h>
 #include <sysrepo.h>
+#include "logger.h"
 
 /* Forward declaration from uds_plugin.c */
 extern int ext_plugin_init_uds(
@@ -17,16 +19,49 @@ static void sigint_cb(
 	event_base_loopbreak(base);
 }
 
+static void print_usage(const char *prog) {
+	fprintf(stderr, "Usage: %s [options]\n", prog);
+	fprintf(stderr, "Options:\n");
+	fprintf(stderr, "  -u <path>   UDS socket path (default: /var/run/restconf-plugin.sock)\n");
+	fprintf(stderr, "  -s          Use syslog instead of stdout\n");
+	fprintf(stderr, "  -v <level>  Runtime log level (0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=FATAL)\n");
+	fprintf(stderr, "  -h          Show this help\n");
+}
+
 int main(int argc, char **argv)
 {
 	const char *uds_path = "/var/run/restconf-plugin.sock";
-	if (argc > 1) {
-		uds_path = argv[1];
+	rc_log_target_t log_target = RC_LOG_TARGET_STDOUT;
+	int runtime_log_level = RC_COMPILE_TIME_LOG_LEVEL;
+
+	int opt;
+	while ((opt = getopt(argc, argv, "u:sv:h")) != -1) {
+		switch (opt) {
+			case 'u':
+				uds_path = optarg;
+				break;
+			case 's':
+				log_target = RC_LOG_TARGET_SYSLOG;
+				break;
+			case 'v':
+				runtime_log_level = atoi(optarg);
+				break;
+			case 'h':
+				print_usage(argv[0]);
+				return 0;
+			default:
+				print_usage(argv[0]);
+				return 1;
+		}
 	}
+
+	rc_log_init(log_target, runtime_log_level);
+
+	RC_INFO("Starting External RESTCONF plugin...");
 
 	struct event_base *base = event_base_new();
 	if (!base) {
-		fprintf(stderr, "Failed to create event base\n");
+		RC_FATAL("Failed to create event base");
 		return 1;
 	}
 
@@ -40,12 +75,11 @@ int main(int argc, char **argv)
 
 	/* Initialize UDS listener */
 	if (ext_plugin_init_uds(base, uds_path) != 0) {
-		fprintf(stderr, "Failed to init UDS\n");
+		RC_FATAL("Failed to init UDS on %s", uds_path);
 		return 1;
 	}
 
-	printf("External RESTCONF plugin listening on %s\n",
-	       uds_path);
+	RC_INFO("External RESTCONF plugin listening on %s", uds_path);
 
 	/* Run the single-threaded event loop */
 	event_base_dispatch(base);
@@ -53,5 +87,6 @@ int main(int argc, char **argv)
 	/* Cleanup */
 	event_free(sig_event);
 	event_base_free(base);
+	RC_INFO("Plugin shutdown complete");
 	return 0;
 }

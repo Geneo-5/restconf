@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <getopt.h>
 #include <event2/event.h>
 #include "h2c_server.h"
 #include "jwt_validator.h"
@@ -10,6 +11,7 @@
 #include "router.h"
 #include "codec.h"
 #include "sse_stream.h"
+#include "logger.h"
 
 typedef struct {
 	jwt_ctx_t *jwt_ctx;
@@ -510,17 +512,63 @@ static void on_restconf_request(
 	router_free_request(&req);
 }
 
-int main(int argc UNUSED, char **argv UNUSED) {
+static void print_usage(const char *prog) {
+	fprintf(stderr, "Usage: %s [options]\n", prog);
+	fprintf(stderr, "Options:\n");
+	fprintf(stderr, "  -a <addr>   Bind address (default: 127.0.0.1)\n");
+	fprintf(stderr, "  -p <port>   Port to listen on (default: 8080)\n");
+	fprintf(stderr, "  -s          Use syslog instead of stdout\n");
+	fprintf(stderr, "  -v <level>  Runtime log level (0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=FATAL)\n");
+	fprintf(stderr, "  -h          Show this help\n");
+}
+
+int main(int argc, char **argv) {
 	const char *bind_addr = "127.0.0.1";
 	uint16_t port = 8080;
 	const char *key_desc = "restconf_jwt_pubkey";
+#ifdef USE_EXTERNAL_PLUGIN
+	bool use_external = true;
+#else
 	bool use_external = false;
+#endif
+	rc_log_target_t log_target = RC_LOG_TARGET_STDOUT;
+	int runtime_log_level = RC_COMPILE_TIME_LOG_LEVEL;
+
+	int opt;
+	while ((opt = getopt(argc, argv, "a:p:sv:h")) != -1) {
+		switch (opt) {
+			case 'a':
+				bind_addr = optarg;
+				break;
+			case 'p':
+				port = (uint16_t)atoi(optarg);
+				break;
+			case 's':
+				log_target = RC_LOG_TARGET_SYSLOG;
+				break;
+			case 'v':
+				runtime_log_level = atoi(optarg);
+				break;
+			case 'h':
+				print_usage(argv[0]);
+				return 0;
+			default:
+				print_usage(argv[0]);
+				return 1;
+		}
+	}
+
+	rc_log_init(log_target, runtime_log_level);
+
+	RC_INFO("Starting RESTCONF h2c server...");
+	RC_DEBUG("Compile-time max log level: %d", RC_COMPILE_TIME_LOG_LEVEL);
+	RC_DEBUG("Runtime log level: %d", runtime_log_level);
 
 	app_context_t app = {0};
 
 	app.jwt_ctx = jwt_validator_init(key_desc);
 	if (!app.jwt_ctx) {
-		fprintf(stderr, "Failed to init JWT validator\n");
+		RC_FATAL("Failed to init JWT validator");
 		return 1;
 	}
 
@@ -528,7 +576,7 @@ int main(int argc UNUSED, char **argv UNUSED) {
 	h2c_server_t *server = h2c_server_init(
 		bind_addr, port, on_restconf_request, &app);
 	if (!server) {
-		fprintf(stderr, "Failed to init h2c server\n");
+		RC_FATAL("Failed to init h2c server on %s:%d", bind_addr, port);
 		return 1;
 	}
 
@@ -538,13 +586,12 @@ int main(int argc UNUSED, char **argv UNUSED) {
 	app.plugin_ctx = plugin_init(
 		base, use_external, "/var/run/restconf.sock");
 	if (!app.plugin_ctx) {
-		fprintf(stderr, "Failed to init plugin\n");
+		RC_FATAL("Failed to init plugin");
 		h2c_server_destroy(server);
 		return 1;
 	}
 
-	printf("RESTCONF h2c server listening on %s:%d\n",
-	       bind_addr, port);
+	RC_INFO("RESTCONF h2c server listening on %s:%d", bind_addr, port);
 	
 	h2c_server_run(server);
 
@@ -552,5 +599,6 @@ int main(int argc UNUSED, char **argv UNUSED) {
 	plugin_destroy(app.plugin_ctx);
 	jwt_validator_destroy(app.jwt_ctx);
 
+	RC_INFO("Server shutdown complete");
 	return 0;
 }
