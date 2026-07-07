@@ -174,6 +174,7 @@ réel et les statuts précédemment annoncés :
 - ~~**4.15** — Séparer `path` et `query` dès la réception `:path`~~ ✅ Implémenté
 - ~~**4.16 / 5.1** — Ouvrir/rejouer la session sysrepo sur le bon datastore~~ ✅ Implémenté
 - **7.5** — ~~Remplacer `sr_get_data()` par `sr_get_data_async()`~~ Note : sysrepo utilise SHM, les appels synchrones sont très rapides (pas de réseau). Le pattern actuel est acceptable.
+- **test**: basic test doit utiliser h2c pour comminiquer avec le serveur
 
 ### Priorité 1 : ~~Notifications SSE~~ (~~RFC 8650 & YANG `rsn`~~) — ✅ Complété
 - ~~Finaliser le callback `rpc_establish_sub_cb`~~ ✅ Implémenté (extrait stream, génère ID)

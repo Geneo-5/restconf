@@ -9,7 +9,7 @@ import pytest
 import requests
 
 # Configuration par défaut
-DEFAULT_SERVER_BIN = "./build/restconf-server"
+DEFAULT_SERVER_BIN = "/usr/local/bin/restconf-server"
 DEFAULT_BIND_ADDR = "127.0.0.1"
 DEFAULT_PORT = 8080
 DEFAULT_TIMEOUT = 5

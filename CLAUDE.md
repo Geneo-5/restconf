@@ -56,6 +56,12 @@ stroll_pow2_up32(uint32_t value)
 }
 ```
 
+## BUILD and TEST
+To run build and test, run :
+```sh
+./scripts/build_test.sh
+```
+
 ## 🏗️ Architecture & Tech Stack
 
 - **Event Loop:** `libevent` (Master of all I/O and timers).

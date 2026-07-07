@@ -97,5 +97,9 @@ RUN echo "🔨 Compilation du projet RESTCONF..." && \
     make -j$(nproc) && \
     make install
 
+RUN sysrepoctl -i yang/ietf-restconf@2017-01-26.yang && \
+    sysrepoctl -i yang/ietf-restconf-monitoring@2017-01-26.yang && \
+    sysrepoctl -i yang/ietf-restconf-subscribed-notifications@2019-11-17.yang
+
 # Message de succès
-CMD ["pytest", "test/", "-v"]
+CMD ["pytest", "test/", "-vv"]
