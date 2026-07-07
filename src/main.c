@@ -21,6 +21,8 @@ typedef struct {
 	h2c_session_t *session;
 	int32_t stream_id;
 	media_type_t accept_type;
+	char *with_defaults;
+	char *fields_expr;
 } get_req_ctx_t;
 
 static void get_data_cb(
@@ -57,15 +59,55 @@ static void get_data_cb(
 			ctx->accept_type, tag, msg,
 			&body, &body_len);
 	} else if (data && data->tree) {
-		if (codec_serialize_data(
-		        data->tree, ctx->accept_type,
-		        &body, &body_len) != 0) {
-			status = 500;
-			codec_serialize_errors(
-				ctx->accept_type,
-				"operation-failed",
-				"Serialization failed",
-				&body, &body_len);
+		struct lyd_node *filtered = NULL;
+
+		/* Appliquer le filtre fields si présent */
+		if (ctx->fields_expr) {
+			if (codec_filter_fields(
+			        data->tree,
+			        ctx->fields_expr,
+			        &filtered) == 0
+			    && filtered) {
+				if (codec_serialize_data_wd(
+				        filtered, ctx->accept_type,
+				        ctx->with_defaults,
+				        &body, &body_len) != 0) {
+					status = 500;
+					codec_serialize_errors(
+						ctx->accept_type,
+						"operation-failed",
+						"Serialization failed",
+						&body, &body_len);
+				}
+				lyd_free_all(filtered);
+			} else {
+				/* Filtre vide ou erreur :
+				 * renvoyer l'arbre original */
+				if (codec_serialize_data_wd(
+				        data->tree,
+				        ctx->accept_type,
+				        ctx->with_defaults,
+				        &body, &body_len) != 0) {
+					status = 500;
+					codec_serialize_errors(
+						ctx->accept_type,
+						"operation-failed",
+						"Serialization failed",
+						&body, &body_len);
+				}
+			}
+		} else {
+			if (codec_serialize_data_wd(
+			        data->tree, ctx->accept_type,
+			        ctx->with_defaults,
+			        &body, &body_len) != 0) {
+				status = 500;
+				codec_serialize_errors(
+					ctx->accept_type,
+					"operation-failed",
+					"Serialization failed",
+					&body, &body_len);
+			}
 		}
 	} else {
 		status = 204; 
@@ -77,6 +119,8 @@ static void get_data_cb(
 
 	if (body) free(body);
 	if (data) sr_release_data(data);
+	free(ctx->with_defaults);
+	free(ctx->fields_expr);
 	free(ctx);
 }
 
@@ -137,6 +181,74 @@ static void edit_data_cb(
 		if (body) free(body);
 	}
 	free(ctx->location);
+	free(ctx);
+}
+
+typedef struct {
+	h2c_session_t *session;
+	int32_t stream_id;
+	media_type_t accept_type;
+} rpc_req_ctx_t;
+
+static void rpc_data_cb(
+	sr_data_t *output, int error_code, void *user_data)
+{
+	rpc_req_ctx_t *ctx = (rpc_req_ctx_t *)user_data;
+	char *body = NULL;
+	size_t body_len = 0;
+	int status = 200;
+	const char *ctype = (ctx->accept_type == MEDIA_TYPE_XML) ?
+		"application/yang-data+xml" :
+		"application/yang-data+json";
+
+	if (error_code != SR_ERR_OK) {
+		const char *tag = "operation-failed";
+		const char *msg = sr_strerror(error_code);
+
+		if (error_code == SR_ERR_UNAUTHORIZED) {
+			status = 403;
+			tag = "access-denied";
+		} else if (error_code == SR_ERR_NOT_FOUND) {
+			status = 404;
+			tag = "invalid-value";
+		} else if (error_code == SR_ERR_INVAL_ARG) {
+			status = 400;
+			tag = "invalid-value";
+		} else if (error_code ==
+		           SR_ERR_VALIDATION_FAILED) {
+			status = 400;
+			tag = "invalid-value";
+		} else {
+			status = 500;
+		}
+		codec_serialize_errors(
+			ctx->accept_type, tag, msg,
+			&body, &body_len);
+	} else if (output && output->tree) {
+		/* Sérialiser l'output du RPC */
+		if (codec_serialize_data(
+	        output->tree, ctx->accept_type,
+	        &body, &body_len) != 0) {
+			status = 500;
+			codec_serialize_errors(
+				ctx->accept_type,
+				"operation-failed",
+				"RPC output serialization failed",
+				&body, &body_len);
+		}
+	}
+	/* Si output est NULL et pas d'erreur, le RPC n'a
+	 * pas d'output — renvoyer 204 No Content */
+	if (error_code == SR_ERR_OK && !output) {
+		status = 204;
+	}
+
+	h2c_send_response(
+		ctx->session, ctx->stream_id, status,
+		ctype, NULL, (uint8_t *)body, body_len);
+
+	if (body) free(body);
+	if (output) sr_release_data(output);
 	free(ctx);
 }
 
@@ -259,6 +371,10 @@ static void on_restconf_request(
 			ctx->session = session;
 			ctx->stream_id = stream_id;
 			ctx->accept_type = req.accept_type;
+			ctx->with_defaults = req.with_defaults ?
+				strdup(req.with_defaults) : NULL;
+			ctx->fields_expr = req.fields_expr ?
+				strdup(req.fields_expr) : NULL;
 			
 			plugin_handle_get(
 				app->plugin_ctx, &req,
@@ -317,12 +433,25 @@ static void on_restconf_request(
 				return;
 			}
 
-			/* TODO: Implémenter l'invocation RPC complète */
-			/* Pour l'instant, retourner 501 */
-			send_error_response(
-				session, stream_id, req.accept_type,
-				501, "operation-not-supported",
-				"RPC not implemented yet");
+			rpc_req_ctx_t *rpc_ctx = malloc(
+				sizeof(rpc_req_ctx_t));
+			if (!rpc_ctx) {
+				send_error_response(
+					session, stream_id,
+					req.accept_type, 500,
+					"operation-failed",
+					"Memory allocation failed");
+				router_free_request(&req);
+				return;
+			}
+			rpc_ctx->session = session;
+			rpc_ctx->stream_id = stream_id;
+			rpc_ctx->accept_type = req.accept_type;
+
+			plugin_handle_rpc(
+				app->plugin_ctx, &req,
+				(const uint8_t *)body, body_len,
+				rpc_data_cb, rpc_ctx);
 		} else {
 			send_error_response(
 				session, stream_id, req.accept_type,

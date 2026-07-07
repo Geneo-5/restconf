@@ -11,6 +11,8 @@ extern int ext_plugin_init_uds(
 static void sigint_cb(
 	evutil_socket_t sig, short events, void *ctx)
 {
+	(void)sig;
+	(void)events;
 	struct event_base *base = (struct event_base *)ctx;
 	event_base_loopbreak(base);
 }

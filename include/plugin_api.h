@@ -26,8 +26,12 @@ void plugin_handle_get(
 	plugin_data_cb callback, void *user_data);
 
 void plugin_handle_rpc(
-	plugin_ctx_t *ctx, const rc_request_t *req,
-	plugin_rpc_cb callback, void *user_data);
+	plugin_ctx_t *ctx,
+	const rc_request_t *req,
+	const uint8_t *body,
+	size_t body_len,
+	plugin_rpc_cb callback,
+	void *user_data);
 
 typedef void (*plugin_notif_cb)(
 	const char *module_name, const char *xpath,

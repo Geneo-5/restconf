@@ -316,6 +316,14 @@ void plugin_handle_get(
 		/* "all" (valeur par défaut) : aucun filtre */
 	}
 
+	/* RFC 8527 Sec 3.2.2 : "with-origin" annote les données
+	 * opérationnelles avec leur source NMDA (intended,
+	 * default, learned, system, unknown). */
+	if (req->with_origin &&
+	    req->datastore == RC_DS_OPERATIONAL) {
+		opts |= SR_OPER_WITH_ORIGIN;
+	}
+
 	/* RFC 8040 Sec 4.8.2 : "depth" limite la profondeur des
 	 * sous-arbres retournés. depth == -1 (absent ou
 	 * "unbounded") correspond à 0 côté sysrepo (illimité). */
@@ -328,9 +336,10 @@ void plugin_handle_get(
 	int rc = sr_get_data(
 		sess, req->xpath, max_depth, 0, opts, &data);
 	
+	/* NOTE: Le callback prend la propriété de data et
+	 * est responsable de le libérer via sr_release_data().
+	 * Ne pas libérer ici après l'appel au callback. */
 	callback(data, rc, user_data);
-
-	if (data) sr_release_data(data);
 }
 
 void plugin_subscribe_notifications(
@@ -377,14 +386,78 @@ void plugin_release_ly_ctx(plugin_ctx_t *ctx) {
 }
 
 void plugin_handle_rpc(
-	plugin_ctx_t *ctx UNUSED,
-	const rc_request_t *req UNUSED,
+	plugin_ctx_t *ctx,
+	const rc_request_t *req,
+	const uint8_t *body,
+	size_t body_len,
 	plugin_rpc_cb callback,
 	void *user_data)
 {
-	/* TODO: Implémenter l'invocation RPC via sysrepo */
-	/* Pour l'instant, retourner une erreur */
-	callback(NULL, SR_ERR_OPERATION_FAILED, user_data);
+	int rc = SR_ERR_OK;
+	struct lyd_node *input = NULL;
+	sr_data_t *output = NULL;
+
+	if (!req->rpc_module || !req->rpc_name) {
+		callback(NULL, SR_ERR_INVAL_ARG, user_data);
+		return;
+	}
+
+	/* Parser le body d'entrée (input du RPC) */
+	if (body && body_len > 0) {
+		rc = codec_parse_data(
+			ctx->sess_running,
+			(const char *)body, body_len,
+			req->req_type, &input);
+		if (rc != 0) {
+			callback(NULL,
+			         SR_ERR_VALIDATION_FAILED,
+			         user_data);
+			return;
+		}
+	} else {
+		/* RPC sans input : créer le nœud racine RPC */
+		const struct ly_ctx *ly_ctx =
+			sr_acquire_context(ctx->conn);
+		if (!ly_ctx) {
+			callback(NULL, SR_ERR_OPERATION_FAILED,
+			         user_data);
+			return;
+		}
+		char rpc_path[512];
+		snprintf(rpc_path, sizeof(rpc_path),
+		         "/%s:%s",
+		         req->rpc_module, req->rpc_name);
+		rc = lyd_new_path(NULL, ly_ctx, rpc_path,
+		                  NULL, 0, &input);
+		sr_release_context(ctx->conn);
+		if (rc != LY_SUCCESS || !input) {
+			callback(NULL, SR_ERR_INVAL_ARG,
+			         user_data);
+			return;
+		}
+	}
+
+	if (req->username) {
+		sr_session_set_user(
+			ctx->sess_running, req->username);
+	}
+
+	/* Invoquer le RPC via sysrepo (bloquant mais rapide SHM) */
+	rc = sr_rpc_send_tree(
+		ctx->sess_running, input, 0, &output);
+
+	lyd_free_all(input);
+
+	if (rc != SR_ERR_OK) {
+		if (output) sr_release_data(output);
+		callback(NULL, rc, user_data);
+		return;
+	}
+
+	/* Le callback prend la propriété de output et
+	 * est responsable de le libérer via sr_release_data(). */
+	callback(output, SR_ERR_OK, user_data);
+	/* Ne pas libérer ici : le callback s'en charge */
 }
 
 void plugin_handle_edit(

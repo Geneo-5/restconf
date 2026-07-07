@@ -86,6 +86,8 @@ void plugin_handle_edit(
 void plugin_handle_rpc(
 	plugin_ctx_t *ctx UNUSED,
 	const rc_request_t *req UNUSED,
+	const uint8_t *body UNUSED,
+	size_t body_len UNUSED,
 	plugin_rpc_cb callback UNUSED,
 	void *user_data UNUSED)
 {

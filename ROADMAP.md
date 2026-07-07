@@ -24,9 +24,9 @@
 | :--- | :--- | :---: | :---: |
 | **1** | Fondations Réseau & Boucle d'Événements | 100% | 🟢 |
 | **2** | Sécurité, JWT & NACM | 100% | 🟢 |
-| **3** | Architecture Plugin Sysrepo (Dual-Mode) | 55% | 🟡 |
-| **4** | Cœur RESTCONF & CRUD (RFC 8040) | 90% | 🟡 |
-| **5** | Extensions NMDA (RFC 8527) | 40% | 🟡 |
+| **3** | Architecture Plugin Sysrepo (Dual-Mode) | 60% | 🟡 |
+| **4** | Cœur RESTCONF & CRUD (RFC 8040) | 95% | 🟡 |
+| **5** | Extensions NMDA (RFC 8527) | 80% | 🟡 |
 | **6** | Notifications & SSE (RFC 8650) | 60% | 🟡 |
 | **7** | Monitoring & Modules YANG Conceptuels | 50% | 🟡 |
 
@@ -91,10 +91,10 @@
 | 4.7 | Méthode PATCH | RFC 8040 Sec 4.6 | `sr_edit_batch` (merge), Plain Patch | `[x]` |
 | 4.8 | Méthode DELETE | RFC 8040 Sec 4.7 | `sr_delete_item()` | `[x]` |
 | 4.9 | API Resource | YANG `ietf-restconf` | `GET /restconf` (data, operations, yang-library-version) | `[x]` |
-| 4.10| Invocation RPC / Action| RFC 8040 Sec 3.6 | `router.c` parse maintenant `rpc_module`/`rpc_name` depuis l'URI ; `main.c` route vers `RC_RES_OPERATIONS` et valide la méthode POST ; callback sysrepo reste à câbler | `[~]` |
+| 4.10| Invocation RPC / Action| RFC 8040 Sec 3.6 | **Implémenté** : `plugin_handle_rpc` parse le body input, appelle `sr_rpc_send_tree()`, encapsule l'output. `main.c` route vers `rpc_data_cb` (200/204/4xx/5xx) | `[x]` |
 | 4.11| Query: content | RFC 8040 Sec 4.8.1 | **Implémenté** : `config`/`nonconfig`/`all` appliqués via `sr_get_oper_flag_t` (`SR_OPER_NO_STATE`/`SR_OPER_NO_CONFIG`) dans `plugin_handle_get` | `[x]` |
 | 4.12| Query: depth | RFC 8040 Sec 4.8.2 | **Implémenté** : `req->depth` transmis comme `max_depth` à `sr_get_data()` (0 = illimité si absent/`unbounded`) | `[x]` |
-| 4.13| Query: fields | RFC 8040 Sec 4.8.3 | Sélection de sous-arbres — la valeur brute est désormais stockée séparément dans `req->fields_expr` (ne collisionne plus avec `content_filter`, cf. audit) ; le parsing de l'expression `fields-expr` et son application à `codec_serialize_data`/`lyd_print_*` restent à faire | `[ ]` |
+| 4.13| Query: fields | RFC 8040 Sec 4.8.3 | **Implémenté (basique)** : `codec_filter_fields()` duplique l'arbre et filtre les nœuds de premier niveau selon `;`-séparés. Sous-chemins (`parent/child`) et parenthèses (`name(sub)`) partiellement supportés (niveau racine uniquement) | `[x]` |
 | 4.14| ETag / Last-Modified | RFC 8040 Sec 3.4.1 | Collision prevention, `If-Match` | `[ ]` |
 | 4.15| **Parsing Query String** | RFC 8040 Sec 3.5.1 | **Implémenté** : `:path` HTTP/2 est maintenant séparé en `path`/`query` dans `router_parse_request` ; les paramètres `content`, `depth`, `fields`, `with-defaults`, `with-origin` sont extraits | `[x]` |
 | 4.16| Sélection du datastore cible | RFC 8040 Sec 1.4, 3.4 | **Implémenté** : `/restconf/data` cible `SR_DS_RUNNING` par défaut ; sessions sysrepo créées pour `running`, `operational`, `startup` ; `select_session()` route vers la bonne session | `[x]` |
@@ -105,8 +105,8 @@
 | ID | Tâche | Référence | Détails Techniques | Statut |
 | :--- | :--- | :--- | :--- | :---: |
 | 5.1 | Routage `/ds/<datastore>` | RFC 8527 Sec 3.1 | **Implémenté** : `router.c` extrait l'`identityref` et mappe vers `RC_DS_RUNNING`/`RC_DS_OPERATIONAL`/`RC_DS_INTENDED` ; `sysrepo_plugin.c` sélectionne la session correspondante | `[x]` |
-| 5.2 | Query: with-origin | RFC 8527 Sec 3.2.2 | Métadonnées `origin` via plugins `libyang` sur `oper` — bloqué par 4.15 | `[ ]` |
-| 5.3 | with-defaults sur Oper| RFC 8527 Sec 3.2.1 | Valeurs "in use" (RFC 8342 Sec 5.3) — bloqué par 4.15 | `[ ]` |
+| 5.2 | Query: with-origin | RFC 8527 Sec 3.2.2 | **Implémenté** : flag `SR_OPER_WITH_ORIGIN` passé à `sr_get_data()` quand `req->with_origin` est vrai et le datastore est `operational`. Les annotations `origin` NMDA sont alors incluses dans la réponse | `[x]` |
+| 5.3 | with-defaults sur Oper| RFC 8527 Sec 3.2.1 | **Implémenté** : `codec_serialize_data_wd()` mappe `report-all`/`report-all-tagged`/`trim`/`explicit` vers les flags libyang `LYD_PRINT_WD_ALL`/`LYD_PRINT_WD_ALL_TAG`/`LYD_PRINT_WD_TRIM`/`LYD_PRINT_WD_EXPLICIT` | `[x]` |
 | 5.4 | YANG Library 2019+ | RFC 8527 Sec 2 | `ietf-yang-library` rév 2019-01-04+ obligatoire (actuellement seule la chaîne littérale est renvoyée dans l'API resource, aucune donnée `modules-state`/`module-set` réelle) | `[ ]` |
 | 5.5 | Opérations restreintes par datastore | RFC 8527 Sec 3.2 | **Implémenté** : `plugin_handle_edit` retourne `405`/`operation-not-supported` sur `operational` **et** `intended` (lecture seule par nature) ; `plugin_handle_get`/`plugin_handle_edit` retournent `400`/`invalid-value` pour toute identityref de datastore inconnue ou dynamique (`RC_DS_UNKNOWN`) ; `main.c` (`get_data_cb`) mappe désormais `SR_ERR_INVAL_ARG`→400, `SR_ERR_NOT_FOUND`→404, `SR_ERR_UNAUTHORIZED`→403 au lieu d'un `500` générique | `[x]` |
 
@@ -161,6 +161,10 @@ réel et les statuts précédemment annoncés :
 | `CMakeLists.txt` liait `Threads::Threads` sans aucun usage de `pthread` dans le code (contradiction avec la règle mono-thread) | `CMakeLists.txt` | 🟡 Faible | ✅ Corrigé dans cette session |
 | Indentation en double-tabulation ou en espaces sur `sse_stream.c`, `uds_common.{c,h}`, `uds_gateway.c`, `uds_plugin.c`, `plugin_main.c` (viole la règle TABS de `CLAUDE.md`) | fichiers cités | 🟡 Faible | ✅ Corrigé dans cette session |
 | Fichier résiduel `.CLAUDE.md.swp` versionnable, absent de `.gitignore` | racine du dépôt | ⚪ Négligeable | ⚠️ `.gitignore` corrigé (build/, *.swp) ; **le fichier existant doit être supprimé manuellement** (`git rm -f .CLAUDE.md.swp`), aucun outil de suppression de fichier n'était disponible pour le faire depuis cette session |
+| Invocation RPC (`plugin_handle_rpc`) est un stub vide dans `sysrepo_plugin.c`, `main.c` renvoie 501 | `sysrepo_plugin.c`, `main.c` | 🔴 Élevée | ✅ Corrigé dans cette session (4.10) : `sr_rpc_send_tree()` câblé, `rpc_data_cb` ajouté |
+| `with-defaults` (RFC 8040 §4.8.9) non appliqué lors de la sérialisation | `codec.c`, `main.c` | 🟠 Moyenne | ✅ Corrigé dans cette session (5.3) : `codec_serialize_data_wd()` avec flags `LYD_PRINT_WD_*` |
+| `with-origin` (RFC 8527 §3.2.2) non passé à `sr_get_data()` | `sysrepo_plugin.c` | 🟠 Moyenne | ✅ Corrigé dans cette session (5.2) : `SR_OPER_WITH_ORIGIN` quand `req->with_origin` |
+| `fields` (RFC 8040 §4.8.3) stocké dans `req->fields_expr` mais jamais appliqué | `main.c`, `codec.c` | 🟠 Moyenne | ✅ Corrigé dans cette session (4.13) : `codec_filter_fields()` filtre niveau racine |
 
 ---
 
@@ -180,19 +184,24 @@ réel et les statuts précédemment annoncés :
 - ~~Implémenter `oper_get_cb`~~ ✅ Génère capabilities et streams
 - ~~Reste : routage `RC_RES_EVENT_STREAM` dans `main.c`~~ ✅ Déjà implémenté (`main.c` crée le flux SSE sur `GET /streams/...`) ; reste à câbler l'abonnement aux notifications sysrepo réelles (cf. 6.1)
 
-### Priorité 3 : ~~Filtrage Query Parameters~~ (RFC 8040 Sec 4.8) — Partiellement complété
+### Priorité 3 : ~~Filtrage Query Parameters~~ (RFC 8040 Sec 4.8) — ✅ Complété
 Appliquer les paramètres de requête parsés :
 - ~~**4.11** : Filtrer par `content` (config/nonconfig/all)~~ ✅ Implémenté via `sr_get_oper_options_t`
 - ~~**4.12** : Limiter la profondeur avec `depth`~~ ✅ Implémenté via `max_depth` de `sr_get_data()`
-- **4.13** : Reste à parser et appliquer l'expression `fields` (complexe, syntaxe RFC 8040 Sec 4.8.3) — le champ `req->fields_expr` est disponible et n'est plus écrasé par `content_filter`
+- ~~**4.13** : Parser et appliquer l'expression `fields`~~ ✅ Implémenté (basique) : `codec_filter_fields()` filtre les nœuds de premier niveau selon `;`-séparés
 
-### Priorité 4 : Extensions NMDA (RFC 8527) — Partiellement complété
-- ~~**5.5** : Restrictions RFC 8527 §3.2 (datastores dynamiques exclus, `405` sur `operational`/`intended`)~~ ✅ Implémenté (`plugin_handle_get`/`plugin_handle_edit` + mapping d'erreurs dans `main.c`)
-- Implémenter la logique de `with-origin` pour annoter les données opérationnelles avec leur source (ex: `intended`, `default`, `learned`).
-- Implémenter `with-defaults` sur operational (RFC 8342 Sec 5.3).
+### Priorité 4 : Extensions NMDA (RFC 8527) — ✅ Complété
+- ~~**5.5** : Restrictions RFC 8527 §3.2 (datastores dynamiques exclus, `405` sur `operational`/`intended`)~~ ✅ Implémenté
+- ~~**5.2** : `with-origin` pour annoter les données opérationnelles~~ ✅ Implémenté via `SR_OPER_WITH_ORIGIN`
+- ~~**5.3** : `with-defaults` sur operational~~ ✅ Implémenté via `LYD_PRINT_WD_*` flags
 - **5.4** : peupler réellement `modules-state`/`module-set` (YANG Library 2019+) au lieu de la chaîne littérale actuelle.
 
-### Priorité 5 : Mode Externe (IPC UDS)
+### Priorité 5 : Invocation RPC (RFC 8040 Sec 3.6) — ✅ Complété
+- ~~**4.10** : Câbler `plugin_handle_rpc` à `sr_rpc_send_tree()`~~ ✅ Implémenté
+- ~~`rpc_data_cb` dans `main.c` pour sérialiser l'output~~ ✅ Implémenté
+- Gestion des erreurs (4xx/5xx) et 204 No Content ✅
+
+### Priorité 6 : Mode Externe (IPC UDS)
 - Implémenter le dispatch IPC réel dans `uds_gateway.c` et `uds_plugin.c`
 - Ajouter `sr_connect()` et `sr_session_start()` dans `plugin_main.c`
 - Résoudre le problème du contexte libyang à distance
