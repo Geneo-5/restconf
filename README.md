@@ -316,22 +316,49 @@ Content-Type: application/yang-data+json
 
 ## 🧪 Tests et Conformité
 
-> ⚠️ **État actuel** : `test/basic.sh` contient aujourd'hui quelques appels
-> `nghttp` manuels (Root Discovery, API Resource JSON/XML) sans assertions
-> automatisées, et `CMakeLists.txt` n'active pas encore CTest
-> (`enable_testing()`/`add_test()` absents). La commande `ctest` ci-dessous
-> est donc **l'objectif visé**, pas l'état actuel — voir `ROADMAP.md`
-> Phase 7 (item 7.4).
+La suite de tests est écrite en **Python 3** avec **pytest**. Elle démarre automatiquement le serveur RESTCONF, exécute les tests, puis l'arrête.
 
-Objectif de la suite de tests, une fois l'intégration CTest faite :
-- La conformité stricte aux RFC 8040 et 8527.
-- Le comportement non-bloquant sous charge (stress-test sur la boucle `libevent`).
-- La validation des JWT et l'application du NACM (Network Configuration Access Control Model).
+### Prérequis
 
 ```bash
-cd build
-ctest --output-on-failure   # cible, pas encore câblé
+pip install -r test/requirements.txt
 ```
+
+### Exécution
+
+```bash
+# Compiler le serveur d'abord
+cmake -B build -DLOG_LEVEL=0 . && make -C build -j$(nproc)
+
+# Lancer tous les tests
+pytest test/ -v
+
+# Lancer un test spécifique
+pytest test/test_basic.py::TestRootDiscovery::test_host_meta -v
+
+# Lancer avec un serveur personnalisé
+RESTCONF_SERVER_BIN=./build_prod/restconf-server \
+RESTCONF_PORT=9090 \
+pytest test/ -v
+```
+
+### Structure des tests
+
+| Fichier | Description |
+|---------|-------------|
+| `test/conftest.py` | Configuration pytest, fixtures (serveur, sessions HTTP) |
+| `test/test_basic.py` | Root Discovery (RFC 8040 §3.1), API Resource (§3.2), méthodes HTTP |
+
+### Variables d'environnement
+
+| Variable | Description | Défaut |
+|----------|-------------|--------|
+| `RESTCONF_SERVER_BIN` | Chemin vers l'exécutable du serveur | `./build/restconf-server` |
+| `RESTCONF_BIND_ADDR` | Adresse IP d'écoute du serveur | `127.0.0.1` |
+| `RESTCONF_PORT` | Port d'écoute du serveur | `8080` |
+
+> ℹ️ L'intégration **CTest** (pour `ctest --output-on-failure`) est prévue
+> dans `ROADMAP.md` Phase 7 (item 7.4).
 
 ---
 
