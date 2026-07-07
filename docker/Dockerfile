@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     libpcre2-dev \
     zlib1g-dev \
     libssl-dev \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 # Répertoire de travail temporaire pour la compilation des dépendances
@@ -78,6 +79,8 @@ RUN rm -rf /tmp/deps
 WORKDIR /workspace
 COPY . .
 
+RUN pip install --break-system-packages -r test/requirements.txt
+
 RUN echo "🔨 Compilation du projet RESTCONF..." && \
     mkdir -p build && cd build && \
     cmake .. && \
@@ -90,9 +93,9 @@ RUN echo "🔨 Compilation du projet RESTCONF + PLUGIN..." && \
 
 RUN echo "🔨 Compilation du projet RESTCONF..." && \
     mkdir -p build_test && cd build_test && \
-    cmake -DALLOW_INSECURE_JWT=ON .. && \
+    cmake -DALLOW_INSECURE_JWT=ON -DLOG_LEVEL=0 .. && \
     make -j$(nproc) && \
     make install
 
 # Message de succès
-CMD ["/usr/local/bin/restconf-server"]
+CMD ["pytest", "test/", "-v"]
