@@ -105,8 +105,8 @@ static void fail_all_pending(plugin_ctx_t *ctx)
 }
 
 /**
- * @brief Route une reponse IPC (DATA_RES/EDIT_RES/RPC_RES) vers le
- * callback en attente correspondant au msg_id de l'en-tete.
+ * @brief Route an IPC response (DATA_RES/EDIT_RES/RPC_RES) to the
+ * waiting callback that matches the header's msg_id.
  */
 static void dispatch_ipc_response(
 	plugin_ctx_t *ctx, const ipc_msg_header_t *hdr,
@@ -292,8 +292,8 @@ void plugin_handle_get(
 		return;
 	}
 
-	/* Capacite dynamique : les xpaths de listes a plusieurs cles
-	 * peuvent depasser largement une taille fixe. */
+	/* Dynamic capacity: multi-key list xpaths can
+	 * easily exceed a fixed-size buffer. */
 	cap = 64 +
 		(req->xpath ? strlen(req->xpath) : 0) +
 		(req->content_filter ? strlen(req->content_filter) : 0) +

@@ -46,14 +46,14 @@ typedef struct {
 	size_t offset;
 } data_source_t;
 
-/* File d'attente pour les données SSE */
+/* SSE data queue for deferred streaming */
 typedef struct sse_queue_item {
 	uint8_t *data;
 	size_t len;
 	struct sse_queue_item *next;
 } sse_queue_item_t;
 
-/* Structure pour un flux SSE */
+/* SSE stream wrapper for h2c + libevent integration */
 struct h2c_sse_stream_s {
 	h2c_session_t *session;
 	int32_t stream_id;
@@ -73,10 +73,10 @@ static ssize_t data_read_callback(
 	data_source_t *src = (data_source_t *)source->ptr;
 	size_t remaining = src->len - src->offset;
 	size_t to_copy = remaining < length ? remaining : length;
-	
+
 	memcpy(buf, src->data + src->offset, to_copy);
 	src->offset += to_copy;
-	
+
 	if (src->offset == src->len) {
 		*data_flags |= NGHTTP2_DATA_FLAG_EOF;
 	}
@@ -192,7 +192,7 @@ static void bev_read_cb(struct bufferevent *bev, void *ctx) {
 	struct evbuffer *input = bufferevent_get_input(bev);
 	uint8_t buf[4096];
 	int len;
-	
+
 	while ((len = evbuffer_remove(input, buf, sizeof(buf))) > 0) {
 		if (nghttp2_session_mem_recv(
 		        h2_session->ng_session, buf, len) < 0) {
@@ -225,12 +225,12 @@ static void accept_cb(
 {
 	h2c_server_t *server = (h2c_server_t *)ctx;
 	struct event_base *base = evconnlistener_get_base(listener);
-	
+
 	h2c_session_t *h2_session = calloc(1, sizeof(h2c_session_t));
 	h2_session->server = server;
 	h2_session->bev = bufferevent_socket_new(
 		base, fd, BEV_OPT_CLOSE_ON_FREE);
-	
+
 	nghttp2_session_callbacks *callbacks;
 	nghttp2_session_callbacks_new(&callbacks);
 	nghttp2_session_callbacks_set_send_callback(
@@ -241,11 +241,11 @@ static void accept_cb(
 		callbacks, on_data_chunk_recv_callback);
 	nghttp2_session_callbacks_set_on_frame_recv_callback(
 		callbacks, on_frame_recv_callback);
-	
+
 	nghttp2_option *opts;
 	nghttp2_option_new(&opts);
 	nghttp2_option_set_no_auto_window_update(opts, 0);
-	
+
 	nghttp2_session_server_new(
 		&h2_session->ng_session, callbacks, h2_session);
 	nghttp2_session_callbacks_del(callbacks);
@@ -291,7 +291,7 @@ h2c_server_t *h2c_server_init_uds(
 	server->req_cb = req_cb;
 	server->user_data = user_data;
 
-	/* Supprimer la socket si elle existe déjà */
+	/* Remove stale socket file if it still exists */
 	unlink(uds_path);
 
 	struct sockaddr_un sun = {0};
@@ -377,8 +377,8 @@ int h2c_send_response_ex(
 
 	if (has_body) {
 		src = malloc(sizeof(data_source_t));
-		/* Copier le body pour qu'il survive après le retour
-		 * de l'appelant (qui peut free(body) juste après). */
+		/* Copy the body so it survives after the caller */
+		/* returns (who may free(body) immediately after). */
 		src->data = malloc(body_len);
 		if (src->data) {
 			memcpy((void *)src->data, body, body_len);
@@ -394,14 +394,13 @@ int h2c_send_response_ex(
 		has_body ? &data_prd : NULL);
 	nghttp2_session_send(session->ng_session);
 
-	/* NOTE: Ne pas libérer src->data et src ici!
-	 * nghttp2 peut appeler data_read_callback plusieurs fois
-	 * pour envoyer le body en plusieurs chunks. Les données
-	 * doivent rester valides jusqu'à ce que nghttp2 ait fini
-	 * de les envoyer. Pour l'instant, on les laisse en mémoire
-	 * (fuite mémoire mineure pour les petites réponses).
-	 * TODO: Implémenter un mécanisme pour libérer les données
-	 * quand le stream est fermé. */
+	/* NOTE: Do not free src->data and src here!
+	 * nghttp2 may call data_read_callback multiple times
+	 * to send the body in chunks. The data must remain
+	 * valid until nghttp2 finishes sending it. For now,
+	 * we leave it in memory (minor leak for small
+	 * responses). TODO: Implement a mechanism to free
+	 * the data when the stream is closed. */
 	return 0;
 }
 
@@ -417,7 +416,7 @@ int h2c_send_response(
 }
 
 /**
- * @brief Callback de lecture pour les flux SSE.
+ * @brief Read callback for SSE streams.
  * Renvoie NGHTTP2_ERR_DEFERRED quand la file est vide,
  * permettant de pousser des données de manière asynchrone.
  */

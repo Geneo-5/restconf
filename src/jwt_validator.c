@@ -52,7 +52,7 @@ static int json_get_string_value(
 		}
 	}
 
-	/* Libérer l'objet JSON */
+	/* Free the json-c object */
 	json_object_put(root);
 	return ret;
 }
@@ -87,7 +87,7 @@ static int base64url_decode(
 		}
 	}
 
-	/* 3. Rajouter le padding '=' manquant (requis par EVP_DecodeBlock) */
+	/* 3. Add missing '=' padding (required by EVP_DecodeBlock) */
 	pad_len = (4 - (in_len % 4)) % 4;
 	for (i = 0; i < pad_len; i++) {
 		std_b64[in_len + i] = '=';
@@ -121,8 +121,8 @@ jwt_ctx_t *jwt_validator_init(const char *key_description)
 	if (!ctx) return NULL;
 
 #ifdef ALLOW_INSECURE_JWT
-	fprintf(stderr, 
-		"🚨 WARNING: JWT signature verification DISABLED!\n");
+	fprintf(stderr,
+		"[WARNING] JWT signature verification DISABLED!\n");
 	return ctx; /* Retourne un contexte vide, pas de clé nécessaire */
 #else
 	/* 1. Chercher la clé dans le Kernel Keyring via syscall */
@@ -177,13 +177,13 @@ int jwt_validator_verify(
 	char *payload_b64 = strchr(jwt_copy, '.');
 	if (!payload_b64) { free(jwt_copy); return -1; }
 	*payload_b64++ = '\0';
-	
+
 	char *signature_b64 = strchr(payload_b64, '.');
 	if (!signature_b64) { free(jwt_copy); return -1; }
 	*signature_b64++ = '\0';
 
 #ifndef ALLOW_INSECURE_JWT
-	/* --- MODE PRODUCTION : Vérification cryptographique --- */
+	/* --- PRODUCTION MODE: Cryptographic verification --- */
 	if (!ctx->pkey) {
 		free(jwt_copy);
 		return -1;
@@ -218,12 +218,12 @@ int jwt_validator_verify(
 		return -1; /* Signature invalide */
 	}
 #else
-	/* --- MODE DEBUG : Ignorer la signature --- */
+	/* --- DEBUG MODE: Skip signature verification --- */
 	(void)signature_b64;
 	(void)header_b64;
 #endif
 
-	/* --- EXTRACTION DU PAYLOAD (Commun aux deux modes) --- */
+	/* --- Payload extraction (common to both modes) --- */
 	uint8_t payload_json[4096];
 	size_t json_len = sizeof(payload_json);
 	base64url_decode(

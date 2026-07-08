@@ -29,14 +29,13 @@ typedef struct {
 } get_req_ctx_t;
 
 /*
- * NOTE: depuis le decouplage transport (voir plugin_api.h), le
- * plugin (mode interne comme mode externe/IPC) renvoie directement
- * un corps deja serialise (JSON/XML, filtre "fields" et
- * "with-defaults" deja appliques cote plugin) : ce callback n'a
- * plus qu'a le relayer tel quel au client HTTP/2. Ce changement est
- * ce qui permet au mode Externe de fonctionner, puisque le
- * processus gateway n'a alors aucun acces direct a sysrepo/libyang
- * pour faire cette serialisation lui-meme.
+ * NOTE: since transport decoupling (see plugin_api.h), the plugin
+ * (internal mode and external/IPC mode alike) returns directly a
+ * pre-serialized body (JSON/XML, "fields" and "with-defaults"
+ * filtering already applied on the plugin side): this callback only
+ * needs to relay it as-is to the HTTP/2 client. This change enables
+ * the External mode, since the gateway process has no direct access
+ * to sysrepo/libyang to perform that serialization itself.
  */
 static void get_data_cb(
 	int http_status, uint8_t *body, size_t body_len,
@@ -96,9 +95,9 @@ static void edit_data_cb(
 	void *user_data)
 {
 	edit_req_ctx_t *ctx = (edit_req_ctx_t *)user_data;
-	
+
 	if (http_status >= 200 && http_status < 300) {
-		/* Succès (201 Created ou 204 No Content) */
+		/* Success (201 Created or 204 No Content) */
 		/* RFC 8040 Sec 4.4.1: Location header pour 201 */
 		h2c_send_response(
 			ctx->session, ctx->stream_id,
@@ -114,7 +113,7 @@ static void edit_data_cb(
 		codec_serialize_errors(
 			ctx->accept_type, error_tag, error_msg,
 			&body, &body_len);
-		
+
 		h2c_send_response(
 			ctx->session, ctx->stream_id, http_status,
 			ctype, NULL, (uint8_t *)body, body_len);
@@ -160,18 +159,18 @@ static void on_restconf_request(
 {
 	app_context_t *app = (app_context_t *)user_data;
 	rc_request_t req = {0};
-	
+
 	/* 1. Extraction des headers HTTP/2 */
 	const char *auth_header = h2c_session_get_header(
 		session, "Authorization");
 	const char *content_type = h2c_session_get_content_type(
 		session);
 	const char *accept = h2c_session_get_accept(session);
-	
+
 	/* 2. Acquisition du contexte libyang et parsing URI */
 	const struct ly_ctx *ly_ctx = plugin_acquire_ly_ctx(
 		app->plugin_ctx);
-	
+
 	if (router_parse_request(
 	        ly_ctx, path, method, auth_header,
 	        content_type, accept, &req) != 0) {
@@ -307,14 +306,14 @@ static void on_restconf_request(
 	    req.res_type == RC_RES_DS) {
 		if (strcmp(method, "GET") == 0 ||
 		    strcmp(method, "HEAD") == 0) {
-			
+
 			get_req_ctx_t *ctx = malloc(
 				sizeof(get_req_ctx_t));
 			ctx->session = session;
 			ctx->stream_id = stream_id;
 			ctx->accept_type = req.accept_type;
 			ctx->is_head = (strcmp(method, "HEAD") == 0);
-			
+
 			plugin_handle_get(
 				app->plugin_ctx, &req,
 				get_data_cb, ctx);
@@ -322,7 +321,7 @@ static void on_restconf_request(
 		           strcmp(method, "PUT") == 0 ||
 		           strcmp(method, "PATCH") == 0 ||
 		           strcmp(method, "DELETE") == 0) {
-			
+
 			edit_req_ctx_t *ctx = malloc(
 				sizeof(edit_req_ctx_t));
 			ctx->session = session;
@@ -331,7 +330,7 @@ static void on_restconf_request(
 
 			/* RFC 8040 Sec 4.4.1: Location header pour POST */
 			if (strcmp(method, "POST") == 0 && req.xpath) {
-				/* Construire l'URI Location */
+				/* Construct the Location URI */
 				char loc_buf[4096];
 				if (req.res_type == RC_RES_DS) {
 					snprintf(loc_buf,
@@ -348,7 +347,7 @@ static void on_restconf_request(
 			} else {
 				ctx->location = NULL;
 			}
-			
+
 			plugin_handle_edit(
 				app->plugin_ctx, &req,
 				(const uint8_t *)body, body_len,
@@ -572,7 +571,7 @@ int main(int argc, char **argv) {
 		jwt_validator_destroy(app.jwt_ctx);
 		return 1;
 	}
-	
+
 	h2c_server_run(server);
 
 	h2c_server_destroy(server);

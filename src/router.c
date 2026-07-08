@@ -11,8 +11,8 @@
 #define MAX_DECODED_LEN 512
 
 /**
- * @brief Décode une chaîne percent-encoded (RFC 3986).
- * Retourne -1 si le percent-encoding est invalide.
+ * @brief Decode a percent-encoded string (RFC 3986).
+ * Returns -1 if the percent-encoding is invalid.
  */
 static int percent_decode(
 	const char *src, size_t src_len,
@@ -28,11 +28,11 @@ static int percent_decode(
 				dst[j++] = (char)val;
 				i += 3;
 			} else {
-				/* Percent-encoding invalide (ex: %%%) */
+				/* Invalid percent-encoding (e.g., %%%) */
 				return -1;
 			}
 		} else if (src[i] == '%') {
-			/* % isolé à la fin de la chaîne */
+			/* % isolated at end of string */
 			return -1;
 		} else {
 			dst[j++] = src[i++];
@@ -43,14 +43,14 @@ static int percent_decode(
 }
 
 /**
- * @brief Valide le percent-encoding d'une chaîne URI (RFC 3986).
- * Retourne 0 si valide, -1 si invalide (ex: %%% ou % isolé).
+ * @brief Validate percent-encoding of a URI string (RFC 3986).
+ * Returns 0 if valid, -1 if invalid (e.g., %%% or isolated %).
  */
 static int validate_percent_encoding(const char *src, size_t len)
 {
 	for (size_t i = 0; i < len; i++) {
 		if (src[i] == '%') {
-			/* Doit être suivi de 2 caractères hexadécimaux */
+			/* Must be followed by 2 hexadecimal characters */
 			if (i + 2 >= len) return -1;
 			if (!isxdigit((unsigned char)src[i+1]) ||
 			    !isxdigit((unsigned char)src[i+2])) {
@@ -63,8 +63,8 @@ static int validate_percent_encoding(const char *src, size_t len)
 }
 
 /**
- * @brief Construit le prédicat XPath pour une liste ou leaf-list.
- * Utilise le schéma YANG pour trouver les noms des clés.
+ * @brief Build the XPath predicate for a list or leaf-list.
+ * Uses the YANG schema to find key names.
  */
 static int build_xpath_predicate(
 	const struct ly_ctx *ctx,
@@ -91,9 +91,9 @@ static int build_xpath_predicate(
 
 	const struct lysc_node *node = lys_find_path(
 		ctx, NULL, path, 0);
-	
+
 	if (!node) {
-		/* Fallback si le schéma n'est pas chargé */
+		/* Fallback if schema is not loaded */
 		return -1;
 	}
 
@@ -111,38 +111,38 @@ static int build_xpath_predicate(
 			(const struct lysc_node_list *)node;
 		const struct lysc_node *key = list->child;
 		char *val_ptr = (char *)values_str;
-		
+
 		while (key && val_ptr) {
 			if (key->flags & LYS_KEY) {
 				char *comma = strchr(val_ptr, ',');
 				size_t val_len = comma ?
 					(size_t)(comma - val_ptr) :
 					strlen(val_ptr);
-				
+
 				char decoded[MAX_DECODED_LEN];
 				percent_decode(val_ptr, val_len,
 				               decoded, sizeof(decoded));
-				
+
 				written = snprintf(
 					out_buf + *out_len,
 					MAX_XPATH_LEN - *out_len,
 					"[%s='%s']", key->name, decoded);
 				if (written < 0) return -1;
 				*out_len += written;
-				
+
 				if (!comma) break;
 				val_ptr = comma + 1;
 			}
 			key = key->next;
 		}
 	} else {
-		return -1; /* Erreur : '=' sur un nœud non list/leaf-list */
+		return -1; /* Error: '=' used on a non-list/leaf-list node */
 	}
 	return 0;
 }
 
 /**
- * @brief Parse un segment d'URI et l'ajoute au XPath.
+ * @brief Parse one URI segment and append it to the XPath.
  */
 static int parse_segment(
 	const struct ly_ctx *ctx,
@@ -156,7 +156,7 @@ static int parse_segment(
 
 	char *eq_pos = strchr(seg_buf, '=');
 	char *colon_pos = strchr(seg_buf, ':');
-	
+
 	char *module_name = NULL;
 	char *node_name = seg_buf;
 
@@ -169,7 +169,7 @@ static int parse_segment(
 	if (eq_pos) {
 		*eq_pos = '\0';
 		char *values_str = eq_pos + 1;
-		
+
 		/* Ajouter /module:node ou /node */
 		int written;
 		if (module_name) {
@@ -276,7 +276,7 @@ int router_parse_request(
 	rc_request_t *req_out)
 {
 	if (!path || !method || !req_out) return -1;
-	
+
 	memset(req_out, 0, sizeof(rc_request_t));
 	req_out->method = method;
 	req_out->depth = -1;
@@ -398,18 +398,18 @@ int router_parse_request(
 		while (*seg_start) {
 			while (*seg_start == '/') seg_start++;
 			if (*seg_start == '\0') break;
-			
+
 			const char *seg_end = strchr(seg_start, '/');
 			size_t seg_len = seg_end ?
 				(size_t)(seg_end - seg_start) :
 				strlen(seg_start);
-			
+
 			/* Valider le percent-encoding du segment */
 			if (validate_percent_encoding(seg_start, seg_len) != 0) {
 				free(xpath);
 				return -1;
 			}
-			
+
 			if (parse_segment(ctx, xpath, &xpath_len,
 			                  seg_start, seg_len) != 0) {
 				free(xpath);

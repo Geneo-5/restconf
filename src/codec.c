@@ -89,7 +89,7 @@ int codec_parse_data(
 
 	LYD_FORMAT ly_fmt = (type == MEDIA_TYPE_XML) ?
 		LYD_XML : LYD_JSON;
-	
+
 	const struct ly_ctx *ly_ctx = sr_acquire_context(
 		sr_session_get_connection(session));
 	if (!ly_ctx) return -1;
@@ -97,7 +97,7 @@ int codec_parse_data(
 	uint32_t parse_opts = LYD_PARSE_STRICT | LYD_PARSE_OPAQ;
 	uint32_t validate_opts = LYD_VALIDATE_PRESENT;
 
-	/* lyd_parse_data_mem attend une chaîne terminée par \0 */
+	/* lyd_parse_data_mem expects a NUL-terminated string */
 	char *null_term = malloc(len + 1);
 	if (!null_term) {
 		sr_release_context(
@@ -115,7 +115,7 @@ int codec_parse_data(
 			sr_session_get_connection(session));
 		return -1;
 	}
-	
+
 	free(null_term);
 	sr_release_context(
 		sr_session_get_connection(session));
@@ -160,8 +160,8 @@ int codec_serialize_errors(
 }
 
 /**
- * @brief Vérifie si un nom de nœud est dans la liste des
- * champs autorisés (séparés par ';').
+ * @brief Check whether the given node name appears in a
+ * semicolon-separated field list. Returns 1 if found, 0 otherwise.
  */
 static int field_in_list(
 	const char *node_name, const char *fields)
@@ -175,12 +175,12 @@ static int field_in_list(
 	char *tok = strtok_r(copy, ";", &saveptr);
 
 	while (tok) {
-		/* Gérer les sous-chemins : "parent/child" */
+		/* Handle sub-paths: "parent/child" */
 		char *slash = strchr(tok, '/');
 		char *name = tok;
 		if (slash) *slash = '\0';
 
-		/* Gérer les parenthèses : "name(sub)" */
+		/* Handle parentheses: "name(sub)" */
 		char *paren = strchr(name, '(');
 		if (paren) *paren = '\0';
 
@@ -210,17 +210,17 @@ int codec_filter_fields(
 {
 	if (!tree || !fields_expr || !out_tree) return -1;
 
-	/* Dupliquer l'arbre pour ne pas modifier l'original.
-	 * lyd_dup_siblings avec LYD_DUP_RECURSIVE duplique le nœud,
-	 * ses frères et sœurs, et tous leurs enfants récursivement.
-	 * Les métadonnées sont dupliquées par défaut. */
+	/* Duplicate the tree to avoid modifying the original.
+	 * lyd_dup_siblings with LYD_DUP_RECURSIVE duplicates the node,
+	 * its siblings, and all their children recursively.
+	 * Metadata is duplicated by default. */
 	struct lyd_node *dup = NULL;
 	if (lyd_dup_siblings(tree, NULL, LYD_DUP_RECURSIVE, &dup) != LY_SUCCESS) {
 		*out_tree = NULL;
 		return -1;
 	}
 
-	/* Filtrer les nœuds de premier niveau */
+	/* Filter top-level nodes */
 	struct lyd_node *node = dup;
 	struct lyd_node *prev = NULL;
 
@@ -229,7 +229,7 @@ int codec_filter_fields(
 
 		if (!field_in_list(node->schema->name,
 		                   fields_expr)) {
-			/* Retirer ce nœud de la liste */
+			/* Remove this node from the list */
 			if (prev) {
 				prev->next = next;
 			} else {

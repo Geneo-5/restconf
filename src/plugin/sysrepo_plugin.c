@@ -249,7 +249,7 @@ plugin_ctx_t *plugin_init(
 	int event_pipe = -1;
 	int rc = sr_get_event_pipe(
 		ctx->subscription, &event_pipe);
-	
+
 	if (rc == SR_ERR_OK && event_pipe >= 0) {
 		ctx->sr_event = event_new(
 			ctx->base, event_pipe,
@@ -384,7 +384,7 @@ void plugin_handle_get(
 	sr_data_t *data = NULL;
 	sr_session_ctx_t *sess = select_session(
 		ctx, req->datastore);
-	
+
 	if (req->username) {
 		sr_session_set_user(sess, req->username);
 	}
@@ -690,7 +690,7 @@ void plugin_handle_edit(
 	 * seule par nature. `operational` est alimenté par les
 	 * capteurs/abonnements ; `intended` est calculé à partir
 	 * de `running` + les autres sources NMDA. Toute tentative
-	 * de modification MUST échouer avec 405 / 
+	 * de modification MUST échouer avec 405 /
 	 * operation-not-supported. */
 	if (req->datastore == RC_DS_OPERATIONAL) {
 		callback(405, "operation-not-supported",
@@ -722,10 +722,10 @@ void plugin_handle_edit(
 		rc = codec_parse_data(
 			sess, (const char *)body,
 			body_len, req->req_type, &data);
-		
+
 		if (rc == 0 && data) {
 			const char *default_op = "merge";
-			
+
 			if (strcmp(req->method, "PUT") == 0) {
 				default_op = "replace";
 			} else if (strcmp(req->method, "POST") == 0) {

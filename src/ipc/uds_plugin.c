@@ -21,7 +21,7 @@
  *
  * Recoit les requetes IPC_MSG_DATA_REQ/EDIT_REQ/RPC_REQ envoyees par
  * uds_gateway.c, les deserialise en un rc_request_t local, et les
- * traite en reutilisant TEL QUEL le code sysrepo "mode interne"
+ * processes by reusing the internal-mode sysrepo code
  * (plugin_handle_get/edit/rpc, voir sysrepo_plugin.c) : ce daemon
  * est simplement un second appelant de la meme API plugin_api.h,
  * avec une connexion sysrepo qui lui est propre (voir plugin_main.c
