@@ -22,7 +22,11 @@ It operates exclusively over **HTTP/2 Cleartext (h2c)**, delegating TLS terminat
 - **Line Length:** The maximum line length is strictly **80 characters**. You MUST wrap and break lines to respect this limit. Do not exceed 80 columns.
 - **Align:** align start with **TAB** until indent length and finish with **SPACE**
 
-Sample code style:
+- **Pas d'espaces/tabs en fin de ligne :** Aucune ligne ne doit se terminer par des espaces ou tabulations. Les supprimer systématiquement (préférable dans les diffs).
+
+- **Commentaires en anglais :** Tous les commentaires dans les fichiers `.c` et `.h` doivent être rédigés en anglais.
+
+- **Sample code style:**
 ```h
 /**
  * Find the closest upper power of 2 of a 32 bits word.
@@ -86,6 +90,7 @@ sr_get_data_async(session, xpath, 0, 0, 0, my_data_cb, req_ctx);
 
 /* BAD: Synchronous blocking call in the main loop */
 sr_get_data(session, xpath, 0, 0, 0, &data); 
+```
 
 ## Syrepo sample code
 
