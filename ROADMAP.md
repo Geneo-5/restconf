@@ -26,7 +26,7 @@
 | **2** | Sécurité, JWT & NACM | 100% | 🟢 |
 | **3** | Architecture Plugin Sysrepo (Dual-Mode) | 90% | 🟡 |
 | **4** | Cœur RESTCONF & CRUD (RFC 8040) | 95% | 🟡 |
-| **5** | Extensions NMDA (RFC 8527) | 80% | 🟡 |
+| **5** | Extensions NMDA (RFC 8527) | 100% | 🟢 |
 | **6** | Notifications & SSE (RFC 8650) | 60% | 🟡 |
 | **7** | Monitoring & Modules YANG Conceptuels | 50% | 🟡 |
 | **8** | Tests h2c & Intégration CTest | 85% | 🟡 |
@@ -108,7 +108,7 @@
 | 5.1 | Routage `/ds/<datastore>` | RFC 8527 Sec 3.1 | **Implémenté** : `router.c` extrait l'`identityref` et mappe vers `RC_DS_RUNNING`/`RC_DS_OPERATIONAL`/`RC_DS_INTENDED` ; `sysrepo_plugin.c` sélectionne la session correspondante | `[x]` |
 | 5.2 | Query: with-origin | RFC 8527 Sec 3.2.2 | **Implémenté** : flag `SR_OPER_WITH_ORIGIN` passé à `sr_get_data()` quand `req->with_origin` est vrai et le datastore est `operational`. Les annotations `origin` NMDA sont alors incluses dans la réponse | `[x]` |
 | 5.3 | with-defaults sur Oper| RFC 8527 Sec 3.2.1 | **Implémenté** : `codec_serialize_data_wd()` mappe `report-all`/`report-all-tagged`/`trim`/`explicit` vers les flags libyang `LYD_PRINT_WD_ALL`/`LYD_PRINT_WD_ALL_TAG`/`LYD_PRINT_WD_TRIM`/`LYD_PRINT_WD_EXPLICIT` | `[x]` |
-| 5.4 | YANG Library 2019+ | RFC 8527 Sec 2 | `ietf-yang-library` rév 2019-01-04+ obligatoire (actuellement seule la chaîne littérale est renvoyée dans l'API resource, aucune donnée `modules-state`/`module-set` réelle) | `[ ]` |
+| 5.4 | YANG Library 2019+ | RFC 8527 Sec 2 | **Implémenté** : `main.c` (`get_yang_library_revision()`) lit désormais la révision réelle du module `ietf-yang-library` via `plugin_acquire_ly_ctx()` / `ly_ctx_get_module_implemented()` pour peupler la leaf `yang-library-version` de la ressource API (RFC 8040 §3.3.3), au lieu de la chaîne littérale `"2019-01-04"` figée. Fallback sur `"2019-01-04"` (révision minimale RFC 8527 §2) si le contexte libyang est indisponible (mode Externe, cf. 3.10) ou si le module est introuvable. Note : `GET /restconf/data/ietf-yang-library:yang-library` fonctionnait déjà via le chemin `plugin_handle_get()` générique, sysrepo peuplant nativement les données opérationnelles de ce module interne — seule la leaf de l'API resource était figée | `[x]` |
 | 5.5 | Opérations restreintes par datastore | RFC 8527 Sec 3.2 | **Implémenté** : `plugin_handle_edit` retourne `405`/`operation-not-supported` sur `operational` **et** `intended` (lecture seule par nature) ; `plugin_handle_get`/`plugin_handle_edit` retournent `400`/`invalid-value` pour toute identityref de datastore inconnue ou dynamique (`RC_DS_UNKNOWN`) ; `main.c` (`get_data_cb`) mappe désormais `SR_ERR_INVAL_ARG`→400, `SR_ERR_NOT_FOUND`→404, `SR_ERR_UNAUTHORIZED`→403 au lieu d'un `500` générique | `[x]` |
 
 ### Phase 6 : Notifications & SSE (RFC 8650)
@@ -213,7 +213,7 @@ Appliquer les paramètres de requête parsés :
 - ~~**5.5** : Restrictions RFC 8527 §3.2 (datastores dynamiques exclus, `405` sur `operational`/`intended`)~~ ✅ Implémenté
 - ~~**5.2** : `with-origin` pour annoter les données opérationnelles~~ ✅ Implémenté via `SR_OPER_WITH_ORIGIN`
 - ~~**5.3** : `with-defaults` sur operational~~ ✅ Implémenté via `LYD_PRINT_WD_*` flags
-- **5.4** : peupler réellement `modules-state`/`module-set` (YANG Library 2019+) au lieu de la chaîne littérale actuelle.
+- ~~**5.4** : peupler réellement `modules-state`/`module-set` (YANG Library 2019+) au lieu de la chaîne littérale actuelle.~~ ✅ Implémenté : `yang-library-version` de la ressource API lit désormais la révision réelle du module via le contexte libyang (`get_yang_library_revision()` dans `main.c`).
 
 ### Priorité 5 : Invocation RPC (RFC 8040 Sec 3.6) — ✅ Complété
 - ~~**4.10** : Câbler `plugin_handle_rpc` à `sr_rpc_send_tree()`~~ ✅ Implémenté
@@ -228,8 +228,8 @@ Appliquer les paramètres de requête parsés :
 
 ### Priorité 7 : Améliorations robustesse
 - ~~**2.6** : Remplacer le parsing JSON fragile (`strstr("\"sub\"")`) dans `jwt_validator.c` par un vrai parsing JSON robuste~~ ✅ Implémenté : utilisation de la bibliothèque **json-c** (`json_tokener_parse()`, `json_object_object_get_ex()`, `json_object_get_string()`) pour un parsing JSON robuste et maintenable. Ajout de `json-c` dans `CMakeLists.txt` et `README.md`.
-- **5.4** : Peupler réellement `ietf-yang-library` (module-set) au lieu de la chaîne littérale "2019-01-04"
-- **4.14** : ETag / Last-Modified / If-Match (collision prevention, RFC 8040 §3.4.1)
+- ~~**5.4** : Peupler réellement `ietf-yang-library` (module-set) au lieu de la chaîne littérale "2019-01-04"~~ ✅ Implémenté (voir Phase 5 ci-dessus)
+- **4.14** : ETag / Last-Modified / If-Match (collision prevention, RFC 8040 §3.4.1) — **prochaine étape recommandée** : nécessite d'étendre `plugin_data_cb`/`plugin_edit_cb` (ou d'ajouter des accesseurs dédiés dans `plugin_api.h`) pour exposer un entity-tag et un timestamp de dernière modification du datastore `running`, coté mode Interne **et** mode Externe (IPC).
 - **6.1** : Câbler `establish-subscription` aux notifications sysrepo réelles via `plugin_subscribe_notifications`
 - **6.5** : Replay (start-time / stop-time) pour les subscriptions
 - **7.3** : Limitation de ressources (WINDOW_UPDATE nghttp2, timeouts libevent)

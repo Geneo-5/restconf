@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <event2/event.h>
+#include <libyang/libyang.h>
 #include "h2c_server.h"
 #include "jwt_validator.h"
 #include "plugin_api.h"
@@ -151,6 +152,54 @@ static void rpc_data_cb(
 	free(ctx);
 }
 
+/**
+ * @brief Retrieves the implemented revision date of the
+ * "ietf-yang-library" YANG module for the "yang-library-version"
+ * leaf of the API resource.
+ *
+ * RFC 8040 Sec 3.3.3 requires this leaf to identify the revision
+ * date of the "ietf-yang-library" module implemented by the
+ * server, and RFC 8527 Sec 2 requires an NMDA-compliant server to
+ * implement at least revision 2019-01-04 of that module. The
+ * previous implementation returned a literal "2019-01-04" string
+ * regardless of the module actually loaded by sysrepo/libyang;
+ * this helper reads the real revision from the libyang context
+ * instead (ROADMAP.md item 5.4).
+ *
+ * @param[in] app Application context (holds the plugin context).
+ * @param[out] buf Destination buffer (format YYYY-MM-DD).
+ * @param[in] buf_len Size of @p buf in bytes.
+ *
+ * @note Falls back to the RFC 8527 minimal mandatory revision when
+ * the libyang context is unavailable (e.g. External Plugin mode,
+ * cf. ROADMAP.md item 3.10) or when the module cannot be found.
+ */
+static void get_yang_library_revision(
+	app_context_t *app, char *buf, size_t buf_len)
+{
+	/* RFC 8527 Sec 2 minimal mandatory revision: used as a safe
+	 * fallback when the real revision cannot be determined. */
+	const char *fallback = "2019-01-04";
+	const struct ly_ctx *ly_ctx = plugin_acquire_ly_ctx(
+		app->plugin_ctx);
+	const struct lys_module *mod;
+
+	if (!ly_ctx) {
+		snprintf(buf, buf_len, "%s", fallback);
+		return;
+	}
+
+	mod = ly_ctx_get_module_implemented(
+		ly_ctx, "ietf-yang-library");
+
+	if (mod && mod->revision && mod->revision[0] != '\0')
+		snprintf(buf, buf_len, "%s", mod->revision);
+	else
+		snprintf(buf, buf_len, "%s", fallback);
+
+	plugin_release_ly_ctx(app->plugin_ctx);
+}
+
 static void on_restconf_request(
 	h2c_session_t *session, int32_t stream_id,
 	const char *method, const char *path,
@@ -256,25 +305,36 @@ static void on_restconf_request(
 		char *api_body = NULL;
 		size_t api_len = 0;
 		const char *api_ctype;
+		/* RFC 8040 Sec 3.3.3 / RFC 8527 Sec 2 (ROADMAP.md 5.4):
+		 * revision reelle du module ietf-yang-library implemente
+		 * par le serveur, plutot qu'une chaine litterale figee. */
+		char yl_rev[16];
+
+		get_yang_library_revision(
+			app, yl_rev, sizeof(yl_rev));
 
 		if (req.accept_type == MEDIA_TYPE_XML) {
 			api_ctype = "application/yang-data+xml";
-			api_body = strdup(
+			if (asprintf(&api_body,
 				"<restconf xmlns=\"urn:ietf:params:xml:"
 				"ns:yang:ietf-restconf\">"
 				"<data/>"
 				"<operations/>"
-				"<yang-library-version>2019-01-04"
+				"<yang-library-version>%s"
 				"</yang-library-version>"
-				"</restconf>");
+				"</restconf>", yl_rev) < 0) {
+				api_body = NULL;
+			}
 		} else {
 			api_ctype = "application/yang-data+json";
-			api_body = strdup(
+			if (asprintf(&api_body,
 				"{\"ietf-restconf:restconf\":{"
 				"\"data\":{},"
 				"\"operations\":{},"
-				"\"yang-library-version\":\"2019-01-04\""
-				"}}");
+				"\"yang-library-version\":\"%s\""
+				"}}", yl_rev) < 0) {
+				api_body = NULL;
+			}
 		}
 
 		if (api_body) {
