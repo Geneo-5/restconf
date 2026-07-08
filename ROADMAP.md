@@ -235,19 +235,3 @@ Appliquer les paramètres de requête parsés :
 - **7.3** : Limitation de ressources (WINDOW_UPDATE nghttp2, timeouts libevent)
 - **7.4** : Tests de conformité RFC 8040/8527 avec `nghttp` + intégration CTest dans CMakeLists.txt
 
-### Priorité 8 : 🔴 Correction des crashes serveur (bloquant pour tests)
-Le serveur crash sur certaines requêtes d'erreur, causant `ConnectionRefusedError` :
-- **`DELETE /restconf`** : devrait retourner 405 Method Not Allowed, mais le serveur crash (probablement dans `main.c` handler ou `h2c_send_response_ex()`)
-- **`GET /restconf/data/%%%invalid`** : percent-encoding invalide détecté par `validate_percent_encoding()` mais crash avant d'envoyer la réponse 400
-- **`GET /restconf/data/unknown-module:unknown-node`** : module inexistant devrait retourner 404, mais serveur ne répond pas (status_code=None, 0 bytes) — probablement use-after-free dans `h2c_send_response_ex()` ou données libérées trop tôt
-
-**Causes probables** :
-1. `h2c_send_response_ex()` libère `src->data` immédiatement après `nghttp2_session_send()`, mais nghttp2 peut appeler `data_read_callback` plusieurs fois
-2. Handlers dans `main.c` n'envoient pas de réponse pour certains cas d'erreur (404 module inconnu)
-3. Validation percent-encoding retourne -1 mais le code ne gère pas proprement l'erreur avant d'appeler sysrepo
-
-**Actions requises** :
-- Debugger avec `gdb` ou `valgrind` pour identifier le segfault exact
-- Vérifier que tous les handlers dans `main.c` envoient une réponse HTTP/2 même en cas d'erreur
-- Ne pas libérer `src->data` dans `h2c_send_response_ex()` — laisser nghttp2 gérer le cycle de vie
-- Ajouter des logs de debug pour tracer les crashes
