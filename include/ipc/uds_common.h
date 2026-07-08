@@ -30,7 +30,20 @@ typedef struct __attribute__((packed)) {
 #define IPC_MAGIC_NUMBER 0x52434E46
 
 /**
- * @brief Serialise une requete dans un buffer pour l'envoi sur l'UDS.
+ * @brief Serialise un message (requete ou reponse) dans un buffer
+ * pour l'envoi sur l'UDS. @p status_code est reporte tel quel dans
+ * l'en-tete (code HTTP pour une reponse DATA_RES/RPC_RES/EDIT_RES,
+ * 0 pour une requete sortante).
+ */
+int ipc_serialize_message(
+	ipc_msg_type_t type, uint32_t msg_id, int32_t status_code,
+	const uint8_t *payload, size_t payload_len,
+	uint8_t **out_buf, size_t *out_len);
+
+/**
+ * @brief Alias historique de ipc_serialize_message() avec
+ * status_code force a 0 (usage : requetes sortantes Gateway ->
+ * Plugin, qui n'ont pas de statut avant reponse).
  */
 int ipc_serialize_request(
 	ipc_msg_type_t type, uint32_t msg_id,

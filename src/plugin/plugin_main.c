@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -5,12 +6,13 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <event2/event.h>
-#include <sysrepo.h>
+#include "plugin_api.h"
 #include "logger.h"
 
 /* Forward declaration from uds_plugin.c */
 extern int ext_plugin_init_uds(
-	struct event_base *base, const char *path);
+	struct event_base *base, const char *path,
+	plugin_ctx_t *sr_ctx);
 
 static void sigint_cb(
 	evutil_socket_t sig, short events, void *ctx)
@@ -87,12 +89,29 @@ int main(int argc, char **argv)
 		base, SIGINT, sigint_cb, base);
 	event_add(sig_event, NULL);
 
-	/* Initialize sysrepo connection here */
-	/* TODO: sr_connect, sr_session_start */
+	/* Connexion sysrepo : ce daemon reutilise plugin_init() de
+	 * sysrepo_plugin.c (mode interne), qui fait sr_connect(),
+	 * ouvre les sessions running/operational/startup, souscrit
+	 * aux donnees operationnelles ietf-restconf-monitoring et au
+	 * RPC establish-subscription, et cable le pipe d'evenements
+	 * sysrepo dans libevent. Le second parametre (use_external)
+	 * n'a pas d'effet dans cette implementation. */
+	plugin_ctx_t *sr_ctx = plugin_init(base, false, NULL);
+	if (!sr_ctx) {
+		RC_FATAL("Failed to connect to sysrepo");
+		event_free(sig_event);
+		event_base_free(base);
+		return 1;
+	}
 
-	/* Initialize UDS listener */
-	if (ext_plugin_init_uds(base, PLUGIN_UDS_PATH) != 0) {
+	/* Initialize UDS listener : les requetes recues sur cette
+	 * socket sont dispatchees vers plugin_handle_get/edit/rpc
+	 * (sysrepo_plugin.c) via sr_ctx (voir uds_plugin.c). */
+	if (ext_plugin_init_uds(base, PLUGIN_UDS_PATH, sr_ctx) != 0) {
 		RC_FATAL("Failed to init UDS on %s", PLUGIN_UDS_PATH);
+		plugin_destroy(sr_ctx);
+		event_free(sig_event);
+		event_base_free(base);
 		return 1;
 	}
 
@@ -102,6 +121,7 @@ int main(int argc, char **argv)
 	event_base_dispatch(base);
 
 	/* Cleanup */
+	plugin_destroy(sr_ctx);
 	event_free(sig_event);
 	event_base_free(base);
 	RC_INFO("Plugin shutdown complete");

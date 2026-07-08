@@ -10,10 +10,28 @@ struct event_base; /* Forward declaration */
 
 typedef struct plugin_ctx_s plugin_ctx_t;
 
+/**
+ * @brief Callback de résultat pour une opération GET/RPC.
+ *
+ * Contrairement à l'ancienne API (qui exposait un sr_data_t* lié à
+ * une connexion sysrepo locale), ce callback reçoit directement la
+ * réponse RESTCONF finale (déjà sérialisée en JSON/XML, filtrage
+ * "fields" et "with-defaults" déjà appliqués) : c'est ce qui permet
+ * au mode Externe (IPC UDS) de fonctionner, puisque le processus
+ * gateway n'a alors aucun accès direct à sysrepo/libyang.
+ *
+ * @param http_status Code de statut HTTP à renvoyer au client.
+ * @param body Corps de la réponse (JSON/XML), à libérer par
+ *             l'appelant du callback via free(). NULL si vide
+ *             (ex: 204 No Content).
+ * @param body_len Taille de @p body en octets.
+ */
 typedef void (*plugin_data_cb)(
-	sr_data_t *data, int error_code, void *user_data);
+	int http_status, uint8_t *body, size_t body_len,
+	void *user_data);
 typedef void (*plugin_rpc_cb)(
-	sr_data_t *output, int error_code, void *user_data);
+	int http_status, uint8_t *body, size_t body_len,
+	void *user_data);
 typedef void (*plugin_status_cb)(
 	int error_code, void *user_data);
 

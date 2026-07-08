@@ -24,7 +24,7 @@
 | :--- | :--- | :---: | :---: |
 | **1** | Fondations Réseau & Boucle d'Événements | 100% | 🟢 |
 | **2** | Sécurité, JWT & NACM | 100% | 🟢 |
-| **3** | Architecture Plugin Sysrepo (Dual-Mode) | 60% | 🟡 |
+| **3** | Architecture Plugin Sysrepo (Dual-Mode) | 90% | 🟡 |
 | **4** | Cœur RESTCONF & CRUD (RFC 8040) | 95% | 🟡 |
 | **5** | Extensions NMDA (RFC 8527) | 80% | 🟡 |
 | **6** | Notifications & SSE (RFC 8650) | 60% | 🟡 |
@@ -72,9 +72,9 @@
 | 3.5 | Contexte Libyang | - | `sr_acquire_context()` / `sr_release_context()` (mode interne uniquement ; en mode externe `plugin_acquire_ly_ctx()` renvoie toujours `NULL`, cf. 3.9) | `[~]` |
 | 3.6 | Callbacks Oper Data | YANG `rcmon` | `sr_oper_get_subscribe` (NO_THREAD) — souscription posée mais callback vide, cf. 7.1 | `[~]` |
 | 3.7 | Callbacks RPC | YANG `rsn` | `sr_rpc_subscribe_tree` (NO_THREAD) — souscription posée mais callback vide, cf. 6.1 | `[~]` |
-| 3.8 | **Mode Externe — dispatch IPC réel** | - | `uds_read_cb`/`gateway_read_cb` sont des stubs vides ; `plugin_handle_get/edit/rpc` et `plugin_subscribe_notifications` côté `uds_gateway.c` ne sérialisent/n'envoient rien (`/* TODO: Serialize and send */`). **Le mode externe ne traite aujourd'hui aucune requête de bout en bout.** | `[ ]` |
-| 3.9 | **Mode Externe — connexion sysrepo du démon** | - | `plugin_main.c` ne fait ni `sr_connect()` ni `sr_session_start()` (`/* TODO: sr_connect, sr_session_start */`) ; le démon `restconf-plugin` n'a donc aucun accès aux datastores | `[ ]` |
-| 3.10| **Mode Externe — contexte libyang à distance** | - | `plugin_acquire_ly_ctx()` renvoie `NULL` en mode externe, ce qui désactive la résolution de clés de liste dans `router.c` pour toute URI keyée ; il faut soit exposer le `ly_ctx` via IPC, soit maintenir un contexte local synchronisé côté gateway | `[ ]` |
+| 3.8 | **Mode Externe — dispatch IPC réel** | - | **Implémenté** : `plugin_data_cb`/`plugin_rpc_cb` redéfinis en callbacks transport-agnostiques (statut HTTP + corps déjà sérialisé), permettant à `uds_gateway.c` de sérialiser GET/EDIT/RPC vers l'UDS (format binaire privé `uds_data_proto.h`) et à `uds_plugin.c` de désérialiser puis réutiliser tel quel `plugin_handle_get/edit/rpc` de `sysrepo_plugin.c`. Corrélation par `msg_id`, framing par longueur, gestion de déconnexion (`fail_all_pending`). `plugin_subscribe_notifications` reste un stub (dépend de 6.1) | `[x]` |
+| 3.9 | **Mode Externe — connexion sysrepo du démon** | - | **Implémenté** : `plugin_main.c` appelle désormais `plugin_init()` (réutilise le `plugin_init` de `sysrepo_plugin.c` : `sr_connect()`, sessions running/operational/startup, abonnements) avant d'ouvrir l'UDS ; `plugin_destroy()` appelé au shutdown | `[x]` |
+| 3.10| **Mode Externe — contexte libyang à distance** | - | `plugin_acquire_ly_ctx()` renvoie toujours `NULL` en mode externe, ce qui désactive la résolution de clés de liste dans `router.c` pour toute URI keyée ; il faut soit exposer le `ly_ctx` via IPC, soit maintenir un contexte local synchronisé côté gateway | `[ ]` |
 | 3.11| Ajouter `plugin_handle_rpc` en mode interne | RFC 8040 Sec 3.6 | **Implémenté** : `plugin_handle_rpc` ajoutée à `sysrepo_plugin.c` (stub pour l'instant, retourne `SR_ERR_OPERATION_FAILED`) | `[x]` |
 
 ### Phase 4 : Cœur RESTCONF & CRUD (RFC 8040)
@@ -174,7 +174,7 @@ réel et les statuts précédemment annoncés :
 - ~~**4.15** — Séparer `path` et `query` dès la réception `:path`~~ ✅ Implémenté
 - ~~**4.16 / 5.1** — Ouvrir/rejouer la session sysrepo sur le bon datastore~~ ✅ Implémenté
 - **7.5** — ~~Remplacer `sr_get_data()` par `sr_get_data_async()`~~ Note : sysrepo utilise SHM, les appels synchrones sont très rapides (pas de réseau). Le pattern actuel est acceptable.
-- **test**: basic test doit utiliser h2c pour comminiquer avec le serveur
+- **test**: basic test doit utiliser h2c pour communiquer avec le serveur — **confirmé bloquant** : `test/conftest.py`/`test_basic.py` utilisent `requests` (HTTP/1.1 avec négociation ALPN/Upgrade classique), incompatible avec un serveur h2c *prior knowledge* pur (`nghttp2` sans upgrade HTTP/1.1). Résultat observé : `ConnectionRefusedError` sur l'intégralité de `test_basic.py`, y compris des endpoints statiques (`test_host_meta`, `test_api_resource_*`) qui ne passent même pas par le plugin sysrepo — la cause n'est donc pas une régression du refactor IPC (3.8/3.9) mais bien ce gap de transport côté client de test. À corriger : adapter `conftest.py`/`test_basic.py` pour parler h2c prior-knowledge (ex: `httpx` avec support HTTP/2 + configuration prior-knowledge, ou client `h2` direct), ou exposer temporairement un mode HTTP/1.1 de secours côté serveur pour les tests.
 
 ### Priorité 1 : ~~Notifications SSE~~ (~~RFC 8650 & YANG `rsn`~~) — ✅ Complété
 - ~~Finaliser le callback `rpc_establish_sub_cb`~~ ✅ Implémenté (extrait stream, génère ID)
@@ -202,7 +202,8 @@ Appliquer les paramètres de requête parsés :
 - ~~`rpc_data_cb` dans `main.c` pour sérialiser l'output~~ ✅ Implémenté
 - Gestion des erreurs (4xx/5xx) et 204 No Content ✅
 
-### Priorité 6 : Mode Externe (IPC UDS)
-- Implémenter le dispatch IPC réel dans `uds_gateway.c` et `uds_plugin.c`
-- Ajouter `sr_connect()` et `sr_session_start()` dans `plugin_main.c`
-- Résoudre le problème du contexte libyang à distance
+### Priorité 6 : Mode Externe (IPC UDS) — ✅ Dispatch principal complété
+- ~~Implémenter le dispatch IPC réel dans `uds_gateway.c` et `uds_plugin.c`~~ ✅ Implémenté (3.8) : GET/EDIT/RPC sérialisés/désérialisés via `uds_data_proto.h`, corrélation par `msg_id`
+- ~~Ajouter `sr_connect()` et `sr_session_start()` dans `plugin_main.c`~~ ✅ Implémenté (3.9) : réutilise `plugin_init()` de `sysrepo_plugin.c`
+- **3.10** : Résoudre le problème du contexte libyang à distance (`plugin_acquire_ly_ctx()` renvoie `NULL` en mode externe → clés de liste non résolues)
+- Câbler `plugin_subscribe_notifications` côté `uds_gateway.c` (actuellement stub, dépend de 6.1)

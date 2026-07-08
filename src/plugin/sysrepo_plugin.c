@@ -283,6 +283,84 @@ static sr_session_ctx_t *select_session(
 	}
 }
 
+/*
+ * Construit la reponse RESTCONF finale (statut HTTP + corps
+ * serialise JSON/XML) a partir du resultat brut de sr_get_data().
+ * Applique le filtre "fields" (RFC 8040 Sec 4.8.3) et
+ * "with-defaults" (RFC 8040 Sec 4.8.9). Mutualisee entre le mode
+ * interne et le mode externe : le daemon restconf-plugin (mode
+ * externe) appelle plugin_handle_get() telle quelle, ce qui evite
+ * de dupliquer cette logique cote gateway (voir uds_plugin.c).
+ */
+static void build_get_response(
+	const rc_request_t *req, sr_data_t *data, int rc,
+	int *out_status, uint8_t **out_body, size_t *out_len)
+{
+	char *body = NULL;
+	size_t body_len = 0;
+	int status = 200;
+
+	if (rc != SR_ERR_OK) {
+		const char *tag = "operation-failed";
+		const char *msg = sr_strerror(rc);
+
+		/* RFC 8527 Sec 3.1/3.2: identityref de datastore
+		 * inconnue ou non supportee (dynamique). */
+		if (rc == SR_ERR_INVAL_ARG) {
+			status = 400;
+			tag = "invalid-value";
+			msg = "Unknown or unsupported datastore";
+		} else if (rc == SR_ERR_NOT_FOUND) {
+			status = 404;
+			tag = "invalid-value";
+		} else if (rc == SR_ERR_UNAUTHORIZED) {
+			status = 403;
+			tag = "access-denied";
+		} else {
+			status = 500;
+		}
+		codec_serialize_errors(
+			req->accept_type, tag, msg,
+			&body, &body_len);
+	} else if (data && data->tree) {
+		struct lyd_node *filtered = NULL;
+
+		if (req->fields_expr &&
+		    codec_filter_fields(
+				data->tree, req->fields_expr,
+				&filtered) == 0 && filtered) {
+			if (codec_serialize_data_wd(
+					filtered, req->accept_type,
+					req->with_defaults,
+					&body, &body_len) != 0) {
+				status = 500;
+				codec_serialize_errors(
+					req->accept_type,
+					"operation-failed",
+					"Serialization failed",
+					&body, &body_len);
+			}
+			lyd_free_all(filtered);
+		} else if (codec_serialize_data_wd(
+				data->tree, req->accept_type,
+				req->with_defaults,
+				&body, &body_len) != 0) {
+			status = 500;
+			codec_serialize_errors(
+				req->accept_type,
+				"operation-failed",
+				"Serialization failed",
+				&body, &body_len);
+		}
+	} else {
+		status = 204;
+	}
+
+	*out_status = status;
+	*out_body = (uint8_t *)body;
+	*out_len = body_len;
+}
+
 void plugin_handle_get(
 	plugin_ctx_t *ctx, const rc_request_t *req,
 	plugin_data_cb callback, void *user_data)
@@ -291,7 +369,15 @@ void plugin_handle_get(
 	 * des datastores NMDA reconnus ; toute autre identityref
 	 * (datastore dynamique ou inconnu) n'est pas supportée. */
 	if (req->datastore == RC_DS_UNKNOWN) {
-		callback(NULL, SR_ERR_INVAL_ARG, user_data);
+		int status;
+		uint8_t *body;
+		size_t body_len;
+
+		build_get_response(
+			req, NULL, SR_ERR_INVAL_ARG,
+			&status, &body, &body_len);
+		callback(status, body, body_len, user_data);
+		free(body);
 		return;
 	}
 
@@ -335,11 +421,17 @@ void plugin_handle_get(
 	 * Le "blocage" est minime (accès mémoire, pas réseau). */
 	int rc = sr_get_data(
 		sess, req->xpath, max_depth, 0, opts, &data);
-	
-	/* NOTE: Le callback prend la propriété de data et
-	 * est responsable de le libérer via sr_release_data().
-	 * Ne pas libérer ici après l'appel au callback. */
-	callback(data, rc, user_data);
+
+	int status;
+	uint8_t *body;
+	size_t body_len;
+
+	build_get_response(
+		req, data, rc, &status, &body, &body_len);
+	callback(status, body, body_len, user_data);
+
+	free(body);
+	if (data) sr_release_data(data);
 }
 
 void plugin_subscribe_notifications(
@@ -385,6 +477,62 @@ void plugin_release_ly_ctx(plugin_ctx_t *ctx) {
 	}
 }
 
+/*
+ * Construit la reponse RESTCONF finale (statut HTTP + corps
+ * serialise) pour l'output d'un RPC/action (RFC 8040 Sec 3.6.2).
+ * Mutualisee entre le mode interne et le mode externe, au meme
+ * titre que build_get_response() ci-dessus.
+ */
+static void build_rpc_response(
+	const rc_request_t *req, sr_data_t *output, int rc,
+	int *out_status, uint8_t **out_body, size_t *out_len)
+{
+	char *body = NULL;
+	size_t body_len = 0;
+	int status = 200;
+
+	if (rc != SR_ERR_OK) {
+		const char *tag = "operation-failed";
+		const char *msg = sr_strerror(rc);
+
+		if (rc == SR_ERR_UNAUTHORIZED) {
+			status = 403;
+			tag = "access-denied";
+		} else if (rc == SR_ERR_NOT_FOUND) {
+			status = 404;
+			tag = "invalid-value";
+		} else if (rc == SR_ERR_INVAL_ARG) {
+			status = 400;
+			tag = "invalid-value";
+		} else if (rc == SR_ERR_VALIDATION_FAILED) {
+			status = 400;
+			tag = "invalid-value";
+		} else {
+			status = 500;
+		}
+		codec_serialize_errors(
+			req->accept_type, tag, msg,
+			&body, &body_len);
+	} else if (output && output->tree) {
+		if (codec_serialize_data(
+				output->tree, req->accept_type,
+				&body, &body_len) != 0) {
+			status = 500;
+			codec_serialize_errors(
+				req->accept_type,
+				"operation-failed",
+				"RPC output serialization failed",
+				&body, &body_len);
+		}
+	} else {
+		status = 204;
+	}
+
+	*out_status = status;
+	*out_body = (uint8_t *)body;
+	*out_len = body_len;
+}
+
 void plugin_handle_rpc(
 	plugin_ctx_t *ctx,
 	const rc_request_t *req,
@@ -396,9 +544,16 @@ void plugin_handle_rpc(
 	int rc = SR_ERR_OK;
 	struct lyd_node *input = NULL;
 	sr_data_t *output = NULL;
+	int out_status;
+	uint8_t *out_body;
+	size_t out_len;
 
 	if (!req->rpc_module || !req->rpc_name) {
-		callback(NULL, SR_ERR_INVAL_ARG, user_data);
+		build_rpc_response(
+			req, NULL, SR_ERR_INVAL_ARG,
+			&out_status, &out_body, &out_len);
+		callback(out_status, out_body, out_len, user_data);
+		free(out_body);
 		return;
 	}
 
@@ -409,9 +564,12 @@ void plugin_handle_rpc(
 			(const char *)body, body_len,
 			req->req_type, &input);
 		if (rc != 0) {
-			callback(NULL,
-			         SR_ERR_VALIDATION_FAILED,
-			         user_data);
+			build_rpc_response(
+				req, NULL, SR_ERR_VALIDATION_FAILED,
+				&out_status, &out_body, &out_len);
+			callback(out_status, out_body,
+			         out_len, user_data);
+			free(out_body);
 			return;
 		}
 	} else {
@@ -419,8 +577,12 @@ void plugin_handle_rpc(
 		const struct ly_ctx *ly_ctx =
 			sr_acquire_context(ctx->conn);
 		if (!ly_ctx) {
-			callback(NULL, SR_ERR_OPERATION_FAILED,
-			         user_data);
+			build_rpc_response(
+				req, NULL, SR_ERR_OPERATION_FAILED,
+				&out_status, &out_body, &out_len);
+			callback(out_status, out_body,
+			         out_len, user_data);
+			free(out_body);
 			return;
 		}
 		char rpc_path[512];
@@ -431,8 +593,12 @@ void plugin_handle_rpc(
 		                  NULL, 0, &input);
 		sr_release_context(ctx->conn);
 		if (rc != LY_SUCCESS || !input) {
-			callback(NULL, SR_ERR_INVAL_ARG,
-			         user_data);
+			build_rpc_response(
+				req, NULL, SR_ERR_INVAL_ARG,
+				&out_status, &out_body, &out_len);
+			callback(out_status, out_body,
+			         out_len, user_data);
+			free(out_body);
 			return;
 		}
 	}
@@ -448,16 +614,12 @@ void plugin_handle_rpc(
 
 	lyd_free_all(input);
 
-	if (rc != SR_ERR_OK) {
-		if (output) sr_release_data(output);
-		callback(NULL, rc, user_data);
-		return;
-	}
+	build_rpc_response(
+		req, output, rc, &out_status, &out_body, &out_len);
+	callback(out_status, out_body, out_len, user_data);
 
-	/* Le callback prend la propriété de output et
-	 * est responsable de le libérer via sr_release_data(). */
-	callback(output, SR_ERR_OK, user_data);
-	/* Ne pas libérer ici : le callback s'en charge */
+	free(out_body);
+	if (output) sr_release_data(output);
 }
 
 void plugin_handle_edit(

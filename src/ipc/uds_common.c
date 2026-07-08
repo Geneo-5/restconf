@@ -3,9 +3,10 @@
 #include <string.h>
 #include "ipc/uds_common.h"
 
-int ipc_serialize_request(
+int ipc_serialize_message(
 	ipc_msg_type_t type,
 	uint32_t msg_id,
+	int32_t status_code,
 	const uint8_t *payload,
 	size_t payload_len,
 	uint8_t **out_buf,
@@ -20,7 +21,7 @@ int ipc_serialize_request(
 	hdr->msg_id = msg_id;
 	hdr->type = type;
 	hdr->payload_len = (uint32_t)payload_len;
-	hdr->status_code = 0;
+	hdr->status_code = status_code;
 
 	if (payload && payload_len > 0) {
 		memcpy(buf + sizeof(ipc_msg_header_t),
@@ -30,6 +31,19 @@ int ipc_serialize_request(
 	*out_buf = buf;
 	*out_len = total;
 	return 0;
+}
+
+int ipc_serialize_request(
+	ipc_msg_type_t type,
+	uint32_t msg_id,
+	const uint8_t *payload,
+	size_t payload_len,
+	uint8_t **out_buf,
+	size_t *out_len)
+{
+	return ipc_serialize_message(
+		type, msg_id, 0, payload, payload_len,
+		out_buf, out_len);
 }
 
 int ipc_parse_header(
