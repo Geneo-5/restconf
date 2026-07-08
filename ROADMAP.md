@@ -128,7 +128,8 @@ renuméroter en éditant ce fichier.
 | 7.2 | Peuplement `rcmon` (Streams) | YANG `rcmon` | `oper_get_cb` génère la liste des streams (NETCONF par défaut) avec accès XML/JSON | `[x]` |
 | 7.3 | Limitation Ressources | RFC 8040 Sec 12 | `WINDOW_UPDATE` nghttp2, timeouts `libevent` | `[ ]` |
 | 7.4 | Tests Conformité | - | Validation RFC 8040/8527 avec `nghttp` | `[ ]` |
-| 7.5 | Audit Mono-Thread | - | Zéro `pthread` confirmé. `sr_get_data()`/`sr_apply_changes()` restent synchrones (SHM sysrepo, appels rapides) — écart mineur avec la préférence `sr_get_data_async()` de `CLAUDE.md`, jugé acceptable | `[~]` |
+| 7.5 | Module de Test RESTCONF | - | **NOUVEAU** : Créé `models/yang/restconf-test.yang` contenant toutes les structures YANG nécessaires (list, leaf-list, constraints, RPC, actions, notifications, etc.) pour les tests de conformité RFC8040/RFC8527/RFC7950. **⚠️ IMPORTANT : Tous les tests de qualification DOIVENT vérifier que ce module est chargé et accessible via RESTCONF avant d'exécuter les cas de test.** | `[x]` |
+| 7.6 | Audit Mono-Thread | - | Zéro `pthread` confirmé. `sr_get_data()`/`sr_apply_changes()` restent synchrones (SHM sysrepo, appels rapides) — écart mineur avec la préférence `sr_get_data_async()` de `CLAUDE.md`, jugé acceptable | `[~]` |
 
 ### Phase 8 : Tests h2c & Intégration CTest
 *Objectif : Suite de tests fonctionnelle et intégration CI.*
