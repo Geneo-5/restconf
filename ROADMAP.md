@@ -29,6 +29,7 @@
 | **5** | Extensions NMDA (RFC 8527) | 80% | 🟡 |
 | **6** | Notifications & SSE (RFC 8650) | 60% | 🟡 |
 | **7** | Monitoring & Modules YANG Conceptuels | 50% | 🟡 |
+| **8** | Tests h2c & Intégration CTest | 70% | 🟡 |
 
 *(Légende : ⚪ À faire | 🟡 En cours | 🟢 Terminé)*
 
@@ -58,7 +59,7 @@
 | 2.3 | Vérification JWT | RFC 7519 | `EVP_DigestVerify` en mémoire (CPU pur) | `[x]` |
 | 2.4 | Mapping NACM | RFC 8040 Sec 4 | Claim `sub` -> `sr_session_set_user()` | `[x]` |
 | 2.5 | Gestion erreurs Auth | RFC 8040 Sec 7 | HTTP 401/403 + `ietf-restconf:errors` | `[x]` |
-| 2.6 | Parsing JSON robuste du payload JWT | RFC 7519 | `jwt_validator.c` extrait le claim `sub` par `strstr("\"sub\"")` (recherche de sous-chaîne, pas un vrai parseur JSON) — fragile sur des valeurs échappées ou un ordre de champs différent ; à remplacer par un parsing JSON minimal ou `libyang`/`cjson` | `[ ]` |
+| 2.6 | Parsing JSON robuste du payload JWT | RFC 7519 | `jwt_validator.c` utilise désormais la bibliothèque **json-c** (`json_tokener_parse()`, `json_object_object_get_ex()`, `json_object_get_string()`) pour un parsing JSON robuste et maintenable. Remplace l'ancien parser maison. | `[x]` |
 
 ### Phase 3 : Architecture Plugin Sysrepo
 *Objectif : Couche d'abstraction et abonnements sysrepo.*
@@ -132,6 +133,21 @@
 | 7.4 | Tests Conformité | - | Validation RFC 8040/8527 avec `nghttp` | `[ ]` |
 | 7.5 | Audit Mono-Thread | - | Zéro `pthread` confirmé, **mais appels sysrepo bloquants présents** : `sr_get_data()` (`plugin_handle_get`) et `sr_apply_changes()` (`plugin_handle_edit`) sont synchrones, alors que `CLAUDE.md` exige explicitement `sr_get_data_async()` et proscrit ce pattern | `[~]` |
 
+### Phase 8 : Tests h2c & Intégration CTest
+*Objectif : Suite de tests fonctionnelle et intégration CI.*
+
+| ID | Tâche | Référence | Détails Techniques | Statut |
+| :--- | :--- | :--- | :--- | :---: |
+| 8.1 | Client h2c pour tests | - | **Implémenté** : `test/conftest.py` contient `H2cClient` basé sur `h2` (hyper-h2), parlant HTTP/2 Cleartext Prior Knowledge directement sur TCP. Gère GET/POST/PUT/PATCH/DELETE/OPTIONS/HEAD. | `[x]` |
+| 8.2 | Tests Root Discovery | RFC 8040 Sec 3.1 | **Implémenté** : `test/test_basic.py::TestRootDiscovery` vérifie `/.well-known/host-meta` (XRD XML) et `/.well-known/host-meta.json` | `[x]` |
+| 8.3 | Tests API Resource | RFC 8040 Sec 3.2 | **Implémenté** : `test/test_basic.py::TestAPIResource` vérifie `GET /restconf` en JSON et XML | `[x]` |
+| 8.4 | Tests méthodes HTTP | RFC 8040 Sec 3.4 | **Implémenté** : HEAD, OPTIONS, DELETE sur /restconf (405) | `[x]` |
+| 8.5 | Tests gestion erreurs | RFC 8040 Sec 7 | **Implémenté** : URI inconnues, URI malformées, méthodes non autorisées | `[x]` |
+| 8.6 | Tests CRUD data | RFC 8040 Sec 4 | GET/POST/PUT/PATCH/DELETE sur `/restconf/data/...` | `[ ]` |
+| 8.7 | Tests NMDA | RFC 8527 | GET sur `/restconf/ds/<datastore>/...` | `[ ]` |
+| 8.8 | Tests RPC/Action | RFC 8040 Sec 3.6 | POST sur `/restconf/operations/...` | `[ ]` |
+| 8.9 | Intégration CTest | - | `enable_testing()` + `add_test()` dans `CMakeLists.txt` pour `ctest --output-on-failure` | `[ ]` |
+
 ---
 
 ## 🔍 Constats d'Audit (relecture RFC 8040 / RFC 8527 du 2026-07-06)
@@ -165,6 +181,8 @@ réel et les statuts précédemment annoncés :
 | `with-defaults` (RFC 8040 §4.8.9) non appliqué lors de la sérialisation | `codec.c`, `main.c` | 🟠 Moyenne | ✅ Corrigé dans cette session (5.3) : `codec_serialize_data_wd()` avec flags `LYD_PRINT_WD_*` |
 | `with-origin` (RFC 8527 §3.2.2) non passé à `sr_get_data()` | `sysrepo_plugin.c` | 🟠 Moyenne | ✅ Corrigé dans cette session (5.2) : `SR_OPER_WITH_ORIGIN` quand `req->with_origin` |
 | `fields` (RFC 8040 §4.8.3) stocké dans `req->fields_expr` mais jamais appliqué | `main.c`, `codec.c` | 🟠 Moyenne | ✅ Corrigé dans cette session (4.13) : `codec_filter_fields()` filtre niveau racine |
+| Suite de tests `test_basic.py` utilise `requests` (HTTP/1.1), incompatible avec serveur h2c Prior Knowledge → tous les tests échouent | `test/conftest.py`, `test/test_basic.py` | 🔴 Élevée | ✅ Corrigé : `conftest.py` réécrit avec client `H2cClient` (hyper-h2), `test_basic.py` réécrit, `h2>=4.1.0` ajouté à `requirements.txt` |
+| Parsing JSON du payload JWT par `strstr("\"sub\"")` : fragile sur échappements, ordre de champs, valeurs contenant `"sub"` | `jwt_validator.c` | 🟠 Moyenne | ✅ Corrigé : utilisation de la bibliothèque **json-c** (`json_tokener_parse()`, `json_object_object_get_ex()`, `json_object_get_string()`) pour un parsing JSON robuste |
 
 ---
 
@@ -174,7 +192,7 @@ réel et les statuts précédemment annoncés :
 - ~~**4.15** — Séparer `path` et `query` dès la réception `:path`~~ ✅ Implémenté
 - ~~**4.16 / 5.1** — Ouvrir/rejouer la session sysrepo sur le bon datastore~~ ✅ Implémenté
 - **7.5** — ~~Remplacer `sr_get_data()` par `sr_get_data_async()`~~ Note : sysrepo utilise SHM, les appels synchrones sont très rapides (pas de réseau). Le pattern actuel est acceptable.
-- **test**: basic test doit utiliser h2c pour communiquer avec le serveur — **confirmé bloquant** : `test/conftest.py`/`test_basic.py` utilisent `requests` (HTTP/1.1 avec négociation ALPN/Upgrade classique), incompatible avec un serveur h2c *prior knowledge* pur (`nghttp2` sans upgrade HTTP/1.1). Résultat observé : `ConnectionRefusedError` sur l'intégralité de `test_basic.py`, y compris des endpoints statiques (`test_host_meta`, `test_api_resource_*`) qui ne passent même pas par le plugin sysrepo — la cause n'est donc pas une régression du refactor IPC (3.8/3.9) mais bien ce gap de transport côté client de test. À corriger : adapter `conftest.py`/`test_basic.py` pour parler h2c prior-knowledge (ex: `httpx` avec support HTTP/2 + configuration prior-knowledge, ou client `h2` direct), ou exposer temporairement un mode HTTP/1.1 de secours côté serveur pour les tests.
+- ~~**test** : basic test doit utiliser h2c pour communiquer avec le serveur~~ ✅ Implémenté : `test/conftest.py` a été réécrit avec un client `H2cClient` basé sur la bibliothèque Python `h2` (hyper-h2), parlant HTTP/2 Cleartext Prior Knowledge directement sur TCP. `test/test_basic.py` a été entièrement réécrit pour utiliser ce client. Les tests vérifient désormais correctement Root Discovery, API Resource, HEAD, OPTIONS et la gestion d'erreurs. Ajout de `h2>=4.1.0` dans `test/requirements.txt`.
 
 ### Priorité 1 : ~~Notifications SSE~~ (~~RFC 8650 & YANG `rsn`~~) — ✅ Complété
 - ~~Finaliser le callback `rpc_establish_sub_cb`~~ ✅ Implémenté (extrait stream, génère ID)
@@ -207,3 +225,12 @@ Appliquer les paramètres de requête parsés :
 - ~~Ajouter `sr_connect()` et `sr_session_start()` dans `plugin_main.c`~~ ✅ Implémenté (3.9) : réutilise `plugin_init()` de `sysrepo_plugin.c`
 - **3.10** : Résoudre le problème du contexte libyang à distance (`plugin_acquire_ly_ctx()` renvoie `NULL` en mode externe → clés de liste non résolues)
 - Câbler `plugin_subscribe_notifications` côté `uds_gateway.c` (actuellement stub, dépend de 6.1)
+
+### Priorité 7 : Améliorations robustesse
+- ~~**2.6** : Remplacer le parsing JSON fragile (`strstr("\"sub\"")`) dans `jwt_validator.c` par un vrai parsing JSON robuste~~ ✅ Implémenté : utilisation de la bibliothèque **json-c** (`json_tokener_parse()`, `json_object_object_get_ex()`, `json_object_get_string()`) pour un parsing JSON robuste et maintenable. Ajout de `json-c` dans `CMakeLists.txt` et `README.md`.
+- **5.4** : Peupler réellement `ietf-yang-library` (module-set) au lieu de la chaîne littérale "2019-01-04"
+- **4.14** : ETag / Last-Modified / If-Match (collision prevention, RFC 8040 §3.4.1)
+- **6.1** : Câbler `establish-subscription` aux notifications sysrepo réelles via `plugin_subscribe_notifications`
+- **6.5** : Replay (start-time / stop-time) pour les subscriptions
+- **7.3** : Limitation de ressources (WINDOW_UPDATE nghttp2, timeouts libevent)
+- **7.4** : Tests de conformité RFC 8040/8527 avec `nghttp` + intégration CTest dans CMakeLists.txt

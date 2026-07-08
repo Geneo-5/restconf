@@ -44,6 +44,7 @@ pkg_check_modules(DEPS REQUIRED IMPORTED_TARGET
 	libnghttp2
 	sysrepo
 	libyang
+	json-c
 )
 
 # ==============================================================================

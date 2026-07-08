@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y \
     zlib1g-dev \
     libssl-dev \
     python3-pip \
+    libjson-c-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Répertoire de travail temporaire pour la compilation des dépendances

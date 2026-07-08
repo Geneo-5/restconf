@@ -69,6 +69,7 @@ Assurez-vous que les bibliothèques suivantes sont installées sur votre systèm
 - **nghttp2** (`libnghttp2-dev`) : Protocole HTTP/2.
 - **sysrepo** & **libyang** : Moteur de données YANG et datastores.
 - **OpenSSL** (`libssl-dev`) : Parsing et vérification cryptographique des JWT.
+- **json-c** (`libjson-c-dev`) : Parsing JSON robuste (utilisé pour le payload JWT).
 - **CMake** & **GCC/Clang** : Outils de compilation.
 
 > ℹ️ Le Kernel Keyring est interrogé via les `syscall()` `request_key`/`keyctl`
@@ -81,7 +82,7 @@ Assurez-vous que les bibliothèques suivantes sont installées sur votre systèm
 ```bash
 # Exemple sur Ubuntu/Debian
 sudo apt-get install cmake build-essential libevent-dev libnghttp2-dev \
-libsysrepo-dev libyang-dev libssl-dev
+libsysrepo-dev libyang-dev libssl-dev libjson-c-dev
 ```
 
 ---

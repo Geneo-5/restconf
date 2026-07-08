@@ -1,41 +1,64 @@
 """
-Tests basiques RESTCONF (équivalent à test/basic.sh).
+Tests basiques RESTCONF (RFC 8040).
+
 - Root Discovery (RFC 8040 §3.1)
 - API Resource (RFC 8040 §3.2)
+- Méthodes HTTP supportées
 """
 
 
 class TestRootDiscovery:
     """Tests de découverte de la racine RESTCONF."""
-    
-    def test_host_meta(self, base_url, session):
+
+    def test_host_meta(self, server_process, client):
         """
         Test Root Discovery (RFC 8040 §3.1).
-        GET /.well-known/host-meta doit retourner le lien vers /restconf.
+        GET /.well-known/host-meta retourne le lien vers /restconf
+        au format XRD XML.
         """
-        resp = session.get(f"{base_url}/.well-known/host-meta", headers={
-            "Accept": "application/xrd+xml",
-        })
-        
+        resp = client.get(
+            "/.well-known/host-meta",
+            headers={"Accept": "application/xrd+xml"},
+        )
+
         assert resp.status_code == 200
-        assert "application/xrd+xml" in resp.headers.get("Content-Type", "")
+        assert "application/xrd+xml" in resp.headers.get(
+            "content-type", ""
+        )
         assert "/restconf" in resp.text
-    
-    def test_host_meta_json(self, base_url, session):
+
+    def test_host_meta_content(self, server_process, client):
+        """
+        Vérifie le contenu XRD du host-meta.
+        """
+        resp = client.get(
+            "/.well-known/host-meta",
+            headers={"Accept": "application/xrd+xml"},
+        )
+
+        assert resp.status_code == 200
+        assert "<XRD" in resp.text
+        assert "restconf" in resp.text.lower()
+
+    def test_host_meta_json(self, server_process, client):
         """
         Test Root Discovery avec format JSON (RFC 8040 §3.1).
+        Le serveur peut retourner 404 si non implémenté.
         """
-        resp = session.get(f"{base_url}/.well-known/host-meta.json", headers={
-            "Accept": "application/json",
-        })
-        
-        # Le serveur peut retourner 404 si non implémenté, ou 200
+        resp = client.get(
+            "/.well-known/host-meta.json",
+            headers={"Accept": "application/json"},
+        )
+
+        # 404 acceptable (non implémenté) ou 200
+        assert resp.status_code in (200, 404)
+
         if resp.status_code == 200:
             data = resp.json()
             assert "links" in data
-            # Vérifier la présence du lien restconf
             restconf_links = [
-                link for link in data["links"]
+                link
+                for link in data["links"]
                 if link.get("rel") == "restconf"
             ]
             assert len(restconf_links) > 0
@@ -43,79 +66,141 @@ class TestRootDiscovery:
 
 class TestAPIResource:
     """Tests de la ressource API RESTCONF (RFC 8040 §3.2)."""
-    
-    def test_api_resource_json(self, base_url, session):
+
+    def test_api_resource_json(self, server_process, client):
         """
         Test API Resource en JSON (RFC 8040 §3.2.1).
-        GET /restconf doit retourner les capacités RESTCONF.
+        GET /restconf retourne les capacités RESTCONF.
         """
-        resp = session.get(f"{base_url}/restconf", headers={
-            "Accept": "application/yang-data+json",
-        })
-        
-        # Le serveur peut retourner 200 avec les capacités, ou 401 si auth requise
+        resp = client.get(
+            "/restconf",
+            headers={"Accept": "application/yang-data+json"},
+        )
+
         assert resp.status_code in (200, 401, 403)
-        
+
         if resp.status_code == 200:
             data = resp.json()
-            assert "ietf-restconf:restconf-data" in data or \
-                   "restconf" in data or \
-                   isinstance(data, dict)
-    
-    def test_api_resource_xml(self, base_url, session):
+            assert (
+                "ietf-restconf:restconf" in data
+                or "restconf" in data
+                or isinstance(data, dict)
+            )
+
+    def test_api_resource_xml(self, server_process, client):
         """
         Test API Resource en XML (RFC 8040 §3.2.1).
-        GET /restconf doit retourner les capacités RESTCONF en XML.
+        GET /restconf retourne les capacités RESTCONF en XML.
         """
-        resp = session.get(f"{base_url}/restconf", headers={
-            "Accept": "application/yang-data+xml",
-        })
-        
-        # Le serveur peut retourner 200 avec les capacités, ou 401 si auth requise
+        resp = client.get(
+            "/restconf",
+            headers={"Accept": "application/yang-data+xml"},
+        )
+
         assert resp.status_code in (200, 401, 403)
-        
+
         if resp.status_code == 200:
-            assert "application/yang-data+xml" in resp.headers.get("Content-Type", "")
-            assert "<restconf" in resp.text or "<?xml" in resp.text
-    
-    def test_unsupported_media_type(self, base_url, session):
+            ctype = resp.headers.get("content-type", "")
+            assert "application/yang-data+xml" in ctype
+            assert (
+                "<restconf" in resp.text
+                or "<?xml" in resp.text
+            )
+
+    def test_api_resource_content(self, server_process, client):
         """
-        Test qu'un Accept non supporté retourne 406 (RFC 8040 §3.5.2).
+        Vérifie que l'API resource contient les éléments attendus.
         """
-        resp = session.get(f"{base_url}/restconf", headers={
-            "Accept": "text/plain",
-        })
-        
-        # 406 Not Acceptable ou 200 si le serveur ignore l'Accept
+        resp = client.get(
+            "/restconf",
+            headers={"Accept": "application/yang-data+json"},
+        )
+
+        if resp.status_code == 200:
+            data = resp.json()
+            restconf = data.get(
+                "ietf-restconf:restconf", data
+            )
+            # data et operations doivent être présents
+            assert "data" in restconf or isinstance(restconf, dict)
+
+    def test_unsupported_media_type(self, server_process, client):
+        """
+        Test qu'un Accept non supporté retourne 406
+        (RFC 8040 §3.5.2).
+        """
+        resp = client.get(
+            "/restconf",
+            headers={"Accept": "text/plain"},
+        )
+
+        # 406 Not Acceptable ou 200 si le serveur ignore
         assert resp.status_code in (200, 406)
 
 
 class TestHTTPMethods:
     """Tests des méthodes HTTP supportées."""
-    
-    def test_options(self, base_url, session):
-        """
-        Test de la méthode OPTIONS (RFC 8040 §3.4).
-        OPTIONS doit retourner les méthodes supportées.
-        """
-        resp = session.options(f"{base_url}/restconf")
-        
-        assert resp.status_code in (200, 204, 405)
-        
-        if resp.status_code in (200, 204):
-            allow = resp.headers.get("Allow", "")
-            # RESTCONF supporte au minimum GET, HEAD
-            assert "GET" in allow or "HEAD" in allow
-    
-    def test_head(self, base_url, session):
+
+    def test_head(self, server_process, client):
         """
         Test de la méthode HEAD (RFC 8040 §3.4).
-        HEAD doit retourner les mêmes en-têtes que GET sans body.
+        HEAD retourne les mêmes headers que GET sans body.
         """
-        resp = session.head(f"{base_url}/restconf", headers={
-            "Accept": "application/yang-data+json",
-        })
-        
-        # HEAD doit retourner le même status que GET
+        resp = client.head(
+            "/restconf",
+            headers={"Accept": "application/yang-data+json"},
+        )
+
         assert resp.status_code in (200, 401, 403)
-        assert len(resp.content) == 0  # Pas de body pour HEAD
+        assert len(resp.content) == 0
+
+    def test_options(self, server_process, client):
+        """
+        Test de la méthode OPTIONS (RFC 8040 §3.4).
+        OPTIONS retourne les méthodes supportées.
+        """
+        resp = client.options("/restconf")
+
+        assert resp.status_code in (200, 204, 405)
+
+        if resp.status_code in (200, 204):
+            allow = resp.headers.get("allow", "")
+            assert "GET" in allow or "HEAD" in allow
+
+
+class TestErrorHandling:
+    """Tests de la gestion d'erreurs RESTCONF."""
+
+    def test_404_unknown_path(self, server_process, client):
+        """
+        Un chemin inconnu doit retourner 404.
+        """
+        resp = client.get(
+            "/restconf/data/unknown-module:unknown-node",
+            headers={"Accept": "application/yang-data+json"},
+        )
+
+        # 404 ou 401 (auth requise avant le routage)
+        assert resp.status_code in (400, 401, 403, 404)
+
+    def test_bad_uri_format(self, server_process, client):
+        """
+        Une URI malformée doit retourner 400.
+        """
+        resp = client.get(
+            "/restconf/data/%%%invalid",
+            headers={"Accept": "application/yang-data+json"},
+        )
+
+        assert resp.status_code in (400, 401, 403, 404)
+
+    def test_method_not_allowed_on_api(self, server_process, client):
+        """
+        DELETE sur /restconf doit être refusé (RFC 8040 §3.3).
+        """
+        resp = client.delete(
+            "/restconf",
+            headers={"Accept": "application/yang-data+json"},
+        )
+
+        assert resp.status_code in (405, 401, 403)

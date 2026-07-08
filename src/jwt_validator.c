@@ -8,11 +8,54 @@
 #include <linux/keyctl.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <json-c/json.h>
 #include "jwt_validator.h"
 
 struct jwt_ctx_s {
 	EVP_PKEY *pkey;
 };
+
+/**
+ * @brief Extrait une valeur string d'un objet JSON par son nom de clé.
+ *
+ * Utilise la bibliothèque json-c pour un parsing JSON robuste.
+ *
+ * @param json    Chaîne JSON (terminée par \0)
+ * @param key     Nom de la clé recherchée
+ * @param out     Buffer de sortie pour la valeur string
+ * @param out_len Taille du buffer de sortie
+ * @return 0 si trouvé, -1 sinon
+ */
+static int json_get_string_value(
+	const char *json, const char *key,
+	char *out, size_t out_len)
+{
+	struct json_object *root = NULL;
+	struct json_object *value = NULL;
+	const char *str_val = NULL;
+	int ret = -1;
+
+	if (!json || !key || !out || out_len == 0) return -1;
+
+	/* Parser le JSON avec json-c */
+	root = json_tokener_parse(json);
+	if (!root) return -1;
+
+	/* Chercher la clé et vérifier que c'est une string */
+	if (json_object_object_get_ex(root, key, &value) &&
+	    json_object_is_type(value, json_type_string)) {
+		str_val = json_object_get_string(value);
+		if (str_val) {
+			strncpy(out, str_val, out_len - 1);
+			out[out_len - 1] = '\0';
+			ret = 0;
+		}
+	}
+
+	/* Libérer l'objet JSON */
+	json_object_put(root);
+	return ret;
+}
 
 /**
  * @brief Décode une chaîne Base64URL (spécifique aux JWT) en binaire.
@@ -188,25 +231,10 @@ int jwt_validator_verify(
 		payload_json, &json_len);
 	payload_json[json_len] = '\0';
 
-	/* Extraction basique du claim "sub" */
-	char *sub_pos = strstr((char *)payload_json, "\"sub\"");
-	if (sub_pos) {
-		sub_pos = strchr(sub_pos, ':');
-		if (sub_pos) {
-			sub_pos = strchr(sub_pos, '"');
-			if (sub_pos) {
-				sub_pos++;
-				char *end_quote = strchr(sub_pos, '"');
-				if (end_quote) {
-					size_t len = end_quote - sub_pos;
-					if (len < username_len) {
-						strncpy(username_out, sub_pos, len);
-						username_out[len] = '\0';
-					}
-				}
-			}
-		}
-	}
+	/* Extraction robuste du claim "sub" (RFC 7519 §4.1.2) */
+	json_get_string_value(
+		(const char *)payload_json, "sub",
+		username_out, username_len);
 
 	free(jwt_copy);
 	return 0;
