@@ -1,0 +1,43 @@
+# uint8
+
+Tests
+
+RESTCONF-YANG-001
+
+RESTCONF-YANG-002
+
+RESTCONF-YANG-003
+
+Valeurs limites
+
+0
+
+255
+
+256
+
+-1
+
+---
+
+# decimal64
+
+Tests
+
+RESTCONF-YANG-014
+
+RESTCONF-YANG-015
+
+RESTCONF-YANG-016
+
+---
+
+# enumeration
+
+Tests
+
+RESTCONF-YANG-021
+
+RESTCONF-YANG-022
+
+RESTCONF-YANG-023
