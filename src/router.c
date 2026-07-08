@@ -12,6 +12,7 @@
 
 /**
  * @brief Décode une chaîne percent-encoded (RFC 3986).
+ * Retourne -1 si le percent-encoding est invalide.
  */
 static int percent_decode(
 	const char *src, size_t src_len,
@@ -27,13 +28,37 @@ static int percent_decode(
 				dst[j++] = (char)val;
 				i += 3;
 			} else {
-				dst[j++] = src[i++];
+				/* Percent-encoding invalide (ex: %%%) */
+				return -1;
 			}
+		} else if (src[i] == '%') {
+			/* % isolé à la fin de la chaîne */
+			return -1;
 		} else {
 			dst[j++] = src[i++];
 		}
 	}
 	dst[j] = '\0';
+	return 0;
+}
+
+/**
+ * @brief Valide le percent-encoding d'une chaîne URI (RFC 3986).
+ * Retourne 0 si valide, -1 si invalide (ex: %%% ou % isolé).
+ */
+static int validate_percent_encoding(const char *src, size_t len)
+{
+	for (size_t i = 0; i < len; i++) {
+		if (src[i] == '%') {
+			/* Doit être suivi de 2 caractères hexadécimaux */
+			if (i + 2 >= len) return -1;
+			if (!isxdigit((unsigned char)src[i+1]) ||
+			    !isxdigit((unsigned char)src[i+2])) {
+				return -1;
+			}
+			i += 2;
+		}
+	}
 	return 0;
 }
 
@@ -276,6 +301,10 @@ int router_parse_request(
 		req_out->res_type = RC_RES_ROOT_DISCOVERY;
 		return 0;
 	}
+	if (strcmp(path, "/.well-known/host-meta.json") == 0) {
+		req_out->res_type = RC_RES_ROOT_DISCOVERY_JSON;
+		return 0;
+	}
 	if (strcmp(path, "/restconf") == 0) {
 		req_out->res_type = RC_RES_API;
 		return 0;
@@ -374,6 +403,12 @@ int router_parse_request(
 			size_t seg_len = seg_end ?
 				(size_t)(seg_end - seg_start) :
 				strlen(seg_start);
+			
+			/* Valider le percent-encoding du segment */
+			if (validate_percent_encoding(seg_start, seg_len) != 0) {
+				free(xpath);
+				return -1;
+			}
 			
 			if (parse_segment(ctx, xpath, &xpath_len,
 			                  seg_start, seg_len) != 0) {

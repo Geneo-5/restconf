@@ -25,6 +25,7 @@ typedef struct {
 	h2c_session_t *session;
 	int32_t stream_id;
 	media_type_t accept_type;
+	bool is_head;
 } get_req_ctx_t;
 
 /*
@@ -46,9 +47,18 @@ static void get_data_cb(
 		"application/yang-data+xml" :
 		"application/yang-data+json";
 
-	h2c_send_response(
-		ctx->session, ctx->stream_id, http_status,
-		ctype, NULL, body, body_len);
+	/* RFC 8040 §3.4: HEAD retourne les mêmes headers que GET
+	 * mais sans body. On passe body=NULL pour ne pas envoyer
+	 * de DATA frames. */
+	if (ctx->is_head) {
+		h2c_send_response(
+			ctx->session, ctx->stream_id, http_status,
+			ctype, NULL, NULL, 0);
+	} else {
+		h2c_send_response(
+			ctx->session, ctx->stream_id, http_status,
+			ctype, NULL, body, body_len);
+	}
 
 	if (body) free(body);
 	free(ctx);
@@ -190,6 +200,18 @@ static void on_restconf_request(
 		router_free_request(&req);
 		return;
 	}
+	if (req.res_type == RC_RES_ROOT_DISCOVERY_JSON) {
+		/* RFC 8040 §3.1: JRD (JSON Resource Descriptor) */
+		const char *jrd =
+			"{\"links\":[{\"rel\":\"restconf\","
+			"\"href\":\"/restconf\"}]}";
+		h2c_send_response(
+			session, stream_id, 200,
+			"application/json", NULL,
+			(const uint8_t *)jrd, strlen(jrd));
+		router_free_request(&req);
+		return;
+	}
 
 	/* 4. Authentification JWT et NACM (RFC 8040 Sec 2.5) */
 	char username[128] = {0};
@@ -211,6 +233,27 @@ static void on_restconf_request(
 	/* 5. API Resource (RFC 8040 Sec 3.3 & RFC 8527 Sec 2)
 	 * Retourne la structure conceptuelle ietf-restconf. */
 	if (req.res_type == RC_RES_API) {
+		/* RFC 8040 §3.3: seules GET, HEAD, OPTIONS sont
+		 * autorisées sur /restconf. */
+		if (strcmp(method, "OPTIONS") == 0) {
+			h2c_send_response_ex(
+				session, stream_id, 200,
+				NULL, NULL,
+				"allow", "GET, HEAD, OPTIONS",
+				NULL, 0);
+			router_free_request(&req);
+			return;
+		}
+		if (strcmp(method, "GET") != 0 &&
+		    strcmp(method, "HEAD") != 0) {
+			send_error_response(
+				session, stream_id, req.accept_type,
+				405, "operation-not-supported",
+				"Method not allowed on /restconf");
+			router_free_request(&req);
+			return;
+		}
+
 		char *api_body = NULL;
 		size_t api_len = 0;
 		const char *api_ctype;
@@ -237,9 +280,18 @@ static void on_restconf_request(
 
 		if (api_body) {
 			api_len = strlen(api_body);
-			h2c_send_response(
-				session, stream_id, 200, api_ctype,
-				NULL, (const uint8_t *)api_body, api_len);
+			/* HEAD: headers uniquement, pas de body */
+			if (strcmp(method, "HEAD") == 0) {
+				h2c_send_response(
+					session, stream_id, 200,
+					api_ctype, NULL, NULL, 0);
+			} else {
+				h2c_send_response(
+					session, stream_id, 200,
+					api_ctype, NULL,
+					(const uint8_t *)api_body,
+					api_len);
+			}
 			free(api_body);
 		} else {
 			send_error_response(
@@ -261,6 +313,7 @@ static void on_restconf_request(
 			ctx->session = session;
 			ctx->stream_id = stream_id;
 			ctx->accept_type = req.accept_type;
+			ctx->is_head = (strcmp(method, "HEAD") == 0);
 			
 			plugin_handle_get(
 				app->plugin_ctx, &req,

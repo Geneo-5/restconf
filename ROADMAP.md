@@ -29,7 +29,7 @@
 | **5** | Extensions NMDA (RFC 8527) | 80% | 🟡 |
 | **6** | Notifications & SSE (RFC 8650) | 60% | 🟡 |
 | **7** | Monitoring & Modules YANG Conceptuels | 50% | 🟡 |
-| **8** | Tests h2c & Intégration CTest | 70% | 🟡 |
+| **8** | Tests h2c & Intégration CTest | 85% | 🟡 |
 
 *(Légende : ⚪ À faire | 🟡 En cours | 🟢 Terminé)*
 
@@ -142,7 +142,7 @@
 | 8.2 | Tests Root Discovery | RFC 8040 Sec 3.1 | **Implémenté** : `test/test_basic.py::TestRootDiscovery` vérifie `/.well-known/host-meta` (XRD XML) et `/.well-known/host-meta.json` | `[x]` |
 | 8.3 | Tests API Resource | RFC 8040 Sec 3.2 | **Implémenté** : `test/test_basic.py::TestAPIResource` vérifie `GET /restconf` en JSON et XML | `[x]` |
 | 8.4 | Tests méthodes HTTP | RFC 8040 Sec 3.4 | **Implémenté** : HEAD, OPTIONS, DELETE sur /restconf (405) | `[x]` |
-| 8.5 | Tests gestion erreurs | RFC 8040 Sec 7 | **Implémenté** : URI inconnues, URI malformées, méthodes non autorisées | `[x]` |
+| 8.5 | Tests gestion erreurs | RFC 8040 Sec 7 | **Partiellement implémenté** : Tests écrits pour URI inconnues, URI malformées, méthodes non autorisées. 9/12 tests passent (Root Discovery, API Resource, HEAD, OPTIONS). 3 tests échouent encore : serveur crash sur `DELETE /restconf` et `GET /restconf/data/%%%invalid` (ConnectionRefusedError), et `GET /restconf/data/unknown-module:unknown-node` ne retourne aucune réponse (status_code=None). Validation percent-encoding implémentée dans `router.c` mais crashes persistent. | `[~]` |
 | 8.6 | Tests CRUD data | RFC 8040 Sec 4 | GET/POST/PUT/PATCH/DELETE sur `/restconf/data/...` | `[ ]` |
 | 8.7 | Tests NMDA | RFC 8527 | GET sur `/restconf/ds/<datastore>/...` | `[ ]` |
 | 8.8 | Tests RPC/Action | RFC 8040 Sec 3.6 | POST sur `/restconf/operations/...` | `[ ]` |
@@ -234,3 +234,20 @@ Appliquer les paramètres de requête parsés :
 - **6.5** : Replay (start-time / stop-time) pour les subscriptions
 - **7.3** : Limitation de ressources (WINDOW_UPDATE nghttp2, timeouts libevent)
 - **7.4** : Tests de conformité RFC 8040/8527 avec `nghttp` + intégration CTest dans CMakeLists.txt
+
+### Priorité 8 : 🔴 Correction des crashes serveur (bloquant pour tests)
+Le serveur crash sur certaines requêtes d'erreur, causant `ConnectionRefusedError` :
+- **`DELETE /restconf`** : devrait retourner 405 Method Not Allowed, mais le serveur crash (probablement dans `main.c` handler ou `h2c_send_response_ex()`)
+- **`GET /restconf/data/%%%invalid`** : percent-encoding invalide détecté par `validate_percent_encoding()` mais crash avant d'envoyer la réponse 400
+- **`GET /restconf/data/unknown-module:unknown-node`** : module inexistant devrait retourner 404, mais serveur ne répond pas (status_code=None, 0 bytes) — probablement use-after-free dans `h2c_send_response_ex()` ou données libérées trop tôt
+
+**Causes probables** :
+1. `h2c_send_response_ex()` libère `src->data` immédiatement après `nghttp2_session_send()`, mais nghttp2 peut appeler `data_read_callback` plusieurs fois
+2. Handlers dans `main.c` n'envoient pas de réponse pour certains cas d'erreur (404 module inconnu)
+3. Validation percent-encoding retourne -1 mais le code ne gère pas proprement l'erreur avant d'appeler sysrepo
+
+**Actions requises** :
+- Debugger avec `gdb` ou `valgrind` pour identifier le segfault exact
+- Vérifier que tous les handlers dans `main.c` envoient une réponse HTTP/2 même en cas d'erreur
+- Ne pas libérer `src->data` dans `h2c_send_response_ex()` — laisser nghttp2 gérer le cycle de vie
+- Ajouter des logs de debug pour tracer les crashes

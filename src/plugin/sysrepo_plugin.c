@@ -377,7 +377,7 @@ void plugin_handle_get(
 			req, NULL, SR_ERR_INVAL_ARG,
 			&status, &body, &body_len);
 		callback(status, body, body_len, user_data);
-		free(body);
+		/* NOTE: body est libéré par le callback (get_data_cb) */
 		return;
 	}
 
@@ -416,21 +416,60 @@ void plugin_handle_get(
 	uint32_t max_depth = (req->depth > 0) ?
 		(uint32_t)req->depth : 0;
 
+	int status;
+	uint8_t *body;
+	size_t body_len;
+
+	/* Validation du xpath : vérifier que le premier module
+	 * référencé existe dans le contexte libyang courant.
+	 * Cela évite un crash potentiel de sysrepo sur un xpath
+	 * pointant vers un module non chargé. */
+	if (req->xpath) {
+		const struct ly_ctx *ly_ctx = sr_acquire_context(
+			ctx->conn);
+		if (ly_ctx) {
+			const char *p = req->xpath;
+			if (*p == '/') p++;
+			const char *colon = strchr(p, ':');
+			if (colon) {
+				char mod_name[256];
+				size_t mod_len = (size_t)(colon - p);
+				if (mod_len > 0 &&
+				    mod_len < sizeof(mod_name)) {
+					memcpy(mod_name, p, mod_len);
+					mod_name[mod_len] = '\0';
+					if (!ly_ctx_get_module_implemented(
+					ly_ctx, mod_name)) {
+					sr_release_context(ctx->conn);
+					/* Module inexistant → 404 */
+					build_get_response(
+					req, NULL,
+					SR_ERR_NOT_FOUND,
+					&status, &body,
+					&body_len);
+					callback(status, body,
+					body_len,
+					user_data);
+					/* NOTE: body est libéré par le callback */
+					return;
+					}
+				}
+			}
+			sr_release_context(ctx->conn);
+		}
+	}
+
 	/* Note: sr_get_data() utilise la mémoire partagée (SHM)
 	 * de sysrepo, ce qui rend l'opération très rapide.
 	 * Le "blocage" est minime (accès mémoire, pas réseau). */
 	int rc = sr_get_data(
 		sess, req->xpath, max_depth, 0, opts, &data);
 
-	int status;
-	uint8_t *body;
-	size_t body_len;
-
 	build_get_response(
 		req, data, rc, &status, &body, &body_len);
 	callback(status, body, body_len, user_data);
+	/* NOTE: body est libéré par le callback (get_data_cb) */
 
-	free(body);
 	if (data) sr_release_data(data);
 }
 
@@ -553,7 +592,7 @@ void plugin_handle_rpc(
 			req, NULL, SR_ERR_INVAL_ARG,
 			&out_status, &out_body, &out_len);
 		callback(out_status, out_body, out_len, user_data);
-		free(out_body);
+		/* NOTE: out_body est libéré par le callback */
 		return;
 	}
 
@@ -569,7 +608,7 @@ void plugin_handle_rpc(
 				&out_status, &out_body, &out_len);
 			callback(out_status, out_body,
 			         out_len, user_data);
-			free(out_body);
+			/* NOTE: out_body est libéré par le callback */
 			return;
 		}
 	} else {
@@ -582,7 +621,7 @@ void plugin_handle_rpc(
 				&out_status, &out_body, &out_len);
 			callback(out_status, out_body,
 			         out_len, user_data);
-			free(out_body);
+			/* NOTE: out_body est libéré par le callback */
 			return;
 		}
 		char rpc_path[512];
@@ -598,7 +637,7 @@ void plugin_handle_rpc(
 				&out_status, &out_body, &out_len);
 			callback(out_status, out_body,
 			         out_len, user_data);
-			free(out_body);
+			/* NOTE: out_body est libéré par le callback */
 			return;
 		}
 	}
@@ -617,8 +656,8 @@ void plugin_handle_rpc(
 	build_rpc_response(
 		req, output, rc, &out_status, &out_body, &out_len);
 	callback(out_status, out_body, out_len, user_data);
+	/* NOTE: out_body est libéré par le callback (rpc_data_cb) */
 
-	free(out_body);
 	if (output) sr_release_data(output);
 }
 

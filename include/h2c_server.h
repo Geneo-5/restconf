@@ -38,6 +38,24 @@ int h2c_send_response(
 	const char *location,
 	const uint8_t *body, size_t body_len);
 
+/**
+ * @brief Envoie une réponse HTTP/2 avec un header additionnel.
+ * @param extra_hdr_name  Nom du header additionnel (ex: "Allow")
+ * @param extra_hdr_value Valeur du header (ex: "GET, HEAD, OPTIONS")
+ */
+int h2c_send_response_ex(
+	h2c_session_t *session, int32_t stream_id,
+	int status_code, const char *content_type,
+	const char *location,
+	const char *extra_hdr_name,
+	const char *extra_hdr_value,
+	const uint8_t *body, size_t body_len);
+
+/**
+ * @brief Récupère la méthode HTTP de la requête en cours.
+ */
+const char *h2c_session_get_method(h2c_session_t *session);
+
 /* Structure opaque pour un flux SSE */
 typedef struct h2c_sse_stream_s h2c_sse_stream_t;
 

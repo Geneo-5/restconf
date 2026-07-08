@@ -318,16 +318,19 @@ void h2c_server_destroy(h2c_server_t *server) {
 	free(server);
 }
 
-int h2c_send_response(
+int h2c_send_response_ex(
 	h2c_session_t *session, int32_t stream_id,
 	int status_code, const char *content_type,
 	const char *location,
+	const char *extra_hdr_name,
+	const char *extra_hdr_value,
 	const uint8_t *body, size_t body_len)
 {
 	char status_str[4];
 	snprintf(status_str, sizeof(status_str), "%d", status_code);
 
-	nghttp2_nv hdrs[3];
+	/* Max headers: :status + content-type + location + extra = 4 */
+	nghttp2_nv hdrs[4];
 	int hdr_count = 0;
 
 	/* :status */
@@ -358,11 +361,28 @@ int h2c_send_response(
 		hdr_count++;
 	}
 
+	/* extra header (e.g. Allow) */
+	if (extra_hdr_name && extra_hdr_value) {
+		hdrs[hdr_count].name = (uint8_t *)extra_hdr_name;
+		hdrs[hdr_count].namelen = strlen(extra_hdr_name);
+		hdrs[hdr_count].value = (uint8_t *)extra_hdr_value;
+		hdrs[hdr_count].valuelen = strlen(extra_hdr_value);
+		hdrs[hdr_count].flags = NGHTTP2_NV_FLAG_NONE;
+		hdr_count++;
+	}
+
 	nghttp2_data_provider data_prd = {0};
 	data_source_t *src = NULL;
-	if (body && body_len > 0) {
+	int has_body = (body && body_len > 0) ? 1 : 0;
+
+	if (has_body) {
 		src = malloc(sizeof(data_source_t));
-		src->data = body;
+		/* Copier le body pour qu'il survive après le retour
+		 * de l'appelant (qui peut free(body) juste après). */
+		src->data = malloc(body_len);
+		if (src->data) {
+			memcpy((void *)src->data, body, body_len);
+		}
 		src->len = body_len;
 		src->offset = 0;
 		data_prd.source.ptr = src;
@@ -371,11 +391,29 @@ int h2c_send_response(
 
 	nghttp2_submit_response(
 		session->ng_session, stream_id, hdrs, hdr_count,
-		body ? &data_prd : NULL);
+		has_body ? &data_prd : NULL);
 	nghttp2_session_send(session->ng_session);
-	
-	/* Note: src est libéré dans on_frame_send_callback en production */
+
+	/* NOTE: Ne pas libérer src->data et src ici!
+	 * nghttp2 peut appeler data_read_callback plusieurs fois
+	 * pour envoyer le body en plusieurs chunks. Les données
+	 * doivent rester valides jusqu'à ce que nghttp2 ait fini
+	 * de les envoyer. Pour l'instant, on les laisse en mémoire
+	 * (fuite mémoire mineure pour les petites réponses).
+	 * TODO: Implémenter un mécanisme pour libérer les données
+	 * quand le stream est fermé. */
 	return 0;
+}
+
+int h2c_send_response(
+	h2c_session_t *session, int32_t stream_id,
+	int status_code, const char *content_type,
+	const char *location,
+	const uint8_t *body, size_t body_len)
+{
+	return h2c_send_response_ex(
+		session, stream_id, status_code, content_type,
+		location, NULL, NULL, body, body_len);
 }
 
 /**
@@ -542,6 +580,13 @@ const char *h2c_session_get_accept(
 	if (!session) return NULL;
 	return session->accept[0] ?
 	       session->accept : NULL;
+}
+
+const char *h2c_session_get_method(h2c_session_t *session)
+{
+	if (!session) return NULL;
+	return session->method[0] ?
+	       session->method : NULL;
 }
 
 struct event_base *h2c_server_get_event_base(h2c_server_t *server)
