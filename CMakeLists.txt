@@ -82,7 +82,7 @@ target_link_libraries(restconf-server PRIVATE
 	OpenSSL::Crypto
 )
 
-target_compile_options(restconf-server PRIVATE 
+target_compile_options(restconf-server PRIVATE
 	-Wall -Wextra -Wpedantic)
 
 target_compile_definitions(restconf-server PRIVATE
@@ -140,7 +140,7 @@ if(BUILD_EXTERNAL_PLUGIN)
 		OpenSSL::Crypto
 	)
 	
-	target_compile_options(restconf-plugin PRIVATE 
+	target_compile_options(restconf-plugin PRIVATE
 		-Wall -Wextra -Wpedantic)
 	
 	target_compile_definitions(restconf-plugin PRIVATE

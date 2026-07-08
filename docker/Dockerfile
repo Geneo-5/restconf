@@ -6,6 +6,12 @@ FROM debian:bookworm-slim
 # Éviter les invites interactives (tzdata, etc.)
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Flags C/C++ globaux passés à cmake
+ENV CFLAGS="-Wall -Wextra -Wmissing-declarations -Wstrict-prototypes \
+	-Wshadow -Wformat=2 -Wuninitialized \
+	-fstack-protector-strong -D_FORTIFY_SOURCE=2"
+ENV LDFLAGS="-Wl,-z,relro,-z,now"
+
 # Installation des outils de compilation et dépendances système de base
 RUN apt-get update && apt-get install -y \
     build-essential \

@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "logger.h"
 #include <stdarg.h>
 #include <string.h>
