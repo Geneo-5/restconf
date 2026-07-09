@@ -62,9 +62,12 @@ static void send_ipc_response(
 
 static void on_data_response(
 	int http_status, uint8_t *body, size_t body_len,
+	const char *etag,
 	void *user_data)
 {
 	dispatch_ctx_t *dctx = (dispatch_ctx_t *)user_data;
+
+	(void)etag; /* ETag computed by gateway from body */
 
 	send_ipc_response(
 		dctx->bev, IPC_MSG_DATA_RES, dctx->msg_id,
@@ -76,11 +79,14 @@ static void on_data_response(
 
 static void on_edit_response(
 	int http_status, const char *error_tag,
-	const char *error_msg, void *user_data)
+	const char *error_msg, const char *etag,
+	void *user_data)
 {
 	dispatch_ctx_t *dctx = (dispatch_ctx_t *)user_data;
 	uint8_t payload[1024];
 	size_t pos = 0;
+
+	(void)etag; /* Not yet forwarded in IPC protocol */
 
 	uds_proto_put_str(payload, sizeof(payload), &pos, error_tag);
 	uds_proto_put_str(payload, sizeof(payload), &pos, error_msg);
@@ -129,7 +135,10 @@ static void handle_data_req(
 	    uds_proto_get_str(
 			payload, len, &pos, &req.with_defaults) != 0 ||
 	    uds_proto_get_str(
-			payload, len, &pos, &req.username) != 0) {
+			payload, len, &pos, &req.username) != 0 ||
+	    /* RFC 8040 Sec 3.4.1: If-Match */
+	    uds_proto_get_str(
+			payload, len, &pos, &req.if_match) != 0) {
 		send_ipc_response(
 			bev, IPC_MSG_DATA_RES, msg_id, 400, NULL, 0);
 		goto cleanup;
@@ -157,6 +166,7 @@ cleanup:
 	free(req.fields_expr);
 	free(req.with_defaults);
 	free(req.username);
+	free(req.if_match);
 }
 
 static void handle_edit_req(
@@ -179,6 +189,9 @@ static void handle_edit_req(
 			payload, len, &pos, (char **)&req.method) != 0 ||
 	    uds_proto_get_str(
 			payload, len, &pos, &req.username) != 0 ||
+	    /* RFC 8040 Sec 3.4.1: If-Match */
+	    uds_proto_get_str(
+			payload, len, &pos, (char **)&req.if_match) != 0 ||
 	    uds_proto_get_bytes_ref(
 			payload, len, &pos, &body_ref, &body_len) != 0) {
 		send_ipc_response(
@@ -216,6 +229,7 @@ cleanup:
 	free(req.xpath);
 	free((void *)req.method);
 	free(req.username);
+	free(req.if_match);
 }
 
 static void handle_rpc_req(

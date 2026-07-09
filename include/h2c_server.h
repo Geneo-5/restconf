@@ -52,6 +52,23 @@ int h2c_send_response_ex(
 	const uint8_t *body, size_t body_len);
 
 /**
+ * @brief Envoie une réponse HTTP/2 avec des headers additionnels.
+ * @param extra_headers Tableau de paires nom/valeur, NULL-terminé.
+ *        Ex: {{"etag", "\"abc\""}, {"last-modified", "..."}, {NULL, NULL}}
+ */
+typedef struct {
+	const char *name;
+	const char *value;
+} h2c_extra_header_t;
+
+int h2c_send_response_with_headers(
+	h2c_session_t *session, int32_t stream_id,
+	int status_code, const char *content_type,
+	const char *location,
+	const h2c_extra_header_t *extra_headers,
+	const uint8_t *body, size_t body_len);
+
+/**
  * @brief Récupère la méthode HTTP de la requête en cours.
  */
 const char *h2c_session_get_method(h2c_session_t *session);
@@ -95,6 +112,12 @@ const char *h2c_session_get_header(
  * @brief Récupère le header Content-Type de la requête.
  */
 const char *h2c_session_get_content_type(
+	h2c_session_t *session);
+
+/**
+ * @brief Récupère le header If-Match de la requête.
+ */
+const char *h2c_session_get_if_match(
 	h2c_session_t *session);
 
 /**

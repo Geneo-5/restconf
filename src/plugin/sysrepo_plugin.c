@@ -7,6 +7,36 @@
 #include <libyang/libyang.h>
 #include <event2/event.h>
 #include "plugin_api.h"
+#include "codec.h"
+
+/* RFC 8040 Sec 3.4.1: ETag / Last-Modified / If-Match */
+
+/**
+ * @brief FNV-1a 32-bit hash — rapide, pas de dependance externe.
+ */
+static uint32_t fnv1a_hash(const uint8_t *data, size_t len)
+{
+	uint32_t h = 0x811c9dc5u;
+	for (size_t i = 0; i < len; i++) {
+		h ^= (uint32_t)data[i];
+		h *= 0x01000193u;
+	}
+	return h;
+}
+
+/**
+ * @brief Compute an ETag from serialized data.
+ * Returns a malloc'd quoted string like "a3f8b2c1", or NULL.
+ */
+static char *compute_etag(const uint8_t *body, size_t len)
+{
+	char *etag;
+
+	if (!body || len == 0) return NULL;
+	if (asprintf(&etag, "\"%08x\"", fnv1a_hash(body, len)) < 0)
+		return NULL;
+	return etag;
+}
 
 struct plugin_ctx_s {
 	sr_conn_ctx_t *conn;
@@ -291,14 +321,19 @@ static sr_session_ctx_t *select_session(
  * interne et le mode externe : le daemon restconf-plugin (mode
  * externe) appelle plugin_handle_get() telle quelle, ce qui evite
  * de dupliquer cette logique cote gateway (voir uds_plugin.c).
+ *
+ * RFC 8040 Sec 3.4.1 : compute ETag from the serialized body.
  */
 static void build_get_response(
 	const rc_request_t *req, sr_data_t *data, int rc,
-	int *out_status, uint8_t **out_body, size_t *out_len)
+	int *out_status, uint8_t **out_body, size_t *out_len,
+	char **out_etag)
 {
 	char *body = NULL;
 	size_t body_len = 0;
 	int status = 200;
+
+	if (out_etag) *out_etag = NULL;
 
 	if (rc != SR_ERR_OK) {
 		const char *tag = "operation-failed";
@@ -356,6 +391,12 @@ static void build_get_response(
 		status = 204;
 	}
 
+	/* RFC 8040 Sec 3.4.1: ETag from serialized body */
+	if (out_etag) {
+		*out_etag = compute_etag(
+			(const uint8_t *)body, body_len);
+	}
+
 	*out_status = status;
 	*out_body = (uint8_t *)body;
 	*out_len = body_len;
@@ -375,8 +416,8 @@ void plugin_handle_get(
 
 		build_get_response(
 			req, NULL, SR_ERR_INVAL_ARG,
-			&status, &body, &body_len);
-		callback(status, body, body_len, user_data);
+			&status, &body, &body_len, NULL);
+		callback(status, body, body_len, NULL, user_data);
 		/* NOTE: body est libéré par le callback (get_data_cb) */
 		return;
 	}
@@ -419,6 +460,7 @@ void plugin_handle_get(
 	int status;
 	uint8_t *body;
 	size_t body_len;
+	char *etag = NULL;
 
 	/* Validation du xpath : vérifier que le premier module
 	 * référencé existe dans le contexte libyang courant.
@@ -446,9 +488,9 @@ void plugin_handle_get(
 					req, NULL,
 					SR_ERR_NOT_FOUND,
 					&status, &body,
-					&body_len);
+					&body_len, NULL);
 					callback(status, body,
-					body_len,
+					body_len, NULL,
 					user_data);
 					/* NOTE: body est libéré par le callback */
 					return;
@@ -466,9 +508,10 @@ void plugin_handle_get(
 		sess, req->xpath, max_depth, 0, opts, &data);
 
 	build_get_response(
-		req, data, rc, &status, &body, &body_len);
-	callback(status, body, body_len, user_data);
-	/* NOTE: body est libéré par le callback (get_data_cb) */
+		req, data, rc, &status, &body, &body_len, &etag);
+	callback(status, body, body_len, etag, user_data);
+	/* NOTE: body et etag sont libérés par le callback (get_data_cb) */
+	free(etag);
 
 	if (data) sr_release_data(data);
 }
@@ -682,7 +725,7 @@ void plugin_handle_edit(
 	if (req->datastore == RC_DS_UNKNOWN) {
 		callback(400, "invalid-value",
 		         "Unknown or unsupported datastore",
-		         user_data);
+		         NULL, user_data);
 		return;
 	}
 
@@ -695,18 +738,61 @@ void plugin_handle_edit(
 	if (req->datastore == RC_DS_OPERATIONAL) {
 		callback(405, "operation-not-supported",
 		         "Cannot edit operational datastore",
-		         user_data);
+		         NULL, user_data);
 		return;
 	}
 	if (req->datastore == RC_DS_INTENDED) {
 		callback(405, "operation-not-supported",
 		         "Cannot edit read-only intended datastore",
-		         user_data);
+		         NULL, user_data);
 		return;
 	}
 
 	if (req->username) {
 		sr_session_set_user(sess, req->username);
+	}
+
+	/* RFC 8040 Sec 3.4.1: If-Match conditional edit */
+	if (req->if_match && req->xpath) {
+		sr_data_t *cur_data = NULL;
+		int get_rc = sr_get_data(
+			sess, req->xpath, 0, 0, 0, &cur_data);
+		char *cur_etag = NULL;
+
+		if (get_rc == SR_ERR_OK && cur_data &&
+		    cur_data->tree) {
+			char *cur_body = NULL;
+			size_t cur_len = 0;
+
+			if (codec_serialize_data(
+				cur_data->tree, req->accept_type,
+				&cur_body, &cur_len) == 0) {
+				cur_etag = compute_etag(
+					(const uint8_t *)cur_body,
+					cur_len);
+				free(cur_body);
+			}
+		}
+		if (cur_data) sr_release_data(cur_data);
+
+		/* Compare: "*" matches any existing resource */
+		bool match = false;
+
+		if (strcmp(req->if_match, "*") == 0) {
+			/* Wildcard: match if resource exists */
+			match = (cur_etag != NULL);
+		} else if (cur_etag) {
+			match = (strcmp(req->if_match, cur_etag) == 0);
+		}
+		free(cur_etag);
+
+		if (!match) {
+			callback(412, "operation-not-supported",
+				"ETag mismatch (If-Match precondition "
+				"failed)",
+				NULL, user_data);
+			return;
+		}
 	}
 
 	if (strcmp(req->method, "DELETE") == 0) {
@@ -766,5 +852,5 @@ void plugin_handle_edit(
 		}
 	}
 
-	callback(http_status, error_tag, error_msg, user_data);
+	callback(http_status, error_tag, error_msg, NULL, user_data);
 }

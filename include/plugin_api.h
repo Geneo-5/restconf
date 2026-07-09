@@ -28,6 +28,7 @@ typedef struct plugin_ctx_s plugin_ctx_t;
  */
 typedef void (*plugin_data_cb)(
 	int http_status, uint8_t *body, size_t body_len,
+	const char *etag,
 	void *user_data);
 typedef void (*plugin_rpc_cb)(
 	int http_status, uint8_t *body, size_t body_len,
@@ -76,6 +77,7 @@ typedef void (*plugin_edit_cb)(
 	int http_status,
 	const char *error_tag,
 	const char *error_msg,
+	const char *etag,
 	void *user_data);
 
 void plugin_handle_edit(

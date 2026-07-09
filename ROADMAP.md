@@ -22,7 +22,7 @@ renuméroter en éditant ce fichier.
 | **1** | Fondations Réseau & Boucle d'Événements | 100% | 🟢 |
 | **2** | Sécurité, JWT & NACM | 100% | 🟢 |
 | **3** | Architecture Plugin Sysrepo (Dual-Mode) | 90% | 🟡 |
-| **4** | Cœur RESTCONF & CRUD (RFC 8040) | 95% | 🟡 |
+| **4** | Cœur RESTCONF & CRUD (RFC 8040) | 100% | 🟢 |
 | **5** | Extensions NMDA (RFC 8527) | 100% | 🟢 |
 | **6** | Notifications & SSE (RFC 8650) | 60% | 🟡 |
 | **7** | Monitoring & Modules YANG Conceptuels | 50% | 🟡 |
@@ -93,7 +93,7 @@ renuméroter en éditant ce fichier.
 | 4.11 | Query: content | RFC 8040 Sec 4.8.1 | `config`/`nonconfig`/`all` via `SR_OPER_NO_STATE`/`SR_OPER_NO_CONFIG` dans `plugin_handle_get` | `[x]` |
 | 4.12 | Query: depth | RFC 8040 Sec 4.8.2 | `req->depth` transmis comme `max_depth` à `sr_get_data()` (0 = illimité si absent/`unbounded`) | `[x]` |
 | 4.13 | Query: fields | RFC 8040 Sec 4.8.3 | `codec_filter_fields()` filtre les nœuds de premier niveau selon `;`-séparés (basique — sous-chemins et parenthèses partiellement supportés, niveau racine uniquement) | `[x]` |
-| 4.14 | ETag / Last-Modified | RFC 8040 Sec 3.4.1 | Collision prevention, `If-Match` — **prochaine étape recommandée**, cf. section "Dette Technique" | `[ ]` |
+| 4.14 | ETag / Last-Modified | RFC 8040 Sec 3.4.1 | Collision prevention, `If-Match` — ETag calculé par FNV-1a sur le corps sérialisé, validation `If-Match` (y compris wildcard `*`) avant edit, retourne 412 Precondition Failed en cas de mismatch. Fonctionne en mode Interne et Externe (IPC) | `[x]` |
 | 4.15 | Parsing Query String | RFC 8040 Sec 3.5.1 | `:path` HTTP/2 séparé en `path`/`query` dans `router_parse_request` ; extraction de `content`, `depth`, `fields`, `with-defaults`, `with-origin` | `[x]` |
 | 4.16 | Sélection du datastore cible | RFC 8040 Sec 1.4, 3.4 | `/restconf/data` cible `SR_DS_RUNNING` par défaut ; sessions sysrepo pour running/operational/startup ; `select_session()` route vers la bonne session | `[x]` |
 
@@ -155,49 +155,40 @@ dans les colonnes "Détails Techniques" ci-dessus et dans `git log`) :
 
 | Sujet | Item(s) | Fichier(s) | Impact |
 | :--- | :---: | :--- | :--- |
-| Pas d'ETag / Last-Modified / If-Match (collision prevention) | 4.14 | `main.c`, `plugin_api.h`, `h2c_server.c` | Pas de détection de conflit d'édition concurrente (RFC 8040 §3.4.1) |
+| Pas d'ETag / Last-Modified / If-Match (collision prevention) | 4.14 | `main.c`, `plugin_api.h`, `h2c_server.c` | ~~Pas de détection de conflit d'édition concurrente (RFC 8040 §3.4.1)~~ ✅ ETag FNV-1a + If-Match implémentés |
 | Notifications sysrepo non câblées vers les flux SSE | 3.7, 6.1, 6.5 | `sysrepo_plugin.c`, `sse_stream.c`, `main.c` | `establish-subscription` répond avec un ID mais aucun événement n'est jamais poussé ; pas de registre des flux SSE actifs |
 | Contexte libyang indisponible en mode Externe | 3.5, 3.10 | `uds_gateway.c`, `router.c` | Toute URI RESTCONF avec clé de liste échoue au parsing en mode Externe (IPC) |
 | `plugin_subscribe_notifications` stub côté gateway externe | 3.8 (partiel) | `uds_gateway.c` | Dépend de 6.1 |
 | Pas de limitation de ressources | 7.3 | `h2c_server.c` | Pas de `WINDOW_UPDATE` nghttp2 ni de timeouts `libevent` explicites |
 | Couverture de tests incomplète | 7.4, 8.6–8.9 | `test/` | Pas de tests CRUD/NMDA/RPC, pas d'intégration `ctest` dans `CMakeLists.txt` |
 | 3 tests d'erreurs en échec | 8.5 | `test/test_basic.py` | Crash serveur sur `DELETE /restconf` et sur une URI percent-encodée invalide |
-| Fichier résiduel versionné `.CLAUDE.md.swp` | - | racine du dépôt | `.gitignore` corrigé pour l'avenir, mais le fichier déjà suivi doit être retiré manuellement : `git rm -f .CLAUDE.md.swp` |
 
 ---
 
 ## 🎯 Prochaines Étapes (par priorité)
 
-1. **4.14 — ETag / Last-Modified / If-Match** (RFC 8040 §3.4.1)
-   Étendre `plugin_data_cb`/`plugin_edit_cb` (ou ajouter des accesseurs
-   dédiés dans `plugin_api.h`) pour exposer un entity-tag et un
-   timestamp de dernière modification du datastore `running`, en mode
-   Interne **et** Externe (IPC).
-
-2. **6.1 — Câblage des notifications sysrepo réelles vers SSE**
+1. **6.1 — Câblage des notifications sysrepo réelles vers SSE**
    `plugin_subscribe_notifications` doit s'abonner via
    `sr_notif_subscribe()`, sérialiser l'événement reçu et le pousser
    sur les flux SSE actifs. Nécessite un registre des flux ouverts
    (actuellement les `sse_stream_t*` créés dans `main.c` ne sont pas
    conservés après `sse_stream_create()`).
 
-3. **3.10 — Contexte libyang à distance en mode Externe**
+2. **3.10 — Contexte libyang à distance en mode Externe**
    Exposer `ly_ctx` via IPC, ou maintenir un contexte local synchronisé
    côté gateway, pour débloquer la résolution des clés de liste.
 
-4. **6.5 — Replay des notifications** (`start-time`/`stop-time`),
+3. **6.5 — Replay des notifications** (`start-time`/`stop-time`),
    dépend de 6.1.
 
-5. **7.3 — Limitation de ressources** (`WINDOW_UPDATE` nghttp2,
+4. **7.3 — Limitation de ressources** (`WINDOW_UPDATE` nghttp2,
    timeouts `libevent`).
 
-6. **7.4, 8.6–8.9 — Tests** : conformité RFC 8040/8527, CRUD/NMDA/RPC,
+5. **7.4, 8.6–8.9 — Tests** : conformité RFC 8040/8527, CRUD/NMDA/RPC,
    intégration `ctest`.
 
-7. **8.5 — Corriger les 3 tests d'erreurs en échec** (crash serveur sur
+6. **8.5 — Corriger les 3 tests d'erreurs en échec** (crash serveur sur
    `DELETE /restconf` et sur URI percent-encodée invalide).
-
-8. **Ménage** : retirer `.CLAUDE.md.swp` du suivi git.
 
 ---
 

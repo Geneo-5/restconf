@@ -258,6 +258,21 @@ def sysrepo_plugin_process():
         else:
             pytest.skip(f"sysrepo-plugind non trouvé: {plugin_bin}")
     
+    # Vérifier si sysrepo-plugind est déjà en cours d'exécution
+    try:
+        result = subprocess.run(
+            ["pgrep", "-x", "sysrepo-plugind"],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if result.returncode == 0:
+            # Déjà en cours d'exécution, ne pas le redémarrer
+            yield None
+            return
+    except Exception:
+        pass
+    
     # Démarrer sysrepo-plugind en arrière-plan
     proc = subprocess.Popen(
         [plugin_bin, "-d", "-v5"],

@@ -273,6 +273,7 @@ int router_parse_request(
 	const char *auth_header UNUSED,
 	const char *content_type,
 	const char *accept,
+	const char *if_match,
 	rc_request_t *req_out)
 {
 	if (!path || !method || !req_out) return -1;
@@ -282,6 +283,11 @@ int router_parse_request(
 	req_out->depth = -1;
 	req_out->req_type = codec_parse_content_type(content_type);
 	req_out->accept_type = codec_parse_accept(accept);
+
+	/* RFC 8040 Sec 3.4.1: If-Match pour les edits conditionnels */
+	if (if_match && *if_match) {
+		req_out->if_match = strdup(if_match);
+	}
 
 	/* Split path et query string (RFC 8040 Sec 3.5.1) */
 	char path_buf[2048];
@@ -431,4 +437,5 @@ void router_free_request(rc_request_t *req) {
 	free(req->fields_expr);
 	free(req->with_defaults);
 	free(req->username);
+	free(req->if_match);
 }

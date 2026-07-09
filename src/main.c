@@ -37,9 +37,12 @@ typedef struct {
  * needs to relay it as-is to the HTTP/2 client. This change enables
  * the External mode, since the gateway process has no direct access
  * to sysrepo/libyang to perform that serialization itself.
+ *
+ * RFC 8040 Sec 3.4.1: ETag header added to GET/HEAD responses.
  */
 static void get_data_cb(
 	int http_status, uint8_t *body, size_t body_len,
+	const char *etag,
 	void *user_data)
 {
 	get_req_ctx_t *ctx = (get_req_ctx_t *)user_data;
@@ -47,17 +50,26 @@ static void get_data_cb(
 		"application/yang-data+xml" :
 		"application/yang-data+json";
 
-	/* RFC 8040 §3.4: HEAD retourne les mêmes headers que GET
+	/* RFC 8040 Sec 3.4.1: ETag header */
+	h2c_extra_header_t extra[2] = {
+		{NULL, NULL}, {NULL, NULL}
+	};
+	if (etag && http_status == 200) {
+		extra[0].name = "etag";
+		extra[0].value = etag;
+	}
+
+	/* RFC 8040 Sec 3.4: HEAD retourne les mêmes headers que GET
 	 * mais sans body. On passe body=NULL pour ne pas envoyer
 	 * de DATA frames. */
 	if (ctx->is_head) {
-		h2c_send_response(
+		h2c_send_response_with_headers(
 			ctx->session, ctx->stream_id, http_status,
-			ctype, NULL, NULL, 0);
+			ctype, NULL, extra, NULL, 0);
 	} else {
-		h2c_send_response(
+		h2c_send_response_with_headers(
 			ctx->session, ctx->stream_id, http_status,
-			ctype, NULL, body, body_len);
+			ctype, NULL, extra, body, body_len);
 	}
 
 	if (body) free(body);
@@ -93,9 +105,12 @@ static void edit_data_cb(
 	int http_status,
 	const char *error_tag,
 	const char *error_msg,
+	const char *etag,
 	void *user_data)
 {
 	edit_req_ctx_t *ctx = (edit_req_ctx_t *)user_data;
+
+	(void)etag; /* TODO: return new ETag after successful edit */
 
 	if (http_status >= 200 && http_status < 300) {
 		/* Success (201 Created or 204 No Content) */
@@ -215,6 +230,8 @@ static void on_restconf_request(
 	const char *content_type = h2c_session_get_content_type(
 		session);
 	const char *accept = h2c_session_get_accept(session);
+	/* RFC 8040 Sec 3.4.1: If-Match header */
+	const char *if_match = h2c_session_get_if_match(session);
 
 	/* 2. Acquisition du contexte libyang et parsing URI */
 	const struct ly_ctx *ly_ctx = plugin_acquire_ly_ctx(
@@ -222,7 +239,8 @@ static void on_restconf_request(
 
 	if (router_parse_request(
 	        ly_ctx, path, method, auth_header,
-	        content_type, accept, &req) != 0) {
+	        content_type, accept, if_match,
+	        &req) != 0) {
 		send_error_response(
 			session, stream_id, req.accept_type,
 			400, "invalid-value", "Bad URI");

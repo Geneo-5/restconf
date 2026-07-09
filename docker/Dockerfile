@@ -36,23 +36,6 @@ ENV CXXFLAGS="${CFLAGS}"
 ENV LDFLAGS="-Wl,-z,relro,-z,now"
 
 # ==============================================================================
-# Options de compilation du projet RESTCONF (configurables via docker build --build-arg)
-# ==============================================================================
-# Mode JWT: ON = désactive la vérification des signatures (DEBUG ONLY)
-ARG ALLOW_INSECURE_JWT=ON
-ENV ALLOW_INSECURE_JWT=${ALLOW_INSECURE_JWT}
-
-# Mode Plugin: OFF = plugin intégré, ON = plugin externe (séparation des privilèges)
-ARG BUILD_EXTERNAL_PLUGIN=OFF
-ENV BUILD_EXTERNAL_PLUGIN=${BUILD_EXTERNAL_PLUGIN}
-
-# Plugin de test: TOUJOURS ON dans Docker pour les tests de qualification
-ENV BUILD_TEST_PLUGIN=ON
-
-# Niveau de log: 0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=FATAL
-ENV LOG_LEVEL=2
-
-# ==============================================================================
 # Installation des outils de compilation et dépendances système de base
 # ==============================================================================
 RUN apt-get update && apt-get install -y \
@@ -143,6 +126,23 @@ RUN echo "🔨 Compilation de nghttp2 v1.69.0..." && \
 
 # Nettoyage des sources compilées pour réduire la taille de l'image
 RUN rm -rf /tmp/deps
+
+# ==============================================================================
+# Options de compilation du projet RESTCONF (configurables via docker build --build-arg)
+# ==============================================================================
+# Mode JWT: ON = désactive la vérification des signatures (DEBUG ONLY)
+ARG ALLOW_INSECURE_JWT=ON
+ENV ALLOW_INSECURE_JWT=${ALLOW_INSECURE_JWT}
+
+# Mode Plugin: OFF = plugin intégré, ON = plugin externe (séparation des privilèges)
+ARG BUILD_EXTERNAL_PLUGIN=OFF
+ENV BUILD_EXTERNAL_PLUGIN=${BUILD_EXTERNAL_PLUGIN}
+
+# Plugin de test: TOUJOURS ON dans Docker pour les tests de qualification
+ENV BUILD_TEST_PLUGIN=ON
+
+# Niveau de log: 0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=FATAL
+ENV LOG_LEVEL=2
 
 # ==============================================================================
 # Compilation du projet RESTCONF principal

@@ -41,7 +41,7 @@ install_yang_module() {
 load_plugin() {
     local plugin_name=$1
     local plugin_file=$2
-    if sysrepoctl -p | grep -q "${plugin_name}"; then
+    if sysrepoctl -L | grep -q "${plugin_name}"; then
         echo "✅ Plugin ${plugin_name} est déjà chargé"
     else
         echo "⚠️  Plugin ${plugin_name} non chargé, tentative de chargement..."

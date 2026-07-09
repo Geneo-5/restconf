@@ -15,6 +15,28 @@
 #include "ipc/uds_data_proto.h"
 #include "logger.h"
 
+/* RFC 8040 Sec 3.4.1: ETag computation (same as sysrepo_plugin.c) */
+static uint32_t gw_fnv1a_hash(const uint8_t *data, size_t len)
+{
+	uint32_t h = 0x811c9dc5u;
+	for (size_t i = 0; i < len; i++) {
+		h ^= (uint32_t)data[i];
+		h *= 0x01000193u;
+	}
+	return h;
+}
+
+static char *gw_compute_etag(const uint8_t *body, size_t len)
+{
+	char *etag;
+
+	if (!body || len == 0) return NULL;
+	if (asprintf(&etag, "\"%08x\"",
+		gw_fnv1a_hash(body, len)) < 0)
+		return NULL;
+	return etag;
+}
+
 /*
  * Mode Externe (IPC UDS) - cote Gateway (restconf-server).
  *
@@ -88,12 +110,13 @@ static void fail_all_pending(plugin_ctx_t *ctx)
 
 		switch (p->kind) {
 		case PENDING_DATA:
-			p->cb.data_cb(500, NULL, 0, p->user_data);
+			p->cb.data_cb(500, NULL, 0, NULL,
+				p->user_data);
 			break;
 		case PENDING_EDIT:
 			p->cb.edit_cb(500, "operation-failed",
 				"Lost connection to plugin daemon",
-				p->user_data);
+				NULL, p->user_data);
 			break;
 		case PENDING_RPC:
 			p->cb.rpc_cb(500, NULL, 0, p->user_data);
@@ -123,6 +146,7 @@ static void dispatch_ipc_response(
 	switch (hdr->type) {
 	case IPC_MSG_DATA_RES: {
 		uint8_t *body = NULL;
+		char *etag = NULL;
 
 		if (p->kind != PENDING_DATA)
 			break;
@@ -130,9 +154,13 @@ static void dispatch_ipc_response(
 			body = malloc(len);
 			if (body)
 				memcpy(body, payload, len);
+			/* RFC 8040 Sec 3.4.1: compute ETag from body */
+			etag = gw_compute_etag(payload, len);
 		}
 		p->cb.data_cb(
-			hdr->status_code, body, len, p->user_data);
+			hdr->status_code, body, len, etag,
+			p->user_data);
+		free(etag);
 		break;
 	}
 	case IPC_MSG_EDIT_RES: {
@@ -146,13 +174,14 @@ static void dispatch_ipc_response(
 		    uds_proto_get_str(payload, len, &pos, &msg) != 0) {
 			p->cb.edit_cb(500, "operation-failed",
 				"Malformed IPC response",
-				p->user_data);
+				NULL, p->user_data);
 		} else {
 			p->cb.edit_cb(
-				hdr->status_code,
-				tag ? tag : "operation-failed",
-				msg ? msg : "Unknown error",
-				p->user_data);
+			hdr->status_code,
+			tag ? tag : "operation-failed",
+			msg ? msg : "Unknown error",
+			NULL, /* etag — not yet returned by plugin */
+			p->user_data);
 		}
 		free(tag);
 		free(msg);
@@ -288,7 +317,7 @@ void plugin_handle_get(
 	int rc;
 
 	if (!ctx->bev) {
-		callback(500, NULL, 0, user_data);
+		callback(500, NULL, 0, NULL, user_data);
 		return;
 	}
 
@@ -299,10 +328,11 @@ void plugin_handle_get(
 		(req->content_filter ? strlen(req->content_filter) : 0) +
 		(req->fields_expr ? strlen(req->fields_expr) : 0) +
 		(req->with_defaults ? strlen(req->with_defaults) : 0) +
-		(req->username ? strlen(req->username) : 0);
+		(req->username ? strlen(req->username) : 0) +
+		(req->if_match ? strlen(req->if_match) : 0);
 	payload = malloc(cap);
 	if (!payload) {
-		callback(500, NULL, 0, user_data);
+		callback(500, NULL, 0, NULL, user_data);
 		return;
 	}
 
@@ -324,10 +354,13 @@ void plugin_handle_get(
 		req->with_defaults);
 	ok |= uds_proto_put_str(payload, cap, &pos,
 		req->username);
+	/* RFC 8040 Sec 3.4.1: If-Match header */
+	ok |= uds_proto_put_str(payload, cap, &pos,
+		req->if_match);
 
 	if (ok != 0) {
 		free(payload);
-		callback(500, NULL, 0, user_data);
+		callback(500, NULL, 0, NULL, user_data);
 		return;
 	}
 
@@ -338,14 +371,14 @@ void plugin_handle_get(
 	free(payload);
 
 	if (rc != 0) {
-		callback(500, NULL, 0, user_data);
+		callback(500, NULL, 0, NULL, user_data);
 		return;
 	}
 
 	p = add_pending(ctx, msg_id, PENDING_DATA);
 	if (!p) {
 		free(buf);
-		callback(500, NULL, 0, user_data);
+		callback(500, NULL, 0, NULL, user_data);
 		return;
 	}
 	p->cb.data_cb = callback;
@@ -373,14 +406,14 @@ void plugin_handle_edit(
 	if (!ctx->bev) {
 		callback(500, "operation-failed",
 			"Lost connection to plugin daemon",
-			user_data);
+			NULL, user_data);
 		return;
 	}
 
 	payload = malloc(cap);
 	if (!payload) {
 		callback(500, "operation-failed",
-			"Out of memory", user_data);
+			"Out of memory", NULL, user_data);
 		return;
 	}
 
@@ -393,13 +426,15 @@ void plugin_handle_edit(
 	ok |= uds_proto_put_str(payload, cap, &pos, req->xpath);
 	ok |= uds_proto_put_str(payload, cap, &pos, req->method);
 	ok |= uds_proto_put_str(payload, cap, &pos, req->username);
+	/* RFC 8040 Sec 3.4.1: If-Match */
+	ok |= uds_proto_put_str(payload, cap, &pos, req->if_match);
 	ok |= uds_proto_put_bytes(payload, cap, &pos,
 		body, (uint32_t)body_len);
 
 	if (ok != 0) {
 		free(payload);
 		callback(500, "operation-failed",
-			"Request too large", user_data);
+			"Request too large", NULL, user_data);
 		return;
 	}
 
@@ -411,7 +446,7 @@ void plugin_handle_edit(
 
 	if (rc != 0) {
 		callback(500, "operation-failed",
-			"Serialization failed", user_data);
+			"Serialization failed", NULL, user_data);
 		return;
 	}
 
@@ -419,7 +454,7 @@ void plugin_handle_edit(
 	if (!p) {
 		free(buf);
 		callback(500, "operation-failed",
-			"Out of memory", user_data);
+			"Out of memory", NULL, user_data);
 		return;
 	}
 	p->cb.edit_cb = callback;

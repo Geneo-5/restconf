@@ -41,6 +41,7 @@ typedef struct {
 	char *username;
 	media_type_t req_type;
 	media_type_t accept_type;
+	char *if_match;
 } rc_request_t;
 
 /**
@@ -53,6 +54,7 @@ int router_parse_request(
 	const char *auth_header,
 	const char *content_type,
 	const char *accept,
+	const char *if_match,
 	rc_request_t *req_out);
 
 void router_free_request(rc_request_t *req);

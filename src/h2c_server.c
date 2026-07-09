@@ -27,6 +27,7 @@ struct h2c_session_s {
 	char auth_header[4096];
 	char content_type[128];
 	char accept[128];
+	char if_match[256];
 	uint8_t *body;
 	size_t body_len;
 	size_t body_cap;
@@ -137,6 +138,11 @@ static int on_header_callback(
 	           memcmp(name, "accept", 6) == 0) {
 		snprintf(h2_session->accept,
 		         sizeof(h2_session->accept),
+		         "%.*s", (int)valuelen, value);
+	} else if (namelen == 8 &&
+	           memcmp(name, "if-match", 8) == 0) {
+		snprintf(h2_session->if_match,
+		         sizeof(h2_session->if_match),
 		         "%.*s", (int)valuelen, value);
 	}
 	return 0;
@@ -316,6 +322,99 @@ void h2c_server_destroy(h2c_server_t *server) {
 	if (server->base)
 		event_base_free(server->base);
 	free(server);
+}
+
+int h2c_send_response_with_headers(
+	h2c_session_t *session, int32_t stream_id,
+	int status_code, const char *content_type,
+	const char *location,
+	const h2c_extra_header_t *extra_headers,
+	const uint8_t *body, size_t body_len)
+{
+	char status_str[4];
+	snprintf(status_str, sizeof(status_str), "%d", status_code);
+
+	/* Count extra headers */
+	int extra_count = 0;
+	if (extra_headers) {
+		while (extra_headers[extra_count].name &&
+		       extra_headers[extra_count].value) {
+			extra_count++;
+		}
+	}
+
+	/* Max: :status + content-type + location + extra */
+	int max_hdrs = 3 + extra_count;
+	nghttp2_nv *hdrs = malloc(
+		sizeof(nghttp2_nv) * (size_t)max_hdrs);
+	if (!hdrs) return -1;
+	int hdr_count = 0;
+
+	/* :status */
+	hdrs[hdr_count].name = (uint8_t *)":status";
+	hdrs[hdr_count].namelen = 7;
+	hdrs[hdr_count].value = (uint8_t *)status_str;
+	hdrs[hdr_count].valuelen = strlen(status_str);
+	hdrs[hdr_count].flags = NGHTTP2_NV_FLAG_NONE;
+	hdr_count++;
+
+	/* content-type */
+	if (content_type) {
+		hdrs[hdr_count].name = (uint8_t *)"content-type";
+		hdrs[hdr_count].namelen = 12;
+		hdrs[hdr_count].value = (uint8_t *)content_type;
+		hdrs[hdr_count].valuelen = strlen(content_type);
+		hdrs[hdr_count].flags = NGHTTP2_NV_FLAG_NONE;
+		hdr_count++;
+	}
+
+	/* location */
+	if (location) {
+		hdrs[hdr_count].name = (uint8_t *)"location";
+		hdrs[hdr_count].namelen = 8;
+		hdrs[hdr_count].value = (uint8_t *)location;
+		hdrs[hdr_count].valuelen = strlen(location);
+		hdrs[hdr_count].flags = NGHTTP2_NV_FLAG_NONE;
+		hdr_count++;
+	}
+
+	/* Extra headers (ETag, Last-Modified, etc.) */
+	for (int i = 0; i < extra_count; i++) {
+		hdrs[hdr_count].name =
+			(uint8_t *)extra_headers[i].name;
+		hdrs[hdr_count].namelen =
+			strlen(extra_headers[i].name);
+		hdrs[hdr_count].value =
+			(uint8_t *)extra_headers[i].value;
+		hdrs[hdr_count].valuelen =
+			strlen(extra_headers[i].value);
+		hdrs[hdr_count].flags = NGHTTP2_NV_FLAG_NONE;
+		hdr_count++;
+	}
+
+	nghttp2_data_provider data_prd = {0};
+	data_source_t *src = NULL;
+	int has_body = (body && body_len > 0) ? 1 : 0;
+
+	if (has_body) {
+		src = malloc(sizeof(data_source_t));
+		src->data = malloc(body_len);
+		if (src->data) {
+			memcpy((void *)src->data, body, body_len);
+		}
+		src->len = body_len;
+		src->offset = 0;
+		data_prd.source.ptr = src;
+		data_prd.read_callback = data_read_callback;
+	}
+
+	nghttp2_submit_response(
+		session->ng_session, stream_id, hdrs, hdr_count,
+		has_body ? &data_prd : NULL);
+	nghttp2_session_send(session->ng_session);
+
+	free(hdrs);
+	return 0;
 }
 
 int h2c_send_response_ex(
@@ -579,6 +678,14 @@ const char *h2c_session_get_accept(
 	if (!session) return NULL;
 	return session->accept[0] ?
 	       session->accept : NULL;
+}
+
+const char *h2c_session_get_if_match(
+	h2c_session_t *session)
+{
+	if (!session) return NULL;
+	return session->if_match[0] ?
+	       session->if_match : NULL;
 }
 
 const char *h2c_session_get_method(h2c_session_t *session)
