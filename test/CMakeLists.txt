@@ -93,47 +93,14 @@ if(BUILD_TEST_PLUGIN)
     
     # Target pour installer le plugin
     add_custom_target(test-install
-        # Creer les dossiers avec les bonnes permissions
-        COMMAND mkdir -p "${PLUGIN_INSTALL_DIR}"
-        COMMAND chmod 755 "${PLUGIN_INSTALL_DIR}" || true
-        COMMAND mkdir -p "${YANG_INSTALL_DIR}"
-        COMMAND chmod 755 "${YANG_INSTALL_DIR}" || true
-        
-        # Copier le plugin
-        COMMAND cp -f "${CMAKE_BINARY_DIR}/${PLUGIN_NAME}.so" "${PLUGIN_INSTALL_DIR}/sr_plugin_${MODULE_NAME}.so"
-        COMMAND chmod 755 "${PLUGIN_INSTALL_DIR}/sr_plugin_${MODULE_NAME}.so" || true
-        
         # Copier le module YANG
-        COMMAND cp -f "${CMAKE_SOURCE_DIR}/doc/test/modules/restconf-test.yang" "${YANG_INSTALL_DIR}/restconf-test.yang"
-        COMMAND chmod 644 "${YANG_INSTALL_DIR}/restconf-test.yang" || true
-        
-        # Installer le module YANG dans sysrepo
-        COMMAND sysrepoctl -i "${YANG_INSTALL_DIR}/restconf-test.yang" || true
+        COMMAND sysrepoctl -i "${CMAKE_SOURCE_DIR}/doc/test/modules/restconf-test.yang"
         
         # Charger le plugin dans sysrepo
-        COMMAND sysrepoctl -P "${PLUGIN_INSTALL_DIR}/sr_plugin_${MODULE_NAME}.so" || true
+        COMMAND  sysrepo-plugind -P "${CMAKE_BINARY_DIR}/${PLUGIN_NAME}.so"
         
         DEPENDS ${PLUGIN_NAME}
         COMMENT "Installation du plugin de test et du module YANG"
-    )
-    
-    # Target pour desinstaller
-    add_custom_target(test-uninstall
-        COMMAND sysrepoctl -p "${PLUGIN_INSTALL_DIR}/sr_plugin_${MODULE_NAME}.so" || true
-        COMMAND sysrepoctl -r restconf-test || true
-        COMMAND ${CMAKE_COMMAND} -E remove
-            "${PLUGIN_INSTALL_DIR}/sr_plugin_${MODULE_NAME}.so"
-        COMMAND ${CMAKE_COMMAND} -E remove
-            "${YANG_INSTALL_DIR}/restconf-test.yang"
-        COMMENT "Desinstallation du plugin de test et du module YANG"
-    )
-    
-    # Target pour recharger
-    add_custom_target(test-reload
-        COMMAND sysrepoctl -p "${PLUGIN_INSTALL_DIR}/sr_plugin_${MODULE_NAME}.so" || true
-        COMMAND sysrepoctl -P "${PLUGIN_INSTALL_DIR}/sr_plugin_${MODULE_NAME}.so" || true
-        DEPENDS test-install
-        COMMENT "Rechargement du plugin de test"
     )
     
     # Installation standard

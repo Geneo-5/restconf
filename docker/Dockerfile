@@ -105,7 +105,9 @@ RUN echo "🔨 Compilation de sysrepo v5.1.0..." && \
           .. && \
     make -j$(nproc) && \
     make install && \
-    ldconfig
+    ldconfig && \
+    sysrepoctl -i ../examples/plugin/oven.yang && \
+    sysrepo-plugind -P examples/oven.so
 
 # ----------------------------------------------------------------------------
 # 3. Compilation de libevent (2.1.13-stable)
@@ -163,44 +165,15 @@ RUN echo "🔨 Compilation du projet RESTCONF..." && \
           -DLOG_LEVEL=${LOG_LEVEL} \
           .. && \
     make -j$(nproc) && \
-    make install
+    make install && \
+    make test-install
 
 # ==============================================================================
 # Installation des modules YANG et plugins pour les tests
 # ==============================================================================
-# Créer les dossiers nécessaires pour sysrepo
-RUN mkdir -p /usr/share/sysrepo/yang && \
-    mkdir -p /usr/lib/sysrepo/plugins && \
-    mkdir -p /usr/local/lib/sysrepo/plugins
-
-# Copier les modules YANG dans le répertoire sysrepo
-RUN echo "🔨 Copie des modules YANG..." && \
-    mkdir -p /usr/share/sysrepo/yang && \
-    cp /workspace/doc/test/modules/oven.yang /usr/share/sysrepo/yang/ && \
-    cp /workspace/doc/test/modules/restconf-test.yang /usr/share/sysrepo/yang/
-
-# Installer le module oven.yang (pas de dépendances, devrait fonctionner)
-RUN echo "🔨 Installation de oven.yang..." && \
-    sysrepoctl -i /usr/share/sysrepo/yang/oven.yang || echo "⚠️ oven.yang installation failed"
-
-# Installer les plugins (DS plugins) - doit être fait AVANT l'installation du module
-# qui dépend d'eux
-RUN echo "🔨 Installation des plugins DS..." && \
-    find /usr -name "oven.so" 2>/dev/null | head -1 | xargs -I {} cp {} /usr/lib/sysrepo/plugins/ 2>/dev/null || true && \
-    sysrepoctl -P /usr/lib/sysrepo/plugins/oven.so 2>/dev/null || echo "⚠️ oven plugin loading failed"
-
-# Installer le plugin restconf-test AVEC le module
-# Note: Le plugin doit être dans le plugins path pour être chargé automatiquement
-RUN echo "🔨 Installation de restconf-test.yang et son plugin..." && \
-    # Supprimer tout plugin restconf-test existant qui pourrait interférer
-    rm -f /usr/lib/x86_64-linux-gnu/sysrepo/plugins/sr_plugin_restconf-test.so 2>/dev/null || true && \
-    rm -f /usr/lib/sysrepo/plugins/sr_plugin_restconf-test.so 2>/dev/null || true && \
-    # Copier notre plugin dans le dossier standard des plugins
-    if [ -f /usr/local/lib/sysrepo/plugins/sr_plugin_restconf-test.so ]; then \
-        cp /usr/local/lib/sysrepo/plugins/sr_plugin_restconf-test.so /usr/lib/sysrepo/plugins/ ; \
-    fi && \
-    # Installer le module
-    sysrepoctl -i /usr/share/sysrepo/yang/restconf-test.yang || echo "⚠️ restconf-test.yang installation failed"
+RUN sysrepoctl -i modules/ietf-restconf@2017-01-26.yang
+RUN sysrepoctl -i modules/ietf-restconf-monitoring@2017-01-26.yang
+RUN sysrepoctl -i modules/ietf-restconf-subscribed-notifications@2019-11-17.yang
 
 # Vérification finale
 RUN echo "📋 Vérification des modules et plugins:" && \

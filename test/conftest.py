@@ -22,7 +22,7 @@ import pytest
 # Configuration par défaut
 # ---------------------------------------------------------------------------
 DEFAULT_SERVER_BIN = "/usr/local/bin/restconf-server"
-DEFAULT_PLUGIN_BIN = "/usr/local/bin/sysrepo-plugind"
+DEFAULT_PLUGIN_BIN = "/usr/bin/sysrepo-plugind"
 DEFAULT_BIND_ADDR = "127.0.0.1"
 DEFAULT_PORT = 8080
 DEFAULT_TIMEOUT = 5
@@ -260,7 +260,7 @@ def sysrepo_plugin_process():
     
     # Démarrer sysrepo-plugind en arrière-plan
     proc = subprocess.Popen(
-        [plugin_bin],
+        [plugin_bin, "-d", "-v5"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
