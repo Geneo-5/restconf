@@ -78,7 +78,7 @@ Ce document liste **toutes les tâches** à implémenter pour la suite de qualif
 
 ### 🔴 **Priorité Haute (À faire pour débloquer les tests)**
 1. **Fixer le chargement des plugins dans Docker**
-   - `sysrepoctl -P /usr/lib/sysrepo/plugins/examples/oven.so` pour charger le plugin oven
+   - `sysrepo-plugind -P /usr/lib/sysrepo/plugins/examples/oven.so` pour charger le plugin oven
    - Vérifier que `sr_plugin_oven.so` est dans `/usr/local/lib/sysrepo/plugins/`
    
 2. **Vérifier que les modules YANG sont accessibles**

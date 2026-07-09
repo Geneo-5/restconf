@@ -256,7 +256,12 @@ def sysrepo_plugin_process():
                 plugin_bin = path
                 break
         else:
-            pytest.skip(f"sysrepo-plugind non trouvé: {plugin_bin}")
+            # sysrepo-plugind est requis par toute la suite : son absence
+            # doit faire ECHOUER les tests (erreur), pas les skipper.
+            pytest.fail(
+                f"sysrepo-plugind non trouvé: {plugin_bin} "
+                f"(voir la variable d'environnement SYSREPO_PLUGIND_BIN)"
+            )
     
     # Vérifier si sysrepo-plugind est déjà en cours d'exécution
     try:
@@ -275,7 +280,7 @@ def sysrepo_plugin_process():
     
     # Démarrer sysrepo-plugind en arrière-plan
     proc = subprocess.Popen(
-        [plugin_bin, "-d", "-v5"],
+        [plugin_bin, "--debug", "--verbosity", "5", "--fatal-plugin-fail"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -318,6 +323,98 @@ def sysrepo_plugin_process():
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+
+
+def _sysrepo_installed_modules():
+    """
+    Retourne l'ensemble des noms de modules YANG actuellement
+    installes/charges dans sysrepo, via `sysrepoctl -l`.
+
+    Best-effort : en cas d'erreur (binaire absent, timeout, format
+    de sortie inattendu), retourne un ensemble vide plutot que de
+    lever une exception.
+    """
+    try:
+        result = subprocess.run(
+            ["sysrepoctl", "-l"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return set()
+
+    modules = set()
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line or line.startswith("-") or line.startswith("Sysrepo"):
+            continue
+        columns = line.split()
+        if not columns:
+            continue
+        name = columns[0]
+        # Ignorer la ligne d'en-tete du tableau ("Module Name | ...")
+        if name in ("Module", "Name"):
+            continue
+        modules.add(name)
+    return modules
+
+
+@pytest.fixture(scope="session")
+def sysrepo_modules(sysrepo_plugin_process):
+    """
+    Ensemble des modules YANG charges dans sysrepo pour la session
+    de test (calcule une seule fois, apres demarrage de
+    sysrepo-plugind).
+    """
+    return _sysrepo_installed_modules()
+
+
+@pytest.fixture(scope="session")
+def restconf_test_module_available(sysrepo_modules):
+    """True si le module YANG 'restconf-test' est charge dans sysrepo."""
+    return "restconf-test" in sysrepo_modules
+
+
+@pytest.fixture(scope="session")
+def oven_module_available(sysrepo_modules):
+    """True si le module YANG 'oven' est charge dans sysrepo."""
+    return "oven" in sysrepo_modules
+
+
+@pytest.fixture
+def require_restconf_test_module(restconf_test_module_available):
+    """
+    A demander en parametre d'un test pour le skipper automatiquement
+    si le module restconf-test.yang (plugin restconf-test) n'est pas
+    charge dans sysrepo.
+
+    Exemple :
+        def test_crud_create(self, client, require_restconf_test_module):
+            ...
+    """
+    if not restconf_test_module_available:
+        pytest.skip(
+            "Module YANG 'restconf-test' non charge dans sysrepo "
+            "(sysrepoctl -l) - plugin restconf-test absent"
+        )
+
+
+@pytest.fixture
+def require_oven_module(oven_module_available):
+    """
+    A demander en parametre d'un test pour le skipper automatiquement
+    si le module oven.yang (plugin oven) n'est pas charge dans sysrepo.
+
+    Exemple :
+        def test_oven_basic(self, client, require_oven_module):
+            ...
+    """
+    if not oven_module_available:
+        pytest.skip(
+            "Module YANG 'oven' non charge dans sysrepo "
+            "(sysrepoctl -l) - plugin oven absent"
+        )
 
 
 @pytest.fixture(scope="session")

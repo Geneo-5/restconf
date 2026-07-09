@@ -11,14 +11,14 @@
 cmake_minimum_required(VERSION 3.16)
 
 # Nom du plugin
-set(PLUGIN_NAME "resconf-test-plugin")
+set(PLUGIN_NAME "restconf-test-plugin")
 set(MODULE_NAME "restconf-test")
 
 # ---------------------------------------------------------------------------
 # Sources du plugin
 # ---------------------------------------------------------------------------
 set(TEST_PLUGIN_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/resconf-test.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/restconf-test.c
 )
 
 # ---------------------------------------------------------------------------
@@ -69,7 +69,7 @@ if(BUILD_TEST_PLUGIN)
     
     # Nom de la librairie de sortie
     set_target_properties(${PLUGIN_NAME} PROPERTIES
-        OUTPUT_NAME "sr_plugin_${MODULE_NAME}"
+        OUTPUT_NAME "${MODULE_NAME}"
         PREFIX ""
         SUFFIX ".so"
     )
@@ -97,16 +97,10 @@ if(BUILD_TEST_PLUGIN)
         COMMAND sysrepoctl -i "${CMAKE_SOURCE_DIR}/doc/test/modules/restconf-test.yang"
         
         # Charger le plugin dans sysrepo
-        COMMAND  sysrepo-plugind -P "${CMAKE_BINARY_DIR}/${PLUGIN_NAME}.so"
+        COMMAND  sysrepo-plugind -P "$<TARGET_FILE:${PLUGIN_NAME}>"
         
         DEPENDS ${PLUGIN_NAME}
         COMMENT "Installation du plugin de test et du module YANG"
-    )
-    
-    # Installation standard
-    install(TARGETS ${PLUGIN_NAME}
-        LIBRARY DESTINATION "${PLUGIN_INSTALL_DIR}"
-        PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
     )
     
     install(FILES "${CMAKE_SOURCE_DIR}/doc/test/modules/restconf-test.yang"

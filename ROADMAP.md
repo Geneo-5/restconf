@@ -167,6 +167,13 @@ dans les colonnes "Détails Techniques" ci-dessus et dans `git log`) :
 
 ## 🎯 Prochaines Étapes (par priorité)
 
+0. **fix test et modules-states**
+   Update `check_restconf_test_module` et `check_oven_module`.
+   Ils doivent utiliser `/restconf/data/ietf-yang-library:modules-state`
+   pour vérifier les modules installé. Il faut ajouté dans `test_basic`
+   la récupération de `/restconf/data/ietf-yang-library:modules-state`.
+   De plus, cette accès retourne 204 ce qui n'est pas conforme.
+
 1. **6.1 — Câblage des notifications sysrepo réelles vers SSE**
    `plugin_subscribe_notifications` doit s'abonner via
    `sr_notif_subscribe()`, sérialiser l'événement reçu et le pousser
