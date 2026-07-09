@@ -20,6 +20,15 @@ option(BUILD_EXTERNAL_PLUGIN
 option(ALLOW_INSECURE_JWT 
 	"Disable JWT signature verification (UNSAFE DEBUG MODE)" OFF)
 
+# Option 3 : Plugin de test RESTCONF
+option(BUILD_TEST_PLUGIN 
+	"Build the test plugin for restconf-test.yang (for qualification tests)" OFF)
+
+# Inclure le sous-dossier test si l'option est active
+if(BUILD_TEST_PLUGIN)
+    add_subdirectory(test)
+endif()
+
 # Option 3 : Niveau de log à la compilation (pour optimiser la taille du code)
 # Valeurs: 0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=FATAL
 set(LOG_LEVEL "2" CACHE STRING "Compile-time maximum log level (0=TRACE to 5=FATAL)")

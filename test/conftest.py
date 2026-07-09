@@ -22,12 +22,14 @@ import pytest
 # Configuration par défaut
 # ---------------------------------------------------------------------------
 DEFAULT_SERVER_BIN = "/usr/local/bin/restconf-server"
+DEFAULT_PLUGIN_BIN = "/usr/local/bin/sysrepo-plugind"
 DEFAULT_BIND_ADDR = "127.0.0.1"
 DEFAULT_PORT = 8080
 DEFAULT_TIMEOUT = 5
 
 # Variables d'environnement pour override
 SERVER_BIN = os.environ.get("RESTCONF_SERVER_BIN", DEFAULT_SERVER_BIN)
+PLUGIN_BIN = os.environ.get("SYSREPO_PLUGIND_BIN", DEFAULT_PLUGIN_BIN)
 BIND_ADDR = os.environ.get("RESTCONF_BIND_ADDR", DEFAULT_BIND_ADDR)
 PORT = int(os.environ.get("RESTCONF_PORT", DEFAULT_PORT))
 
@@ -240,10 +242,76 @@ class H2cClient:
 # Fixtures pytest
 # ---------------------------------------------------------------------------
 @pytest.fixture(scope="session")
-def server_process():
+def sysrepo_plugin_process():
+    """
+    Démarre sysrepo-plugind pour gérer les plugins YANG.
+    Doit être démarré AVANT le serveur RESTCONF.
+    """
+    plugin_bin = PLUGIN_BIN
+    
+    if not os.path.exists(plugin_bin):
+        # sysrepo-plugind peut être à un autre endroit
+        for path in ["/usr/bin/sysrepo-plugind", "/usr/local/bin/sysrepo-plugind"]:
+            if os.path.exists(path):
+                plugin_bin = path
+                break
+        else:
+            pytest.skip(f"sysrepo-plugind non trouvé: {plugin_bin}")
+    
+    # Démarrer sysrepo-plugind en arrière-plan
+    proc = subprocess.Popen(
+        [plugin_bin],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    
+    # Attendre que sysrepo-plugind soit prêt
+    start_time = time.time()
+    ready = False
+    
+    while time.time() - start_time < DEFAULT_TIMEOUT:
+        try:
+            # Vérifier que sysrepo répond
+            result = subprocess.run(
+                ["sysrepoctl", "-l"],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            if result.returncode == 0:
+                ready = True
+                break
+        except Exception:
+            time.sleep(0.1)
+    
+    if not ready:
+        proc.terminate()
+        proc.wait()
+        stdout = proc.stdout.read().decode() if proc.stdout else ""
+        stderr = proc.stderr.read().decode() if proc.stderr else ""
+        pytest.fail(
+            f"sysrepo-plugind n'a pas démarré dans les {DEFAULT_TIMEOUT}s\n"
+            f"stdout: {stdout}\nstderr: {stderr}"
+        )
+    
+    yield proc
+    
+    # Arrêt de sysrepo-plugind
+    proc.send_signal(signal.SIGTERM)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+@pytest.fixture(scope="session")
+def server_process(sysrepo_plugin_process):
     """
     Démarre le serveur RESTCONF pour la session de test.
     Le serveur est arrêté à la fin de la session.
+    
+    Requiert que sysrepo-plugind soit démarré au préalable.
     """
     server_bin = os.path.abspath(SERVER_BIN)
 
@@ -310,11 +378,13 @@ def base_url():
 
 
 @pytest.fixture
-def client():
+def client(server_process):
     """
     Retourne un client h2c configuré pour RESTCONF.
 
     Ce client parle HTTP/2 Cleartext (h2c) en Prior Knowledge,
     conformément à l'architecture du serveur RESTCONF.
+    
+    Depend de server_process pour s'assurer que le serveur est demarre.
     """
     return H2cClient(BIND_ADDR, PORT)

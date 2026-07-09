@@ -67,3 +67,4 @@ dkms.conf
 .codex/
 .DS_Store
 build.log
+.help/

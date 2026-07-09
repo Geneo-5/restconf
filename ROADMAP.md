@@ -198,3 +198,19 @@ dans les colonnes "Détails Techniques" ci-dessus et dans `git log`) :
    `DELETE /restconf` et sur URI percent-encodée invalide).
 
 8. **Ménage** : retirer `.CLAUDE.md.swp` du suivi git.
+
+---
+
+## 📋 **Roadmap des Tests**
+
+Une feuille de route détaillée pour les tests de conformité RESTCONF est disponible dans :
+- **TEST-ROADMAP.md** (à la racine) : [Lien](./TEST-ROADMAP.md)
+- **doc/test/TEST-ROADMAP.md** : Version détaillée avec statistiques et prochaines étapes
+
+**Statut actuel des tests (2026-07-09)** :
+- 142 tests implémentés (100%)
+- 31 tests passent
+- 78 tests skippés (modules non chargés)
+- 33 tests échouent (problèmes fonctionnels)
+
+Voir TEST-ROADMAP.md pour plus de détails sur chaque phase de test.

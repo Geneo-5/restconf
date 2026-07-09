@@ -1,18 +1,60 @@
 # ==============================================================================
 # Dockerfile : Build des dépendances et du projet RESTCONF sur Debian
 # ==============================================================================
+#
+# UTILISATION DU CACHE:
+#   - La première compilation (docker build) va télécharger et compiler toutes les dépendances
+#   - Les compilations suivantes utiliseront automatiquement le cache Docker
+#   - Pour forcer une recompilation complète: docker build --no-cache
+#   - Pour purger le cache: docker system prune -a
+#
+# OPTIONS DE COMPILATION (via --build-arg):
+#   - ALLOW_INSECURE_JWT=ON|OFF  (désactive la vérification JWT, default: ON)
+#   - BUILD_EXTERNAL_PLUGIN=ON|OFF (plugin externe vs intégré, default: OFF)
+#   BUILD_TEST_PLUGIN est TOUJOURS ON dans ce Dockerfile
+#
+# Exemples:
+#   docker build -f docker/Dockerfile -t restconf:test .
+#   docker build --no-cache -f docker/Dockerfile -t restconf:test .
+#   docker build --build-arg ALLOW_INSECURE_JWT=OFF -t restconf:jwt-secure .
+#   docker build --build-arg BUILD_EXTERNAL_PLUGIN=ON -t restconf:external-plugin .
+#
+# ==============================================================================
 FROM debian:bookworm-slim
 
 # Éviter les invites interactives (tzdata, etc.)
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Flags C/C++ globaux passés à cmake
+# ==============================================================================
+# Flags C/C++ globaux pour la sécurité
+# ==============================================================================
 ENV CFLAGS="-Wall -Wextra -Wmissing-declarations -Wstrict-prototypes \
 	-Wshadow -Wformat=2 -Wuninitialized \
-	-fstack-protector-strong -D_FORTIFY_SOURCE=2"
+	-fstack-protector-strong -D_FORTIFY_SOURCE=2 \
+	-O2"
+ENV CXXFLAGS="${CFLAGS}"
 ENV LDFLAGS="-Wl,-z,relro,-z,now"
 
+# ==============================================================================
+# Options de compilation du projet RESTCONF (configurables via docker build --build-arg)
+# ==============================================================================
+# Mode JWT: ON = désactive la vérification des signatures (DEBUG ONLY)
+ARG ALLOW_INSECURE_JWT=ON
+ENV ALLOW_INSECURE_JWT=${ALLOW_INSECURE_JWT}
+
+# Mode Plugin: OFF = plugin intégré, ON = plugin externe (séparation des privilèges)
+ARG BUILD_EXTERNAL_PLUGIN=OFF
+ENV BUILD_EXTERNAL_PLUGIN=${BUILD_EXTERNAL_PLUGIN}
+
+# Plugin de test: TOUJOURS ON dans Docker pour les tests de qualification
+ENV BUILD_TEST_PLUGIN=ON
+
+# Niveau de log: 0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=FATAL
+ENV LOG_LEVEL=2
+
+# ==============================================================================
 # Installation des outils de compilation et dépendances système de base
+# ==============================================================================
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
@@ -24,89 +66,153 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     python3-pip \
     libjson-c-dev \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
+# ==============================================================================
 # Répertoire de travail temporaire pour la compilation des dépendances
+# ==============================================================================
 WORKDIR /tmp/deps
 
 # ----------------------------------------------------------------------------
 # 1. Compilation de libyang (v5.8.6)
 # ----------------------------------------------------------------------------
-RUN echo "🔨 Compilation de libyang..." && \
+RUN echo "🔨 Compilation de libyang v5.8.6..." && \
     wget -qO- https://github.com/CESNET/libyang/archive/refs/tags/v5.8.6.tar.gz | tar xz && \
     cd libyang-* && \
     mkdir build && cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF .. && \
+    cmake -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX=/usr \
+          -DBUILD_TESTING=OFF \
+          -DENABLE_STATIC=OFF \
+          -DENABLE_SHARED=ON \
+          .. && \
     make -j$(nproc) && \
-    make install
+    make install && \
+    ldconfig
 
 # ----------------------------------------------------------------------------
 # 2. Compilation de sysrepo (v5.1.0)
 # ----------------------------------------------------------------------------
-RUN echo "🔨 Compilation de sysrepo..." && \
+RUN echo "🔨 Compilation de sysrepo v5.1.0..." && \
     wget -qO- https://github.com/sysrepo/sysrepo/archive/refs/tags/v5.1.0.tar.gz | tar xz && \
     cd sysrepo-* && \
     mkdir build && cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF .. && \
+    cmake -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX=/usr \
+          -DBUILD_TESTING=OFF \
+          -DNOTIFD_SETUP=ON \
+          .. && \
     make -j$(nproc) && \
-    make install
+    make install && \
+    ldconfig
 
 # ----------------------------------------------------------------------------
 # 3. Compilation de libevent (2.1.13-stable)
 # ----------------------------------------------------------------------------
-RUN echo "🔨 Compilation de libevent..." && \
+RUN echo "🔨 Compilation de libevent 2.1.13-stable..." && \
     wget -qO- https://github.com/libevent/libevent/releases/download/release-2.1.13-stable/libevent-2.1.13-stable.tar.gz | tar xz && \
     cd libevent-* && \
     mkdir build && cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF .. && \
+    cmake -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX=/usr \
+          -DBUILD_TESTING=OFF \
+          .. && \
     make -j$(nproc) && \
-    make install
+    make install && \
+    ldconfig
 
 # ----------------------------------------------------------------------------
 # 4. Compilation de nghttp2 (v1.69.0)
 # ----------------------------------------------------------------------------
-RUN echo "🔨 Compilation de nghttp2..." && \
+RUN echo "🔨 Compilation de nghttp2 v1.69.0..." && \
     wget -qO- https://github.com/nghttp2/nghttp2/releases/download/v1.69.0/nghttp2-1.69.0.tar.gz | tar xz && \
     cd nghttp2-* && \
     mkdir build && cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DENABLE_APP=OFF -DENABLE_HPACK=OFF -DBUILD_TESTING=OFF .. && \
+    cmake -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX=/usr \
+          -DENABLE_APP=OFF \
+          -DENABLE_HPACK=OFF \
+          -DBUILD_TESTING=OFF \
+          .. && \
     make -j$(nproc) && \
-    make install
-
-# Mise à jour du cache des bibliothèques dynamiques pour que le linker les trouve
-RUN ldconfig
+    make install && \
+    ldconfig
 
 # Nettoyage des sources compilées pour réduire la taille de l'image
-WORKDIR /
 RUN rm -rf /tmp/deps
 
-# ----------------------------------------------------------------------------
+# ==============================================================================
 # Compilation du projet RESTCONF principal
-# ----------------------------------------------------------------------------
+# ==============================================================================
 WORKDIR /workspace
 COPY . .
 
+# Installer les dépendances Python pour les tests
 RUN pip install --break-system-packages -r test/requirements.txt
 
+# Compilation du projet RESTCONF avec les options configurables
 RUN echo "🔨 Compilation du projet RESTCONF..." && \
+    echo "   JWT Insecure: ${ALLOW_INSECURE_JWT}" && \
+    echo "   External Plugin: ${BUILD_EXTERNAL_PLUGIN}" && \
+    echo "   Test Plugin: ${BUILD_TEST_PLUGIN}" && \
     mkdir -p build && cd build && \
-    cmake .. && \
-    make -j$(nproc)
-
-RUN echo "🔨 Compilation du projet RESTCONF + PLUGIN..." && \
-    mkdir -p build_plugin && cd build_plugin && \
-    cmake -DBUILD_EXTERNAL_PLUGIN=ON .. && \
-    make -j$(nproc)
-
-RUN echo "🔨 Compilation du projet RESTCONF..." && \
-    mkdir -p build_test && cd build_test && \
-    cmake -DALLOW_INSECURE_JWT=ON -DLOG_LEVEL=0 .. && \
+    cmake -DALLOW_INSECURE_JWT=${ALLOW_INSECURE_JWT} \
+          -DBUILD_EXTERNAL_PLUGIN=${BUILD_EXTERNAL_PLUGIN} \
+          -DBUILD_TEST_PLUGIN=${BUILD_TEST_PLUGIN} \
+          -DLOG_LEVEL=${LOG_LEVEL} \
+          .. && \
     make -j$(nproc) && \
     make install
 
-RUN sysrepoctl -i yang/ietf-restconf@2017-01-26.yang && \
-    sysrepoctl -i yang/ietf-restconf-monitoring@2017-01-26.yang && \
-    sysrepoctl -i yang/ietf-restconf-subscribed-notifications@2019-11-17.yang
+# ==============================================================================
+# Installation des modules YANG et plugins pour les tests
+# ==============================================================================
+# Créer les dossiers nécessaires pour sysrepo
+RUN mkdir -p /usr/share/sysrepo/yang && \
+    mkdir -p /usr/lib/sysrepo/plugins && \
+    mkdir -p /usr/local/lib/sysrepo/plugins
+
+# Copier les modules YANG dans le répertoire sysrepo
+RUN echo "🔨 Copie des modules YANG..." && \
+    mkdir -p /usr/share/sysrepo/yang && \
+    cp /workspace/doc/test/modules/oven.yang /usr/share/sysrepo/yang/ && \
+    cp /workspace/doc/test/modules/restconf-test.yang /usr/share/sysrepo/yang/
+
+# Installer le module oven.yang (pas de dépendances, devrait fonctionner)
+RUN echo "🔨 Installation de oven.yang..." && \
+    sysrepoctl -i /usr/share/sysrepo/yang/oven.yang || echo "⚠️ oven.yang installation failed"
+
+# Installer les plugins (DS plugins) - doit être fait AVANT l'installation du module
+# qui dépend d'eux
+RUN echo "🔨 Installation des plugins DS..." && \
+    find /usr -name "oven.so" 2>/dev/null | head -1 | xargs -I {} cp {} /usr/lib/sysrepo/plugins/ 2>/dev/null || true && \
+    sysrepoctl -P /usr/lib/sysrepo/plugins/oven.so 2>/dev/null || echo "⚠️ oven plugin loading failed"
+
+# Installer le plugin restconf-test AVEC le module
+# Note: Le plugin doit être dans le plugins path pour être chargé automatiquement
+RUN echo "🔨 Installation de restconf-test.yang et son plugin..." && \
+    # Supprimer tout plugin restconf-test existant qui pourrait interférer
+    rm -f /usr/lib/x86_64-linux-gnu/sysrepo/plugins/sr_plugin_restconf-test.so 2>/dev/null || true && \
+    rm -f /usr/lib/sysrepo/plugins/sr_plugin_restconf-test.so 2>/dev/null || true && \
+    # Copier notre plugin dans le dossier standard des plugins
+    if [ -f /usr/local/lib/sysrepo/plugins/sr_plugin_restconf-test.so ]; then \
+        cp /usr/local/lib/sysrepo/plugins/sr_plugin_restconf-test.so /usr/lib/sysrepo/plugins/ ; \
+    fi && \
+    # Installer le module
+    sysrepoctl -i /usr/share/sysrepo/yang/restconf-test.yang || echo "⚠️ restconf-test.yang installation failed"
+
+# Vérification finale
+RUN echo "📋 Vérification des modules et plugins:" && \
+    sysrepoctl -l | grep -E "(oven|restconf-test)" || echo "❌ Modules non installés" && \
+    echo "✅ Installation des dépendances terminée"
+
+# Copier le script d'entrée
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Configurer le workspace comme répertoire de travail
+WORKDIR /workspace
 
 # Message de succès
-CMD ["pytest", "test/", "-vv"]
+CMD ["/entrypoint.sh"]

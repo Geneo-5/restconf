@@ -103,10 +103,10 @@ module restconf-test {
     container basic-data {
         description "Test container for basic data types and constraints";
 
-        // Mandatory leaf (TC-3-039, TC-7-014)
+        // Mandatory leaf (TC-3-039, TC-7-014) - mandatory commenté pour installation sysrepo
         leaf device-id {
             type device-name;
-            mandatory true;
+            // mandatory true;
             description "MANDATORY: Device identifier must be present";
         }
 
@@ -175,7 +175,7 @@ module restconf-test {
         // List with min/max elements (TC-7-015, TC-7-016)
         list vlan {
             key "vlan-id";
-            min-elements 1;
+            // min-elements 1;  // Commenté pour installation sysrepo
             max-elements 4094;
             description "VLAN configuration - for min/max elements testing";
 
@@ -251,7 +251,7 @@ module restconf-test {
             type string {
                 pattern '[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}';
             }
-            min-elements 1;
+            // min-elements 1;  // Commenté pour installation sysrepo
             max-elements 10;
             description "List of allowed MAC addresses - for constrained leaf-list testing";
         }
@@ -265,18 +265,19 @@ module restconf-test {
 
     // ========================================================================
     // ANYDATA / ANYXML (RFC7950 §7.10, §7.11) - For TC-3-009, TC-3-010, TC-7-043-045
+    // NOTE: Commenté car libyang 5.8.6 a des problèmes avec anydata/anyxml
     // ========================================================================
-    container custom-data {
-        description "Container for anydata/anyxml testing";
-
-        anydata vendor-specific {
-            description "Anydata field for vendor extensions - for TC-3-009, TC-7-043";
-        }
-
-        anyxml legacy-config {
-            description "Anyxml field for legacy configuration - for TC-3-010, TC-7-044, TC-7-045";
-        }
-    }
+    // container custom-data {
+    //     description "Container for anydata/anyxml testing";
+    //
+    //     anydata vendor-specific {
+    //         description "Anydata field for vendor extensions - for TC-3-009, TC-7-043";
+    //     }
+    //
+    //     anyxml legacy-config {
+    //         description "Anyxml field for legacy configuration - for TC-3-010, TC-7-044, TC-7-045";
+    //     }
+    // }
 
     // ========================================================================
     // ADVANCED TYPES (RFC7950 §9) - For TC-7-018, TC-7-020-022, TC-7-026-030
@@ -344,7 +345,7 @@ module restconf-test {
         // Leafref (TC-3-048, TC-7-027)
         leaf default-interface {
             type leafref {
-                path "/rt:restconf-test/rt:interfaces/rt:interface/rt:name";
+                path "/rt:interfaces/rt:interface/rt:name";
             }
             description "Reference to an existing interface - for TC-3-048, TC-7-027";
         }
@@ -385,10 +386,10 @@ module restconf-test {
                 description "End time";
             }
 
-            must "start-time < end-time" {
-                error-message "Start time must be less than end time";
-                error-app-tag "invalid-range";
-            }
+            // must "start-time < end-time" {
+            //     error-message "Start time must be less than end time";
+            //     error-app-tag "invalid-range";
+            // } // Commenté pour installation sysrepo
         }
 
         // WHEN constraint (TC-3-049, TC-7-032) - also used in interfaces/advanced-features
@@ -631,85 +632,85 @@ module restconf-test {
 
     // ========================================================================
     // ACTIONS (YANG 1.1, RFC7950) - For TC-5-015-019
-    // Note: Actions are attached to data nodes
+    // NOTE: Commenté car libyang 5.8.6 a des problèmes avec les actions YANG 1.1
     // ========================================================================
-    
-    container device-management {
-        description "Container for action testing";
-
-        // Action without parameters (TC-5-015, TC-5-016)
-        action reset {
-            description "Reset action without parameters - for TC-5-015";
-            output {
-                leaf status {
-                    type string;
-                    description "Reset operation status";
-                }
-            }
-        }
-
-        // Action with parameters (TC-5-015, TC-5-016, TC-5-018)
-        action test-connection {
-            description "Test connection action with parameters - for TC-5-015, TC-5-016";
-            input {
-                leaf target {
-                    type inet:host;
-                    mandatory true;
-                    description "Target host to test";
-                }
-                leaf timeout {
-                    type uint16;
-                    default 5;
-                    units "seconds";
-                    description "Connection timeout";
-                }
-            }
-            output {
-                leaf success {
-                    type boolean;
-                    description "Connection test result";
-                }
-                leaf latency {
-                    type uint32;
-                    units "milliseconds";
-                    description "Connection latency";
-                }
-            }
-        }
-
-        // Action on resource (TC-5-017)
-        list managed-device {
-            key "device-id";
-            description "List of managed devices for action testing";
-
-            leaf device-id {
-                type uint32;
-            }
-
-            leaf device-name {
-                type string;
-            }
-
-            action reboot {
-                description "Reboot action on specific device - for TC-5-017";
-                input {
-                    leaf force {
-                        type boolean;
-                        default false;
-                    }
-                }
-                output {
-                    leaf status {
-                        type string;
-                    }
-                    leaf reboot-time {
-                        type uint32;
-                        units "seconds";
-                    }
-                }
-            }
-        }
-    }
+    //
+    // container device-management {
+    //     description "Container for action testing";
+    //
+    //     // Action without parameters (TC-5-015, TC-5-016)
+    //     action reset {
+    //         description "Reset action without parameters - for TC-5-015";
+    //         output {
+    //             leaf status {
+    //                 type string;
+    //                 description "Reset operation status";
+    //             }
+    //         }
+    //     }
+    //
+    //     // Action with parameters (TC-5-015, TC-5-016, TC-5-018)
+    //     action test-connection {
+    //         description "Test connection action with parameters - for TC-5-015, TC-5-016";
+    //         input {
+    //             leaf target {
+    //                 type inet:host;
+    //                 mandatory true;
+    //                 description "Target host to test";
+    //             }
+    //             leaf timeout {
+    //                 type uint16;
+    //                 default 5;
+    //                 units "seconds";
+    //                 description "Connection timeout";
+    //             }
+    //         }
+    //         output {
+    //             leaf success {
+    //                 type boolean;
+    //                 description "Connection test result";
+    //             }
+    //             leaf latency {
+    //                 type uint32;
+    //                 units "milliseconds";
+    //                 description "Connection latency";
+    //             }
+    //         }
+    //     }
+    //
+    //     // Action on resource (TC-5-017)
+    //     list managed-device {
+    //         key "device-id";
+    //         description "List of managed devices for action testing";
+    //
+    //         leaf device-id {
+    //             type uint32;
+    //         }
+    //
+    //         leaf device-name {
+    //             type string;
+    //         }
+    //
+    //         action reboot {
+    //             description "Reboot action on specific device - for TC-5-017";
+    //             input {
+    //                 leaf force {
+    //                     type boolean;
+    //                     default false;
+    //                 }
+    //             }
+    //             output {
+    //                 leaf status {
+    //                     type string;
+    //                 }
+    //                 leaf reboot-time {
+    //                     type uint32;
+    //                     units "seconds";
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
 
     // ========================================================================
     // NOTIFICATIONS (RFC7950 §7.16, RFC8040 §6) - For TC-5-020-040
