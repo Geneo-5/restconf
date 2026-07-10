@@ -167,7 +167,7 @@ class TestNACM:
         Note: Cela depend de la configuration NACM du serveur.
         """
         # Le client par défaut devrait avoir les droits si NACM est configuré
-        resp = client.get("/restconf/data/rt:restconf-test")
+        resp = client.get("/restconf/data/restconf-test:system")
         assert resp.status_code in (200, 401, 403, 404)
 
     @require_restconf_test_module
@@ -181,7 +181,7 @@ class TestNACM:
         Note: Difficile à tester sans un user avec des droits limités.
         """
         # Essayer d'accéder à une ressource qui pourrait être protégée
-        resp = client.get("/restconf/data/rt:restconf-test")
+        resp = client.get("/restconf/data/restconf-test:system")
         # Si NACM refuse l'accès, on obtient 403
         assert resp.status_code in (200, 403, 401, 404)
 
@@ -197,13 +197,13 @@ class TestNACM:
         """
         # Essayer de faire un PUT sur une ressource
         config = {
-            "rt:config": {
+            "restconf-test:config": {
                 "system-name": "test"
             }
         }
         
         resp = client.put(
-            "/restconf/data/rt:restconf-test/rt:system/rt:config",
+            "/restconf/data/restconf-test:system/config",
             body=json.dumps(config),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -221,7 +221,7 @@ class TestNACM:
         Note: Difficile à tester sans configuration spécifique.
         """
         # Test informatif
-        resp = client.get("/restconf/data/rt:restconf-test")
+        resp = client.get("/restconf/data/restconf-test:system")
         assert resp.status_code in (200, 401, 403, 404)
 
     @require_restconf_test_module
@@ -234,7 +234,7 @@ class TestNACM:
         Note: Cela depend de la configuration du serveur.
         """
         # Test informatif
-        resp = client.get("/restconf/data/rt:restconf-test")
+        resp = client.get("/restconf/data/restconf-test:system")
         assert resp.status_code in (200, 401, 403, 404)
 
 

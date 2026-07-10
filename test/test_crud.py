@@ -3,8 +3,10 @@ Tests CRUD RESTCONF (RFC 8040 §4.2-4.7).
 
 Toutes les operations Create, Read, Update, Delete sur les donnees.
 
-Prerequis : Le module restconf-test.yang (namespace: urn:restconf:test, prefix: rt)
-            DOIT etre charge sur le serveur RESTCONF.
+Prerequis : Le module restconf-test.yang (namespace: urn:restconf:test,
+            module-name: restconf-test) DOIT etre charge sur le serveur
+            RESTCONF. Les URI RESTCONF utilisent le module-name
+            (RFC 8040 §3.5.3), jamais le prefix YANG "rt".
 
 RFC References:
 - RFC 8040 §4.2 : Retrieving Data Resources (GET)
@@ -52,14 +54,14 @@ class TestCRUDRead:
         TC-3-002 : GET - Container
         
         RFC 8040 §4.2 : Retrieving a container
-        GET /restconf/data/rt:restconf-test/rt:system
+        GET /restconf/data/restconf-test:system
         
         Expected: 200 OK avec le container system
         """
-        resp = client.get("/restconf/data/rt:restconf-test/rt:system")
+        resp = client.get("/restconf/data/restconf-test:system")
         if resp.status_code == 200:
             data = resp.json()
-            assert "rt:system" in data or isinstance(data, dict)
+            assert "restconf-test:system" in data or isinstance(data, dict)
         else:
             # 404 acceptable si le module est charge mais vide
             assert resp.status_code in (200, 404, 401, 403)
@@ -70,11 +72,11 @@ class TestCRUDRead:
         TC-3-003 : GET - Leaf
         
         RFC 8040 §4.2 : Retrieving a leaf
-        GET /restconf/data/rt:restconf-test/rt:basic-data/rt:device-id
+        GET /restconf/data/restconf-test:basic-data/device-id
         
         Expected: 200 OK ou 404 (si la leaf n'existe pas encore)
         """
-        resp = client.get("/restconf/data/rt:restconf-test/rt:basic-data/rt:device-id")
+        resp = client.get("/restconf/data/restconf-test:basic-data/device-id")
         assert resp.status_code in (200, 404, 401, 403)
 
     @require_restconf_test_module
@@ -83,15 +85,15 @@ class TestCRUDRead:
         TC-3-004 : GET - List
         
         RFC 8040 §4.2 : Retrieving a list
-        GET /restconf/data/rt:restconf-test/rt:interfaces/rt:interface
+        GET /restconf/data/restconf-test:interfaces/interface
         
         Expected: 200 OK avec la liste des interfaces (peut etre vide)
         """
-        resp = client.get("/restconf/data/rt:restconf-test/rt:interfaces/rt:interface")
+        resp = client.get("/restconf/data/restconf-test:interfaces/interface")
         if resp.status_code == 200:
             data = resp.json()
             # La liste peut etre vide ou contenir des elements
-            assert "rt:interface" in data or data == {} or isinstance(data, list)
+            assert "restconf-test:interface" in data or data == {} or isinstance(data, list)
         else:
             assert resp.status_code in (200, 404, 401, 403)
 
@@ -101,12 +103,14 @@ class TestCRUDRead:
         TC-3-005 : GET - List avec key
         
         RFC 8040 §4.2 : Retrieving a specific list entry
-        GET /restconf/data/rt:restconf-test/rt:interfaces/rt:interface[name='eth0']
+        GET /restconf/data/restconf-test:interfaces/interface=eth0
         
         Expected: 200 OK si l'entree existe, 404 sinon
         """
         # D'abord essayer de lire une entree qui n'existe probablement pas
-        resp = client.get("/restconf/data/rt:restconf-test/rt:interfaces/rt:interface[name='eth0']")
+        # RFC 8040 §3.5.3 : les cles de liste sont encodees "list=key",
+        # pas au format XPath "[key='value']"
+        resp = client.get("/restconf/data/restconf-test:interfaces/interface=eth0")
         assert resp.status_code in (200, 404, 401, 403)
 
 
@@ -119,12 +123,12 @@ class TestCRUDCreate:
         TC-3-006 : POST - Creer dans list
         
         RFC 8040 §4.4 : Creating a Data Resource
-        POST /restconf/data/rt:restconf-test/rt:interfaces/rt:interface
+        POST /restconf/data/restconf-test:interfaces
         
         Expected: 201 Created avec Location header
         """
         new_interface = {
-            "rt:interface": [{
+            "restconf-test:interface": [{
                 "name": "eth0",
                 "description": "Test interface",
                 "enabled": True,
@@ -133,7 +137,7 @@ class TestCRUDCreate:
         }
         
         resp = client.post(
-            "/restconf/data/rt:restconf-test/rt:interfaces",
+            "/restconf/data/restconf-test:interfaces",
             body=json.dumps(new_interface),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -152,18 +156,18 @@ class TestCRUDCreate:
         TC-3-007 : PUT - Creer/remplacer
         
         RFC 8040 §4.5 : Replacing a Data Resource
-        PUT /restconf/data/rt:restconf-test/rt:system/rt:config
+        PUT /restconf/data/restconf-test:system/config
         
         Expected: 201 Created (si nouveau) ou 204 No Content (si remplacement)
         """
         config = {
-            "rt:config": {
+            "restconf-test:config": {
                 "system-name": "test-system"
             }
         }
         
         resp = client.put(
-            "/restconf/data/rt:restconf-test/rt:system/rt:config",
+            "/restconf/data/restconf-test:system/config",
             body=json.dumps(config),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -177,14 +181,14 @@ class TestCRUDCreate:
         TC-3-008 : PUT - Modifier une ressource existante
         
         RFC 8040 §4.5 : Replacing an existing Data Resource
-        PUT /restconf/data/rt:restconf-test/rt:interfaces/rt:interface[name='eth0']
+        PUT /restconf/data/restconf-test:interfaces/interface=eth0
         
         Expected: 204 No Content
         """
         # Essayer de modifier une interface existante
         # Note: Cela depend de l'etat initial du serveur
         interface_data = {
-            "rt:interface": [{
+            "restconf-test:interface": [{
                 "name": "eth0",
                 "description": "Modified description",
                 "enabled": True,
@@ -193,7 +197,7 @@ class TestCRUDCreate:
         }
         
         resp = client.put(
-            "/restconf/data/rt:restconf-test/rt:interfaces/rt:interface[name='eth0']",
+            "/restconf/data/restconf-test:interfaces/interface=eth0",
             body=json.dumps(interface_data),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -210,18 +214,18 @@ class TestCRUDUpdate:
         TC-3-009 : PATCH - Modifier partiel
         
         RFC 8040 §4.6 : Partially Modifying a Data Resource
-        PATCH /restconf/data/rt:restconf-test/rt:system/rt:config
+        PATCH /restconf/data/restconf-test:system/config
         
         Expected: 204 No Content
         """
         patch_data = {
-            "rt:config": {
+            "restconf-test:config": {
                 "system-name": "patched-system"
             }
         }
         
         resp = client.patch(
-            "/restconf/data/rt:restconf-test/rt:system/rt:config",
+            "/restconf/data/restconf-test:system/config",
             body=json.dumps(patch_data),
             headers={"Content-Type": "application/yang-data+patch+json"}
         )
@@ -240,12 +244,12 @@ class TestCRUDDelete:
         TC-3-010 : DELETE - Supprimer une ressource
         
         RFC 8040 §4.7 : Deleting a Data Resource
-        DELETE /restconf/data/rt:restconf-test/rt:interfaces/rt:interface[name='eth0']
+        DELETE /restconf/data/restconf-test:interfaces/interface=eth0
         
         Expected: 204 No Content
         """
         resp = client.delete(
-            "/restconf/data/rt:restconf-test/rt:interfaces/rt:interface[name='eth0']"
+            "/restconf/data/restconf-test:interfaces/interface=eth0"
         )
         
         # 204 si suppression réussie, 404 si n'existe pas
@@ -261,11 +265,11 @@ class TestCRUDErrors:
         TC-3-011 : GET - Donnees inexistantes
         
         RFC 8040 §4.2 : Retrieving non-existent data
-        GET /restconf/data/rt:nonexistent
+        GET /restconf/data/restconf-test:nonexistent
         
         Expected: 404 Not Found
         """
-        resp = client.get("/restconf/data/rt:nonexistent")
+        resp = client.get("/restconf/data/restconf-test:nonexistent")
         assert resp.status_code in (404, 401, 403)
 
     @require_restconf_test_module
@@ -281,21 +285,21 @@ class TestCRUDErrors:
         # Essayer de faire un POST sur une ressource qui existe deja
         # Cela depend de l'implémentation du serveur
         existing_data = {
-            "rt:config": {
+            "restconf-test:config": {
                 "system-name": "test"
             }
         }
         
         # D'abord créer la ressource
         create_resp = client.put(
-            "/restconf/data/rt:restconf-test/rt:system/rt:config",
+            "/restconf/data/restconf-test:system/config",
             body=json.dumps(existing_data),
             headers={"Content-Type": "application/yang-data+json"}
         )
         
         # Ensuite essayer de faire un POST sur la meme URI
         resp = client.post(
-            "/restconf/data/rt:restconf-test/rt:system/rt:config",
+            "/restconf/data/restconf-test:system/config",
             body=json.dumps(existing_data),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -313,11 +317,11 @@ class TestCRUDHEADandOPTIONS:
         TC-3-013 : HEAD - Data resource
         
         RFC 8040 §4.3 : HEAD for Data Resources
-        HEAD /restconf/data/rt:restconf-test/rt:system
+        HEAD /restconf/data/restconf-test:system
         
         Expected: 200 OK avec headers mais sans body
         """
-        resp = client.head("/restconf/data/rt:restconf-test/rt:system")
+        resp = client.head("/restconf/data/restconf-test:system")
         assert resp.status_code in (200, 401, 403, 404)
         # HEAD ne doit pas avoir de body
         assert len(resp.content) == 0
@@ -356,7 +360,7 @@ class TestCRUDHeaders:
         
         Expected: ETag header présent dans la réponse GET
         """
-        resp = client.get("/restconf/data/rt:restconf-test/rt:system")
+        resp = client.get("/restconf/data/restconf-test:system")
         if resp.status_code == 200:
             # Le serveur peut ou non supporter ETag
             # Si ETag est supporté, il doit etre present
@@ -376,7 +380,7 @@ class TestCRUDHeaders:
         
         Expected: Last-Modified header présent dans la réponse GET
         """
-        resp = client.get("/restconf/data/rt:restconf-test/rt:system")
+        resp = client.get("/restconf/data/restconf-test:system")
         if resp.status_code == 200:
             # Last-Modified est optionnel mais recommandé
             last_modified = resp.headers.get("last-modified") or \
@@ -400,13 +404,13 @@ class TestCRUDConstraints:
         
         Expected: 400 Bad Request ou 409 Conflict
         """
-        # rt:uptime dans restconf-test.yang a config=false
+        # restconf-test:uptime dans restconf-test.yang a config=false
         put_data = {
-            "rt:uptime": 9999
+            "restconf-test:uptime": 9999
         }
         
         resp = client.put(
-            "/restconf/data/rt:restconf-test/rt:basic-data/rt:uptime",
+            "/restconf/data/restconf-test:basic-data/uptime",
             body=json.dumps(put_data),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -425,16 +429,16 @@ class TestCRUDConstraints:
         
         Expected: 400 Bad Request
         """
-        # rt:device-id dans restconf-test.yang est mandatory
+        # restconf-test:device-id dans restconf-test.yang est mandatory
         # Essayer de mettre un container sans la leaf obligatoire
         incomplete_data = {
-            "rt:basic-data": {
+            "restconf-test:basic-data": {
                 "timeout": 30
             }
         }
         
         resp = client.put(
-            "/restconf/data/rt:restconf-test/rt:basic-data",
+            "/restconf/data/restconf-test:basic-data",
             body=json.dumps(incomplete_data),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -452,8 +456,8 @@ class TestCRUDConstraints:
         
         Expected: GET retourne la valeur par défaut si pas explicitement définie
         """
-        # rt:timeout dans restconf-test.yang a default=30
-        resp = client.get("/restconf/data/rt:restconf-test/rt:basic-data/rt:timeout")
+        # restconf-test:timeout dans restconf-test.yang a default=30
+        resp = client.get("/restconf/data/restconf-test:basic-data/timeout")
         
         # Peut retourner 404 si la valeur n'a pas été explicitement définie
         # ou 200 avec la valeur par défaut

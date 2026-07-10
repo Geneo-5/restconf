@@ -208,15 +208,14 @@ Une feuille de route détaillée pour les tests de conformité RESTCONF est disp
 - **TEST-ROADMAP.md** (à la racine) : [Lien](./TEST-ROADMAP.md)
 - **doc/test/TEST-ROADMAP.md** : Version détaillée avec statistiques et prochaines étapes
 
-**Statut actuel des tests (2026-07-10)** :
-- 145 tests implémentés (100%)
-- **100 tests passent** ✅
-- **45 tests échouent** ❌ (problèmes fonctionnels restants)
+### Correctif appliqué (2026-07-10) : URI des tests
 
-Principaux problèmes restants :
-- Routes `/restconf/data` et `/restconf/ds/<datastore>` sans réponse (None)
-- Parsing des listes avec clés (`list=key`) retourne 400
-- Opérations CRUD (POST/PUT/PATCH/DELETE) retournent 400/500
-- RPC et streams SSE retournent des erreurs
+Tous les fichiers `test/*.py` utilisaient a tort le **prefix YANG** `rt:`
+(declare par `prefix rt;` dans `restconf-test.yang`) a la place du
+**module-name** `restconf-test:` dans les URI RESTCONF, en violation de
+RFC 8040 §3.5.3 ("the module name ... MUST be prepended", jamais le
+prefix).
 
-Voir TEST-ROADMAP.md pour plus de détails sur chaque phase de test.
+Point restant : le filtre XPath du query parameter `filter` (RFC 8040
+§4.8.5, streams SSE) n'a pas ete audite pour la resolution
+prefix/namespace, faute de tests dedies dans la suite actuelle.

@@ -29,41 +29,44 @@ void rc_log_set_level(int level);
 /* Internal print function */
 void rc_log_print(int level, const char *file, int line, const char *fmt, ...) __attribute__((format(printf, 4, 5)));
 
-/* Macros for compile-time stripping */
+/* Macros for compile-time stripping.
+ * Use __VA_ARGS__ to include the format string, which ensures standard C99
+ * compliance (at least one argument is always present) and avoids the
+ * GNU ##__VA_ARGS__ extension warning with -pedantic. */
 #if RC_COMPILE_TIME_LOG_LEVEL <= RC_LOG_TRACE
-#define RC_TRACE(fmt, ...) rc_log_print(RC_LOG_TRACE, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#define RC_TRACE(...) rc_log_print(RC_LOG_TRACE, __FILE__, __LINE__, __VA_ARGS__)
 #else
-#define RC_TRACE(fmt, ...) do {} while (0)
+#define RC_TRACE(...) do {} while (0)
 #endif
 
 #if RC_COMPILE_TIME_LOG_LEVEL <= RC_LOG_DEBUG
-#define RC_DEBUG(fmt, ...) rc_log_print(RC_LOG_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#define RC_DEBUG(...) rc_log_print(RC_LOG_DEBUG, __FILE__, __LINE__, __VA_ARGS__)
 #else
-#define RC_DEBUG(fmt, ...) do {} while (0)
+#define RC_DEBUG(...) do {} while (0)
 #endif
 
 #if RC_COMPILE_TIME_LOG_LEVEL <= RC_LOG_INFO
-#define RC_INFO(fmt, ...) rc_log_print(RC_LOG_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#define RC_INFO(...) rc_log_print(RC_LOG_INFO, __FILE__, __LINE__, __VA_ARGS__)
 #else
-#define RC_INFO(fmt, ...) do {} while (0)
+#define RC_INFO(...) do {} while (0)
 #endif
 
 #if RC_COMPILE_TIME_LOG_LEVEL <= RC_LOG_WARN
-#define RC_WARN(fmt, ...) rc_log_print(RC_LOG_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#define RC_WARN(...) rc_log_print(RC_LOG_WARN, __FILE__, __LINE__, __VA_ARGS__)
 #else
-#define RC_WARN(fmt, ...) do {} while (0)
+#define RC_WARN(...) do {} while (0)
 #endif
 
 #if RC_COMPILE_TIME_LOG_LEVEL <= RC_LOG_ERROR
-#define RC_ERROR(fmt, ...) rc_log_print(RC_LOG_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#define RC_ERROR(...) rc_log_print(RC_LOG_ERROR, __FILE__, __LINE__, __VA_ARGS__)
 #else
-#define RC_ERROR(fmt, ...) do {} while (0)
+#define RC_ERROR(...) do {} while (0)
 #endif
 
 #if RC_COMPILE_TIME_LOG_LEVEL <= RC_LOG_FATAL
-#define RC_FATAL(fmt, ...) rc_log_print(RC_LOG_FATAL, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
+#define RC_FATAL(...) rc_log_print(RC_LOG_FATAL, __FILE__, __LINE__, __VA_ARGS__)
 #else
-#define RC_FATAL(fmt, ...) do {} while (0)
+#define RC_FATAL(...) do {} while (0)
 #endif
 
 #endif /* LOGGER_H */

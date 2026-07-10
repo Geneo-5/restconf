@@ -399,9 +399,12 @@ int h2c_send_response_with_headers(
 	if (has_body) {
 		src = malloc(sizeof(data_source_t));
 		src->data = malloc(body_len);
-		if (src->data) {
-			memcpy((void *)src->data, body, body_len);
+		if (!src->data) {
+			free(src);
+			free(hdrs);
+			return -1;
 		}
+		memcpy((void *)src->data, body, body_len);
 		src->len = body_len;
 		src->offset = 0;
 		data_prd.source.ptr = src;
@@ -476,12 +479,15 @@ int h2c_send_response_ex(
 
 	if (has_body) {
 		src = malloc(sizeof(data_source_t));
+		if (!src) return 0;
 		/* Copy the body so it survives after the caller */
 		/* returns (who may free(body) immediately after). */
 		src->data = malloc(body_len);
-		if (src->data) {
-			memcpy((void *)src->data, body, body_len);
+		if (!src->data) {
+			free(src);
+			return 0;
 		}
+		memcpy((void *)src->data, body, body_len);
 		src->len = body_len;
 		src->offset = 0;
 		data_prd.source.ptr = src;

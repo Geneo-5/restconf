@@ -887,10 +887,21 @@ void plugin_handle_edit(
 		} else if (rc == SR_ERR_EXISTS) {
 			error_tag = "data-exists";
 			http_status = 409;
-		} else if (rc == SR_ERR_VALIDATION_FAILED) {
+		} else if (rc == SR_ERR_VALIDATION_FAILED ||
+		           rc == SR_ERR_INVAL_ARG) {
 			error_tag = "invalid-value";
 			http_status = 400;
+		} else if (rc == SR_ERR_LOCKED) {
+			error_tag = "lock-denied";
+			http_status = 409;
+		} else if (rc == SR_ERR_OPERATION_FAILED) {
+			error_tag = "operation-failed";
+			http_status = 500;
+		} else if (rc == SR_ERR_UNSUPPORTED) {
+			error_tag = "operation-not-supported";
+			http_status = 501;
 		} else {
+			error_tag = "operation-failed";
 			http_status = 500;
 		}
 	}

@@ -86,11 +86,11 @@ class TestDatastoreAccess:
         TC-6-002 : Datastore running
         
         RFC 8527 §3 : Accéder au datastore running
-        GET /restconf/ds/running
+        GET /restconf/ds/ietf-datastores:running
         
         Expected: 200 OK
         """
-        resp = client.get("/restconf/ds/running")
+        resp = client.get("/restconf/ds/ietf-datastores:running")
         
         # /restconf/ds/running doit retourner les donnees du datastore running
         if resp.status_code == 200:
@@ -105,11 +105,11 @@ class TestDatastoreAccess:
         TC-6-003 : Datastore candidate
         
         RFC 8527 §3 : Accéder au datastore candidate
-        GET /restconf/ds/candidate
+        GET /restconf/ds/ietf-datastores:candidate
         
         Expected: 200 OK
         """
-        resp = client.get("/restconf/ds/candidate")
+        resp = client.get("/restconf/ds/ietf-datastores:candidate")
         
         if resp.status_code == 200:
             data = resp.json()
@@ -123,11 +123,11 @@ class TestDatastoreAccess:
         TC-6-004 : Datastore startup
         
         RFC 8527 §3 : Accéder au datastore startup
-        GET /restconf/ds/startup
+        GET /restconf/ds/ietf-datastores:startup
         
         Expected: 200 OK
         """
-        resp = client.get("/restconf/ds/startup")
+        resp = client.get("/restconf/ds/ietf-datastores:startup")
         
         if resp.status_code == 200:
             data = resp.json()
@@ -141,11 +141,11 @@ class TestDatastoreAccess:
         TC-6-005 : Datastore operational
         
         RFC 8527 §3 : Accéder au datastore operational (state data)
-        GET /restconf/ds/operational
+        GET /restconf/ds/ietf-datastores:operational
         
         Expected: 200 OK
         """
-        resp = client.get("/restconf/ds/operational")
+        resp = client.get("/restconf/ds/ietf-datastores:operational")
         
         if resp.status_code == 200:
             data = resp.json()
@@ -163,18 +163,18 @@ class TestDatastoreEdit:
         TC-6-006 : Edit running
         
         RFC 8527 §4 : Editer le datastore running
-        PUT /restconf/ds/running/rt:restconf-test/rt:system/rt:config
+        PUT /restconf/ds/ietf-datastores:running/restconf-test:system/config
         
         Expected: 204 No Content
         """
         config = {
-            "rt:config": {
+            "restconf-test:config": {
                 "system-name": "test-running"
             }
         }
         
         resp = client.put(
-            "/restconf/ds/running/rt:restconf-test/rt:system/rt:config",
+            "/restconf/ds/ietf-datastores:running/restconf-test:system/config",
             body=json.dumps(config),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -188,18 +188,18 @@ class TestDatastoreEdit:
         TC-6-007 : Edit candidate
         
         RFC 8527 §4 : Editer le datastore candidate
-        PUT /restconf/ds/candidate/rt:restconf-test/rt:system/rt:config
+        PUT /restconf/ds/ietf-datastores:candidate/restconf-test:system/config
         
         Expected: 204 No Content
         """
         config = {
-            "rt:config": {
+            "restconf-test:config": {
                 "system-name": "test-candidate"
             }
         }
         
         resp = client.put(
-            "/restconf/ds/candidate/rt:restconf-test/rt:system/rt:config",
+            "/restconf/ds/ietf-datastores:candidate/restconf-test:system/config",
             body=json.dumps(config),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -266,12 +266,12 @@ class TestNMDAWithQueryParams:
         TC-6-011 : NMDA avec parametre content
         
         RFC 8527 + RFC 8040 §4.8.1 : content param avec NMDA
-        GET /restconf/ds/running/rt:restconf-test?content=config
+        GET /restconf/ds/ietf-datastores:running/restconf-test:system?content=config
         
         Expected: 200 OK
         """
         resp = client.get(
-            "/restconf/ds/running/rt:restconf-test?content=config"
+            "/restconf/ds/ietf-datastores:running/restconf-test:system?content=config"
         )
         
         if resp.status_code == 200:
@@ -286,12 +286,12 @@ class TestNMDAWithQueryParams:
         TC-6-012 : NMDA avec parametre depth
         
         RFC 8527 + RFC 8040 §4.8.2 : depth param avec NMDA
-        GET /restconf/ds/candidate/rt:restconf-test?depth=2
+        GET /restconf/ds/ietf-datastores:candidate/restconf-test:system?depth=2
         
         Expected: 200 OK
         """
         resp = client.get(
-            "/restconf/ds/candidate/rt:restconf-test?depth=2"
+            "/restconf/ds/ietf-datastores:candidate/restconf-test:system?depth=2"
         )
         
         if resp.status_code == 200:
@@ -306,12 +306,12 @@ class TestNMDAWithQueryParams:
         TC-6-013 : NMDA avec with-defaults
         
         RFC 8527 + RFC 8040 §4.8.4 : with-defaults avec NMDA
-        GET /restconf/ds/startup/rt:restconf-test/rt:basic-data?with-defaults=report-all
+        GET /restconf/ds/ietf-datastores:startup/restconf-test:basic-data?with-defaults=report-all
         
         Expected: 200 OK
         """
         resp = client.get(
-            "/restconf/ds/startup/rt:restconf-test/rt:basic-data?with-defaults=report-all"
+            "/restconf/ds/ietf-datastores:startup/restconf-test:basic-data?with-defaults=report-all"
         )
         
         if resp.status_code == 200:
@@ -337,11 +337,11 @@ class TestNMDAComparisons:
         # Pour l'instant, on vérifie juste que les deux datastores sont accessibles
         
         # Accéder à running
-        resp_running = client.get("/restconf/ds/running/rt:restconf-test")
+        resp_running = client.get("/restconf/ds/ietf-datastores:running/restconf-test:system")
         assert resp_running.status_code in (200, 404, 401, 403)
         
         # Accéder à candidate
-        resp_candidate = client.get("/restconf/ds/candidate/rt:restconf-test")
+        resp_candidate = client.get("/restconf/ds/ietf-datastores:candidate/restconf-test:system")
         assert resp_candidate.status_code in (200, 404, 401, 403)
         
         # Les deux devraient etre accessibles
@@ -354,7 +354,7 @@ class TestNMDAComparisons:
         
         Vérifier que le datastore operational contient des données config=false
         """
-        resp = client.get("/restconf/ds/operational/rt:restconf-test/rt:system/rt:state")
+        resp = client.get("/restconf/ds/ietf-datastores:operational/restconf-test:system/state")
         
         if resp.status_code == 200:
             data = resp.json()

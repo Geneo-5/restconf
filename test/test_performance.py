@@ -71,7 +71,7 @@ class TestConcurrentRequests:
         
         def make_request(i):
             try:
-                resp = client.get(f"/restconf/data/rt:restconf-test")
+                resp = client.get(f"/restconf/data/restconf-test:system")
                 results.append(resp.status_code)
             except Exception as e:
                 errors.append(str(e))
@@ -99,10 +99,10 @@ class TestConcurrentRequests:
         errors = []
         
         operations = [
-            ("GET", f"/restconf/data/rt:restconf-test/rt:system"),
-            ("GET", f"/restconf/data/rt:restconf-test/rt:basic-data"),
-            ("PUT", f"/restconf/data/rt:restconf-test/rt:system/rt:config"),
-            ("POST", f"/restconf/data/rt:restconf-test/rt:interfaces"),
+            ("GET", f"/restconf/data/restconf-test:system"),
+            ("GET", f"/restconf/data/restconf-test:basic-data"),
+            ("PUT", f"/restconf/data/restconf-test:system/config"),
+            ("POST", f"/restconf/data/restconf-test:interfaces"),
         ]
         
         def make_request(op_index):
@@ -111,11 +111,11 @@ class TestConcurrentRequests:
                 if method == "GET":
                     resp = client.get(path)
                 elif method == "PUT":
-                    body = json.dumps({"rt:config": {"system-name": f"test-{op_index}"}})
+                    body = json.dumps({"restconf-test:config": {"system-name": f"test-{op_index}"}})
                     resp = client.put(path, body=body, 
                                      headers={"Content-Type": "application/yang-data+json"})
                 elif method == "POST":
-                    body = json.dumps({"rt:interface": [{"name": f"eth{op_index}", "enabled": True}]})
+                    body = json.dumps({"restconf-test:interface": [{"name": f"eth{op_index}", "enabled": True}]})
                     resp = client.post(path, body=body,
                                       headers={"Content-Type": "application/yang-data+json"})
                 results.append(resp.status_code)
@@ -144,14 +144,14 @@ class TestLargePayload:
         """
         # Creer un payload de ~1.5MB
         large_data = {
-            "rt:interfaces": {
+            "restconf-test:interfaces": {
                 "interface": []
             }
         }
         
         # Ajouter assez d'interfaces pour depasser 1MB
         for i in range(200):
-            large_data["rt:interfaces"]["interface"].append({
+            large_data["restconf-test:interfaces"]["interface"].append({
                 "name": f"eth{i}",
                 "description": "A" * 5000,  # ~5KB par interface
                 "enabled": True,
@@ -162,7 +162,7 @@ class TestLargePayload:
         assert len(payload) > 1000000  # > 1MB
         
         resp = client.post(
-            "/restconf/data/rt:restconf-test/rt:interfaces",
+            "/restconf/data/restconf-test:interfaces",
             body=payload,
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -179,13 +179,13 @@ class TestLargePayload:
         """
         # Creer un payload de ~12MB
         large_data = {
-            "rt:interfaces": {
+            "restconf-test:interfaces": {
                 "interface": []
             }
         }
         
         for i in range(2500):
-            large_data["rt:interfaces"]["interface"].append({
+            large_data["restconf-test:interfaces"]["interface"].append({
                 "name": f"eth{i}",
                 "description": "A" * 5000,
                 "enabled": True
@@ -195,7 +195,7 @@ class TestLargePayload:
         assert len(payload) > 10000000  # > 10MB
         
         resp = client.post(
-            "/restconf/data/rt:restconf-test/rt:interfaces",
+            "/restconf/data/restconf-test:interfaces",
             body=payload,
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -219,7 +219,7 @@ class TestManyResources:
         # Creer 100 interfaces
         for i in range(100):
             interface_data = {
-                "rt:interface": [{
+                "restconf-test:interface": [{
                     "name": f"test-eth-{i:04d}",
                     "description": f"Test interface {i}",
                     "enabled": True,
@@ -228,7 +228,7 @@ class TestManyResources:
             }
             
             resp = client.post(
-                "/restconf/data/rt:restconf-test/rt:interfaces",
+                "/restconf/data/restconf-test:interfaces",
                 body=json.dumps(interface_data),
                 headers={"Content-Type": "application/yang-data+json"}
             )
@@ -237,7 +237,7 @@ class TestManyResources:
             assert resp.status_code in (201, 409, 400, 401, 403)
         
         # Lister toutes les interfaces
-        resp = client.get("/restconf/data/rt:restconf-test/rt:interfaces/rt:interface")
+        resp = client.get("/restconf/data/restconf-test:interfaces/interface")
         assert resp.status_code in (200, 404, 401, 403)
 
 
@@ -279,7 +279,7 @@ class TestMemoryLeak:
         Expected: Le serveur reste stable
         """
         for i in range(1000):
-            resp = client.get(f"/restconf/data/rt:restconf-test")
+            resp = client.get(f"/restconf/data/restconf-test:system")
             assert resp.status_code in (200, 404, 401, 403)
 
 
@@ -302,14 +302,14 @@ class TestStress:
             try:
                 # Alterner entre differentes operations
                 ops = [
-                    ("GET", "/restconf/data/rt:restconf-test"),
-                    ("GET", "/restconf/data/rt:restconf-test/rt:system"),
-                    ("PUT", "/restconf/data/rt:restconf-test/rt:system/rt:config"),
+                    ("GET", "/restconf/data/restconf-test:system"),
+                    ("GET", "/restconf/data/restconf-test:system"),
+                    ("PUT", "/restconf/data/restconf-test:system/config"),
                 ]
                 method, path = ops[i % len(ops)]
                 
                 if method == "PUT":
-                    body = json.dumps({"rt:config": {"system-name": f"stress-{i}"}})
+                    body = json.dumps({"restconf-test:config": {"system-name": f"stress-{i}"}})
                     resp = client.put(path, body=body,
                                      headers={"Content-Type": "application/yang-data+json"})
                 else:
@@ -343,7 +343,7 @@ class TestSlowClient:
         """
         # Faire une requête et attendre avant de lire la réponse
         # Note: Le client h2c lit immédiatement, donc ce test est un placeholder
-        resp = client.get("/restconf/data/rt:restconf-test")
+        resp = client.get("/restconf/data/restconf-test:system")
         time.sleep(0.5)  # Simuler un délai
         assert resp.status_code in (200, 404, 401, 403)
 

@@ -11,6 +11,44 @@
 #define MAX_DECODED_LEN 512
 
 /**
+ * @brief Resolve a YANG prefix to its module name.
+ *
+ * Given a string that may be either a YANG prefix (e.g. "rt")
+ * or a module name (e.g. "restconf-test"), this function
+ * returns the actual module name. If @p prefix is already a
+ * valid module name, it is returned as-is. Otherwise, all
+ * implemented modules are scanned for a matching prefix.
+ *
+ * @param[in] ctx libyang context (may be NULL).
+ * @param[in] prefix YANG prefix or module name from the URI.
+ *
+ * @return Module name (points inside @p ctx, do not free),
+ *         or @p prefix itself if resolution fails or @p ctx
+ *         is NULL.
+ */
+static const char *resolve_module_name(
+	const struct ly_ctx *ctx, const char *prefix)
+{
+	if (!ctx || !prefix) return prefix;
+
+	/* Fast path: prefix IS the module name */
+	const struct lys_module *mod =
+		ly_ctx_get_module_implemented(ctx, prefix);
+	if (mod) return mod->name;
+
+	/* Slow path: scan all modules for a matching prefix */
+	uint32_t idx = 0;
+	while ((mod = ly_ctx_get_module_iter(ctx, &idx))) {
+		if (mod->implemented && mod->prefix &&
+		    strcmp(mod->prefix, prefix) == 0) {
+			return mod->name;
+		}
+	}
+	/* Resolution failed: return the original string */
+	return prefix;
+}
+
+/**
  * @brief Decode a percent-encoded string (RFC 3986).
  * Returns -1 if the percent-encoding is invalid.
  */
@@ -162,7 +200,9 @@ static int parse_segment(
 
 	if (colon_pos && (!eq_pos || colon_pos < eq_pos)) {
 		*colon_pos = '\0';
-		module_name = seg_buf;
+		/* Resolve YANG prefix to module name (cf. 4.1) */
+		module_name = (char *)resolve_module_name(
+			ctx, seg_buf);
 		node_name = colon_pos + 1;
 	}
 

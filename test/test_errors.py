@@ -35,7 +35,7 @@ class TestError4xxClientErrors:
         """
         # Envoyer une requête avec un body invalide
         resp = client.post(
-            "/restconf/data/rt:restconf-test",
+            "/restconf/data/restconf-test:system",
             body="{ invalid json",
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -89,19 +89,19 @@ class TestError4xxClientErrors:
         """
         # Créer une ressource
         config = {
-            "rt:config": {
+            "restconf-test:config": {
                 "system-name": "test-system"
             }
         }
         client.put(
-            "/restconf/data/rt:restconf-test/rt:system/rt:config",
+            "/restconf/data/restconf-test:system/config",
             body=json.dumps(config),
             headers={"Content-Type": "application/yang-data+json"}
         )
         
         # Essayer de créer la meme ressource avec POST (si supporté)
         resp = client.post(
-            "/restconf/data/rt:restconf-test/rt:system/rt:config",
+            "/restconf/data/restconf-test:system/config",
             body=json.dumps(config),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -119,7 +119,7 @@ class TestError4xxClientErrors:
         """
         # Créer un payload très grand (> 1MB)
         large_payload = {
-            "rt:interfaces": {
+            "restconf-test:interfaces": {
                 "interface": [{
                     "name": f"eth{i}",
                     "description": "A" * 10000,  # 10KB par interface
@@ -130,7 +130,7 @@ class TestError4xxClientErrors:
         }
         
         resp = client.post(
-            "/restconf/data/rt:restconf-test/rt:interfaces",
+            "/restconf/data/restconf-test:interfaces",
             body=json.dumps(large_payload),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -148,7 +148,7 @@ class TestError4xxClientErrors:
         """
         # Envoyer avec un Content-Type non supporté
         resp = client.post(
-            "/restconf/data/rt:restconf-test",
+            "/restconf/data/restconf-test:system",
             body='{"test": "value"}',
             headers={"Content-Type": "text/plain"}
         )
@@ -188,7 +188,7 @@ class TestErrorResponseFormat:
         et structure ietf-restconf:errors
         """
         # Provoquer une erreur
-        resp = client.get("/restconf/data/rt:nonexistent")
+        resp = client.get("/restconf/data/restconf-test:nonexistent")
         
         if resp.status_code == 404:
             # Vérifier que le Content-Type est correct
@@ -220,7 +220,7 @@ class TestErrorResponseFormat:
         Expected: Réponse d'erreur avec error-tag approprié
         """
         # Provoquer une erreur 404
-        resp = client.get("/restconf/data/rt:nonexistent")
+        resp = client.get("/restconf/data/restconf-test:nonexistent")
         
         if resp.status_code == 404:
             try:
@@ -266,14 +266,14 @@ class TestYANGConstraintErrors:
         
         Expected: 400 Bad Request avec error-tag "invalid-value"
         """
-        # rt:percentage dans restconf-test.yang a range 0..100
+        # restconf-test:percentage dans restconf-test.yang a range 0..100
         # Essayer de mettre une valeur hors range
         data = {
-            "rt:percentage-value": 150  # Hors range (0..100)
+            "restconf-test:percentage-value": 150  # Hors range (0..100)
         }
         
         resp = client.put(
-            "/restconf/data/rt:restconf-test/rt:constraints/rt:range-test",
+            "/restconf/data/restconf-test:constraints/range-test",
             body=json.dumps(data),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -290,14 +290,14 @@ class TestYANGConstraintErrors:
         
         Expected: 400 Bad Request
         """
-        # rt:password dans restconf-test.yang a length 8..64
+        # restconf-test:password dans restconf-test.yang a length 8..64
         # Essayer de mettre un password trop court
         data = {
-            "rt:password": "short"  # Trop court (min 8)
+            "restconf-test:password": "short"  # Trop court (min 8)
         }
         
         resp = client.put(
-            "/restconf/data/rt:restconf-test/rt:constraints",
+            "/restconf/data/restconf-test:constraints",
             body=json.dumps(data),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -313,14 +313,14 @@ class TestYANGConstraintErrors:
         
         Expected: 400 Bad Request
         """
-        # rt:email dans restconf-test.yang a un pattern
+        # restconf-test:email dans restconf-test.yang a un pattern
         # Essayer de mettre un email invalide
         data = {
-            "rt:email": "invalid-email"  # Pas de @
+            "restconf-test:email": "invalid-email"  # Pas de @
         }
         
         resp = client.put(
-            "/restconf/data/rt:restconf-test/rt:constraints",
+            "/restconf/data/restconf-test:constraints",
             body=json.dumps(data),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -336,14 +336,14 @@ class TestYANGConstraintErrors:
         
         Expected: 400 Bad Request
         """
-        # rt:operation-mode dans restconf-test.yang est un enum
+        # restconf-test:operation-mode dans restconf-test.yang est un enum
         # Essayer de mettre une valeur invalide
         data = {
-            "rt:operation-mode": "invalid-mode"
+            "restconf-test:operation-mode": "invalid-mode"
         }
         
         resp = client.put(
-            "/restconf/data/rt:restconf-test/rt:constraints",
+            "/restconf/data/restconf-test:constraints",
             body=json.dumps(data),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -361,12 +361,12 @@ class TestYANGConstraintErrors:
         """
         # Dans restconf-test.yang, must-test a une contrainte must: start-time < end-time
         data = {
-            "rt:start-time": 100,
-            "rt:end-time": 50  # start-time > end-time, viole la contrainte must
+            "restconf-test:start-time": 100,
+            "restconf-test:end-time": 50  # start-time > end-time, viole la contrainte must
         }
         
         resp = client.put(
-            "/restconf/data/rt:restconf-test/rt:constraints/rt:must-test",
+            "/restconf/data/restconf-test:constraints/must-test",
             body=json.dumps(data),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -385,14 +385,14 @@ class TestYANGConstraintErrors:
         # Dans restconf-test.yang, unique-test/items a unique "name priority"
         # Créer deux items avec le meme nom et la meme priorité
         data = {
-            "rt:items": [
+            "restconf-test:items": [
                 {"id": 1, "name": "test", "priority": 10},
                 {"id": 2, "name": "test", "priority": 10}  # Memes name et priority
             ]
         }
         
         resp = client.put(
-            "/restconf/data/rt:restconf-test/rt:constraints/rt:unique-test",
+            "/restconf/data/restconf-test:constraints/unique-test",
             body=json.dumps(data),
             headers={"Content-Type": "application/yang-data+json"}
         )

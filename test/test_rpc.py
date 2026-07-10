@@ -59,11 +59,11 @@ class TestRPCWithoutParams:
         TC-5-002 : RPC sans parametres
         
         RFC 8040 §5 : RPC without input parameters
-        POST /restconf/operations/rt:get-system-status
+        POST /restconf/operations/restconf-test:get-system-status
         
         Expected: 200 OK avec output
         """
-        resp = client.post("/restconf/operations/rt:get-system-status")
+        resp = client.post("/restconf/operations/restconf-test:get-system-status")
         
         if resp.status_code == 200:
             data = resp.json()
@@ -83,12 +83,12 @@ class TestRPCWithParams:
         TC-5-003 : RPC avec parametres
         
         RFC 8040 §5 : RPC with input parameters
-        POST /restconf/operations/rt:configure-device
+        POST /restconf/operations/restconf-test:configure-device
         
         Expected: 200 OK avec output
         """
         rpc_input = {
-            "rt:input": {
+            "restconf-test:input": {
                 "device-name": "test-device",
                 "enable": True,
                 "settings": "test settings"
@@ -96,7 +96,7 @@ class TestRPCWithParams:
         }
         
         resp = client.post(
-            "/restconf/operations/rt:configure-device",
+            "/restconf/operations/restconf-test:configure-device",
             body=json.dumps(rpc_input),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -114,17 +114,17 @@ class TestRPCWithParams:
         TC-5-004 : RPC avec parametre mandatory
         
         RFC 8040 §5 : RPC with mandatory parameter
-        POST /restconf/operations/rt:create-resource sans le parametre name (mandatory)
+        POST /restconf/operations/restconf-test:create-resource sans le parametre name (mandatory)
         
         Expected: 400 Bad Request
         """
         # Essayer sans le parametre mandatory
         rpc_input = {
-            "rt:input": {}
+            "restconf-test:input": {}
         }
         
         resp = client.post(
-            "/restconf/operations/rt:create-resource",
+            "/restconf/operations/restconf-test:create-resource",
             body=json.dumps(rpc_input),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -138,20 +138,20 @@ class TestRPCWithParams:
         TC-5-005 : RPC avec validation de type
         
         RFC 8040 §5 : RPC avec parametres de type invalide
-        POST /restconf/operations/rt:process-data avec une valeur hors range
+        POST /restconf/operations/restconf-test:process-data avec une valeur hors range
         
         Expected: 400 Bad Request
         """
         # uint-value a range 0..100
         rpc_input = {
-            "rt:input": {
+            "restconf-test:input": {
                 "uint-value": 150,  # Hors range
                 "enum-value": "option1"
             }
         }
         
         resp = client.post(
-            "/restconf/operations/rt:process-data",
+            "/restconf/operations/restconf-test:process-data",
             body=json.dumps(rpc_input),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -169,11 +169,11 @@ class TestRPCCrud:
         TC-5-006 : RPC inexistant
         
         RFC 8040 §5 : RPC qui n'existe pas
-        POST /restconf/operations/rt:nonexistent-rpc
+        POST /restconf/operations/restconf-test:nonexistent-rpc
         
         Expected: 404 Not Found
         """
-        resp = client.post("/restconf/operations/rt:nonexistent-rpc")
+        resp = client.post("/restconf/operations/restconf-test:nonexistent-rpc")
         assert resp.status_code in (404, 401, 403)
 
     @require_restconf_test_module
@@ -182,18 +182,18 @@ class TestRPCCrud:
         TC-5-007 : RPC output
         
         RFC 8040 §5 : Verifier que le RPC retourne le bon output
-        POST /restconf/operations/rt:set-operation-mode
+        POST /restconf/operations/restconf-test:set-operation-mode
         
         Expected: 200 OK avec output contenant previous-mode
         """
         rpc_input = {
-            "rt:input": {
+            "restconf-test:input": {
                 "mode": "normal"
             }
         }
         
         resp = client.post(
-            "/restconf/operations/rt:set-operation-mode",
+            "/restconf/operations/restconf-test:set-operation-mode",
             body=json.dumps(rpc_input),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -211,18 +211,18 @@ class TestRPCCrud:
         TC-5-008 : RPC sans output
         
         RFC 8040 §5 : RPC qui ne retourne rien
-        POST /restconf/operations/rt:trigger-event
+        POST /restconf/operations/restconf-test:trigger-event
         
         Expected: 204 No Content
         """
         rpc_input = {
-            "rt:input": {
+            "restconf-test:input": {
                 "event-type": "test-event"
             }
         }
         
         resp = client.post(
-            "/restconf/operations/rt:trigger-event",
+            "/restconf/operations/restconf-test:trigger-event",
             body=json.dumps(rpc_input),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -240,11 +240,11 @@ class TestActions:
         TC-5-015 : Action sans parametres
         
         RFC 7950 §7.15 : Action without parameters
-        POST /restconf/data/rt:device-management/rt:reset
+        POST /restconf/data/restconf-test:device-management/reset
         
         Expected: 200 OK ou 204 No Content
         """
-        resp = client.post("/restconf/data/rt:device-management/rt:reset")
+        resp = client.post("/restconf/data/restconf-test:device-management/reset")
         
         # Les actions utilisent POST sur le data resource avec action dans le path
         # ou via un header special selon l'implémentation
@@ -256,19 +256,19 @@ class TestActions:
         TC-5-016 : Action avec parametres
         
         RFC 7950 §7.15 : Action with parameters
-        POST /restconf/data/rt:device-management/rt:test-connection
+        POST /restconf/data/restconf-test:device-management/test-connection
         
         Expected: 200 OK avec output
         """
         action_input = {
-            "rt:input": {
+            "restconf-test:input": {
                 "target": "192.168.1.1",
                 "timeout": 5
             }
         }
         
         resp = client.post(
-            "/restconf/data/rt:device-management/rt:test-connection",
+            "/restconf/data/restconf-test:device-management/test-connection",
             body=json.dumps(action_input),
             headers={"Content-Type": "application/yang-data+json"}
         )
@@ -286,33 +286,33 @@ class TestActions:
         TC-5-017 : Action sur une ressource specifique
         
         RFC 7950 §7.15 : Action sur une instance de liste
-        POST /restconf/data/rt:device-management/rt:managed-device=1/rt:reboot
+        POST /restconf/data/restconf-test:device-management/managed-device=1/reboot
         
         Expected: 200 OK avec output
         """
         # D'abord créer une instance de managed-device
         device = {
-            "rt:managed-device": [{
+            "restconf-test:managed-device": [{
                 "device-id": 1,
                 "device-name": "device-1"
             }]
         }
         
         client.put(
-            "/restconf/data/rt:device-management/rt:managed-device=1",
+            "/restconf/data/restconf-test:device-management/managed-device=1",
             body=json.dumps(device),
             headers={"Content-Type": "application/yang-data+json"}
         )
         
         # Ensuite exécuter l'action reboot
         action_input = {
-            "rt:input": {
+            "restconf-test:input": {
                 "force": False
             }
         }
         
         resp = client.post(
-            "/restconf/data/rt:device-management/rt:managed-device=1/rt:reboot",
+            "/restconf/data/restconf-test:device-management/managed-device=1/reboot",
             body=json.dumps(action_input),
             headers={"Content-Type": "application/yang-data+json"}
         )

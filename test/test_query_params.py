@@ -36,13 +36,13 @@ class TestContentQuery:
         TC-4-001 : content=config
         
         RFC 8040 §4.8.1 : Filtrer pour les donnees de configuration seulement
-        GET /restconf/data/rt:system?content=config
+        GET /restconf/data/restconf-test:system?content=config
         
         Expected: 200 OK avec seulement les nodes config=true
         """
         # Le module restconf-test.yang a des containers config et state
         resp = client.get(
-            "/restconf/data/rt:restconf-test/rt:system?content=config"
+            "/restconf/data/restconf-test:system?content=config"
         )
         
         if resp.status_code == 200:
@@ -59,12 +59,12 @@ class TestContentQuery:
         TC-4-002 : content=nonconfig
         
         RFC 8040 §4.8.1 : Filtrer pour les donnees operationnelles seulement
-        GET /restconf/data/rt:system?content=nonconfig
+        GET /restconf/data/restconf-test:system?content=nonconfig
         
         Expected: 200 OK avec seulement les nodes config=false
         """
         resp = client.get(
-            "/restconf/data/rt:restconf-test/rt:system?content=nonconfig"
+            "/restconf/data/restconf-test:system?content=nonconfig"
         )
         
         if resp.status_code == 200:
@@ -80,12 +80,12 @@ class TestContentQuery:
         TC-4-003 : content=all
         
         RFC 8040 §4.8.1 : Retourner toutes les donnees (config et nonconfig)
-        GET /restconf/data/rt:system?content=all
+        GET /restconf/data/restconf-test:system?content=all
         
         Expected: 200 OK avec toutes les donnees
         """
         resp = client.get(
-            "/restconf/data/rt:restconf-test/rt:system?content=all"
+            "/restconf/data/restconf-test:system?content=all"
         )
         
         if resp.status_code == 200:
@@ -105,12 +105,12 @@ class TestDepthQuery:
         TC-4-004 : depth=1
         
         RFC 8040 §4.8.2 : Limiter la profondeur a 1 niveau
-        GET /restconf/data/rt:restconf-test?depth=1
+        GET /restconf/data/restconf-test:system?depth=1
         
         Expected: 200 OK avec seulement les enfants directs
         """
         resp = client.get(
-            "/restconf/data/rt:restconf-test?depth=1"
+            "/restconf/data/restconf-test:system?depth=1"
         )
         
         if resp.status_code == 200:
@@ -126,12 +126,12 @@ class TestDepthQuery:
         TC-4-005 : depth=2
         
         RFC 8040 §4.8.2 : Limiter la profondeur a 2 niveaux
-        GET /restconf/data/rt:restconf-test?depth=2
+        GET /restconf/data/restconf-test:system?depth=2
         
         Expected: 200 OK avec 2 niveaux de profondeur
         """
         resp = client.get(
-            "/restconf/data/rt:restconf-test?depth=2"
+            "/restconf/data/restconf-test:system?depth=2"
         )
         
         if resp.status_code == 200:
@@ -146,12 +146,12 @@ class TestDepthQuery:
         TC-4-006 : depth=unbounded
         
         RFC 8040 §4.8.2 : Pas de limite de profondeur
-        GET /restconf/data/rt:restconf-test?depth=unbounded
+        GET /restconf/data/restconf-test:system?depth=unbounded
         
         Expected: 200 OK avec toutes les profondeurs
         """
         resp = client.get(
-            "/restconf/data/rt:restconf-test?depth=unbounded"
+            "/restconf/data/restconf-test:system?depth=unbounded"
         )
         
         if resp.status_code == 200:
@@ -171,12 +171,12 @@ class TestFieldsQuery:
         TC-4-007 : fields - simple
         
         RFC 8040 §4.8.3 : Selection de champs simples
-        GET /restconf/data/rt:system?fields=config
+        GET /restconf/data/restconf-test:system?fields=config
         
         Expected: 200 OK avec seulement le champ 'config'
         """
         resp = client.get(
-            "/restconf/data/rt:restconf-test/rt:system?fields=config"
+            "/restconf/data/restconf-test:system?fields=config"
         )
         
         if resp.status_code == 200:
@@ -192,12 +192,12 @@ class TestFieldsQuery:
         TC-4-008 : fields - nested
         
         RFC 8040 §4.8.3 : Selection de champs imbriqués
-        GET /restconf/data/rt:system?fields=config/system-name
+        GET /restconf/data/restconf-test:system?fields=config/system-name
         
         Expected: 200 OK avec seulement config/system-name
         """
         resp = client.get(
-            "/restconf/data/rt:restconf-test/rt:system?fields=config/system-name"
+            "/restconf/data/restconf-test:system?fields=config/system-name"
         )
         
         if resp.status_code == 200:
@@ -212,12 +212,12 @@ class TestFieldsQuery:
         TC-4-009 : fields - multiple
         
         RFC 8040 §4.8.3 : Selection de plusieurs champs
-        GET /restconf/data/rt:system?fields=config;fields=state
+        GET /restconf/data/restconf-test:system?fields=config;fields=state
         
         Expected: 200 OK avec config et state
         """
         resp = client.get(
-            "/restconf/data/rt:restconf-test/rt:system?fields=config;fields=state"
+            "/restconf/data/restconf-test:system?fields=config;fields=state"
         )
         
         if resp.status_code == 200:
@@ -236,12 +236,12 @@ class TestWithDefaultsQuery:
         TC-4-010 : with-defaults=report-all
         
         RFC 8040 §4.8.4 : Inclure toutes les valeurs par defaut
-        GET /restconf/data/rt:basic-data?with-defaults=report-all
+        GET /restconf/data/restconf-test:basic-data?with-defaults=report-all
         
         Expected: 200 OK avec toutes les valeurs par defaut explicites
         """
         resp = client.get(
-            "/restconf/data/rt:restconf-test/rt:basic-data?with-defaults=report-all"
+            "/restconf/data/restconf-test:basic-data?with-defaults=report-all"
         )
         
         if resp.status_code == 200:
@@ -257,12 +257,12 @@ class TestWithDefaultsQuery:
         TC-4-011 : with-defaults=trim
         
         RFC 8040 §4.8.4 : Exclure les valeurs par defaut
-        GET /restconf/data/rt:basic-data?with-defaults=trim
+        GET /restconf/data/restconf-test:basic-data?with-defaults=trim
         
         Expected: 200 OK sans les valeurs par defaut non modifiees
         """
         resp = client.get(
-            "/restconf/data/rt:restconf-test/rt:basic-data?with-defaults=trim"
+            "/restconf/data/restconf-test:basic-data?with-defaults=trim"
         )
         
         if resp.status_code == 200:
@@ -278,12 +278,12 @@ class TestWithDefaultsQuery:
         TC-4-012 : with-defaults=explicit
         
         RFC 8040 §4.8.4 : Inclure les valeurs par defaut explicitement
-        GET /restconf/data/rt:basic-data?with-defaults=explicit
+        GET /restconf/data/restconf-test:basic-data?with-defaults=explicit
         
         Expected: 200 OK avec les valeurs par defaut marquees
         """
         resp = client.get(
-            "/restconf/data/rt:restconf-test/rt:basic-data?with-defaults=explicit"
+            "/restconf/data/restconf-test:basic-data?with-defaults=explicit"
         )
         
         if resp.status_code == 200:
@@ -302,12 +302,12 @@ class TestWithOriginQuery:
         TC-4-013 : with-origin
         
         RFC 8040 §4.8.5 : Inclure l'origine des donnees
-        GET /restconf/data/rt:system?with-origin
+        GET /restconf/data/restconf-test:system?with-origin
         
         Expected: 200 OK avec attributs d'origine
         """
         resp = client.get(
-            "/restconf/data/rt:restconf-test/rt:system?with-origin"
+            "/restconf/data/restconf-test:system?with-origin"
         )
         
         if resp.status_code == 200:
@@ -344,12 +344,12 @@ class TestQueryParameterErrors:
         TC-4-015 : Combinaison de parametres de requete
         
         RFC 8040 §4.8 : Plusieurs parametres ensemble
-        GET /restconf/data/rt:system?content=config&depth=1&fields=config
+        GET /restconf/data/restconf-test:system?content=config&depth=1&fields=config
         
         Expected: 200 OK avec tous les filtres appliques
         """
         resp = client.get(
-            "/restconf/data/rt:restconf-test/rt:system?content=config&depth=1&fields=config"
+            "/restconf/data/restconf-test:system?content=config&depth=1&fields=config"
         )
         
         if resp.status_code == 200:
