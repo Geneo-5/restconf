@@ -19,43 +19,8 @@ Ils utilisent uniquement oven.yang qui est plus simple.
 
 import json
 import pytest
-from functools import wraps
 
-
-# ---------------------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------------------
-def check_oven_module(client):
-    """
-    Verifie que le module oven.yang est charge.
-    """
-    resp = client.get("/restconf/data/oven:oven")
-    if resp.status_code == 404:
-        pytest.skip("Module oven.yang non charge sur le serveur")
-    assert resp.status_code in (200, 401, 403), \
-        f"Erreur lors de la verification du module oven: {resp.status_code}"
-
-
-def require_oven_module(func):
-    """Decorator pour verifier que oven.yang est charge."""
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        # Trouver le client dans les arguments ou kwargs
-        client_arg = None
-        # Chercher dans kwargs d'abord
-        if 'client' in kwargs:
-            client_arg = kwargs['client']
-        else:
-            # Chercher dans args - le client est un H2cClient
-            for arg in args:
-                if hasattr(arg, 'get') and hasattr(arg, '_connect'):
-                    client_arg = arg
-                    break
-        
-        if client_arg:
-            check_oven_module(client_arg)
-        return func(*args, **kwargs)
-    return wrapper
+from conftest import check_oven_module, require_oven_module
 
 
 # ---------------------------------------------------------------------------

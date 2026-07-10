@@ -13,6 +13,8 @@ from functools import wraps
 import json
 import pytest
 
+from conftest import check_restconf_test_module
+
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -25,15 +27,6 @@ def check_nmda_support(client):
         pytest.skip("Serveur ne supporte pas NMDA (RFC 8527)")
     assert resp.status_code in (200, 401, 403), \
         f"Erreur lors de la verification NMDA: {resp.status_code}"
-
-
-def check_restconf_test_module(client):
-    """Verifie que le module restconf-test.yang est charge."""
-    resp = client.get("/restconf/data/rt:restconf-test")
-    if resp.status_code == 404:
-        pytest.skip("Module restconf-test.yang non charge sur le serveur")
-    assert resp.status_code in (200, 401, 403), \
-        f"Erreur lors de la verification du module: {resp.status_code}"
 
 
 def require_nmda_support(func):

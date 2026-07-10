@@ -11,6 +11,7 @@ import socket
 import subprocess
 import signal
 import time
+from functools import wraps
 
 import h2.config
 import h2.connection
@@ -325,96 +326,117 @@ def sysrepo_plugin_process():
         proc.wait()
 
 
-def _sysrepo_installed_modules():
+def _fetch_installed_modules(client):
     """
-    Retourne l'ensemble des noms de modules YANG actuellement
-    installes/charges dans sysrepo, via `sysrepoctl -l`.
+    Recupere l'ensemble des modules YANG charges sur le serveur, via
+    GET /restconf/data/ietf-yang-library:modules-state (RFC 8040
+    Sec 3.3.3, RFC 7895).
 
-    Best-effort : en cas d'erreur (binaire absent, timeout, format
-    de sortie inattendu), retourne un ensemble vide plutot que de
-    lever une exception.
+    C'est la source de verite protocolaire pour la presence d'un
+    module : interroger directement une ressource de donnees
+    specifique au module (ex. /restconf/data/oven:oven) est fragile,
+    puisqu'une telle ressource peut legitimement etre absente/vide
+    (404) pour d'autres raisons que "module non charge" (ex.
+    conteneur presence non instancie).
+
+    Retourne un tuple (status_code, set_de_noms_de_modules_ou_None).
+    `modules` est None si le status n'est pas 200 (impossible de
+    lister dans ce cas).
     """
-    try:
-        result = subprocess.run(
-            ["sysrepoctl", "-l"],
-            capture_output=True,
-            text=True,
-            timeout=5,
+    resp = client.get(
+        "/restconf/data/ietf-yang-library:modules-state",
+        headers={"Accept": "application/yang-data+json"},
+    )
+
+    if resp.status_code != 200:
+        return resp.status_code, None
+
+    data = resp.json()
+    modules_state = data.get(
+        "ietf-yang-library:modules-state", data
+    )
+    names = {
+        m.get("name")
+        for m in modules_state.get("module", [])
+        if m.get("name")
+    }
+    return resp.status_code, names
+
+
+def _require_module(client, module_name, yang_file_hint):
+    """
+    Skippe le test courant si `module_name` n'apparait pas dans
+    ietf-yang-library:modules-state.
+
+    Si le serveur repond 401/403, la verification est impossible
+    sans etre authentifie : on laisse le test s'executer, il
+    rencontrera le meme mur d'authentification et pourra l'asserter
+    lui-meme. Tout autre statut inattendu (ex. 5xx, ou un 204 qui
+    serait lui-meme un bug de non-conformite) fait echouer le test
+    en erreur plutot que de le skipper silencieusement.
+    """
+    status, modules = _fetch_installed_modules(client)
+
+    if status in (401, 403):
+        return
+    if status != 200:
+        pytest.fail(
+            "GET ietf-yang-library:modules-state a echoue "
+            f"(status={status}) - impossible de verifier la "
+            f"presence du module '{module_name}'"
         )
-    except Exception:
-        return set()
-
-    modules = set()
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if not line or line.startswith("-") or line.startswith("Sysrepo"):
-            continue
-        columns = line.split()
-        if not columns:
-            continue
-        name = columns[0]
-        # Ignorer la ligne d'en-tete du tableau ("Module Name | ...")
-        if name in ("Module", "Name"):
-            continue
-        modules.add(name)
-    return modules
-
-
-@pytest.fixture(scope="session")
-def sysrepo_modules(sysrepo_plugin_process):
-    """
-    Ensemble des modules YANG charges dans sysrepo pour la session
-    de test (calcule une seule fois, apres demarrage de
-    sysrepo-plugind).
-    """
-    return _sysrepo_installed_modules()
-
-
-@pytest.fixture(scope="session")
-def restconf_test_module_available(sysrepo_modules):
-    """True si le module YANG 'restconf-test' est charge dans sysrepo."""
-    return "restconf-test" in sysrepo_modules
-
-
-@pytest.fixture(scope="session")
-def oven_module_available(sysrepo_modules):
-    """True si le module YANG 'oven' est charge dans sysrepo."""
-    return "oven" in sysrepo_modules
-
-
-@pytest.fixture
-def require_restconf_test_module(restconf_test_module_available):
-    """
-    A demander en parametre d'un test pour le skipper automatiquement
-    si le module restconf-test.yang (plugin restconf-test) n'est pas
-    charge dans sysrepo.
-
-    Exemple :
-        def test_crud_create(self, client, require_restconf_test_module):
-            ...
-    """
-    if not restconf_test_module_available:
+    if module_name not in modules:
         pytest.skip(
-            "Module YANG 'restconf-test' non charge dans sysrepo "
-            "(sysrepoctl -l) - plugin restconf-test absent"
+            f"Module {yang_file_hint} non charge sur le serveur "
+            "(absent de ietf-yang-library:modules-state)"
         )
 
 
-@pytest.fixture
-def require_oven_module(oven_module_available):
+def check_restconf_test_module(client):
     """
-    A demander en parametre d'un test pour le skipper automatiquement
-    si le module oven.yang (plugin oven) n'est pas charge dans sysrepo.
+    Verifie que le module restconf-test.yang est charge.
 
-    Exemple :
-        def test_oven_basic(self, client, require_oven_module):
-            ...
+    Tous les tests de qualification DOIVENT verifier cela avant
+    execution.
     """
-    if not oven_module_available:
-        pytest.skip(
-            "Module YANG 'oven' non charge dans sysrepo "
-            "(sysrepoctl -l) - plugin oven absent"
-        )
+    _require_module(client, "restconf-test", "restconf-test.yang")
+
+
+def check_oven_module(client):
+    """Verifie que le module oven.yang est charge."""
+    _require_module(client, "oven", "oven.yang")
+
+
+def _find_client_arg(args, kwargs):
+    """Retrouve l'instance H2cClient dans les args/kwargs d'un test."""
+    if "client" in kwargs:
+        return kwargs["client"]
+    for arg in args:
+        if hasattr(arg, "get") and hasattr(arg, "_connect"):
+            return arg
+    return None
+
+
+def require_restconf_test_module(func):
+    """Decorator pour verifier que restconf-test.yang est charge."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        client_arg = _find_client_arg(args, kwargs)
+        if client_arg:
+            check_restconf_test_module(client_arg)
+        return func(*args, **kwargs)
+    return wrapper
+
+
+def require_oven_module(func):
+    """Decorator pour verifier que oven.yang est charge."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        client_arg = _find_client_arg(args, kwargs)
+        if client_arg:
+            check_oven_module(client_arg)
+        return func(*args, **kwargs)
+    return wrapper
 
 
 @pytest.fixture(scope="session")

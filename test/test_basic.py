@@ -4,7 +4,10 @@ Tests basiques RESTCONF (RFC 8040).
 - Root Discovery (RFC 8040 §3.1)
 - API Resource (RFC 8040 §3.2)
 - Méthodes HTTP supportées
+- YANG Library / modules-state (RFC 8040 §3.3.3, RFC 7895)
 """
+
+import pytest
 
 
 class TestRootDiscovery:
@@ -136,6 +139,101 @@ class TestAPIResource:
 
         # 406 Not Acceptable ou 200 si le serveur ignore
         assert resp.status_code in (200, 406)
+
+
+class TestYangLibrary:
+    """
+    Tests du module ietf-yang-library (RFC 7895 / RFC 8525),
+    expose nativement par sysrepo sous {+restconf}/data.
+
+    ietf-yang-library:modules-state est un conteneur `config
+    false` (donnee d'etat), peuple en interne par sysrepo. RFC 8040
+    Sec 3.5 definit {+restconf}/data comme la vue UNIFIEE du
+    datastore conceptuel (equivalent NETCONF <get>, PAS
+    <get-config>) : un serveur conforme DOIT donc y exposer aussi
+    bien les donnees de configuration que les donnees d'etat.
+    """
+
+    def test_modules_state_json(self, server_process, client):
+        """
+        GET /restconf/data/ietf-yang-library:modules-state (JSON).
+
+        Ce noeud est config false : un serveur conforme DOIT
+        retourner 200 avec le corps peuple. Un 204 signifierait
+        "aucune donnee", ce qui serait incorrect puisque sysrepo
+        peuple toujours ce conteneur nativement (RFC 8040 Sec 3.5).
+        """
+        resp = client.get(
+            "/restconf/data/ietf-yang-library:modules-state",
+            headers={"Accept": "application/yang-data+json"},
+        )
+
+        assert resp.status_code in (200, 401, 403), (
+            f"status={resp.status_code} — modules-state (config "
+            "false) doit renvoyer 200 avec son contenu, jamais 204 "
+            "(RFC 8040 Sec 3.5)"
+        )
+
+        if resp.status_code == 200:
+            ctype = resp.headers.get("content-type", "")
+            assert "application/yang-data+json" in ctype
+
+            data = resp.json()
+            modules_state = data.get(
+                "ietf-yang-library:modules-state", data
+            )
+            assert "module" in modules_state
+            assert isinstance(modules_state["module"], list)
+            assert len(modules_state["module"]) > 0
+
+    def test_modules_state_xml(self, server_process, client):
+        """
+        GET /restconf/data/ietf-yang-library:modules-state (XML).
+        """
+        resp = client.get(
+            "/restconf/data/ietf-yang-library:modules-state",
+            headers={"Accept": "application/yang-data+xml"},
+        )
+
+        assert resp.status_code in (200, 401, 403), (
+            f"status={resp.status_code} — modules-state ne doit "
+            "jamais renvoyer 204, y compris en XML"
+        )
+
+        if resp.status_code == 200:
+            ctype = resp.headers.get("content-type", "")
+            assert "application/yang-data+xml" in ctype
+            assert "<modules-state" in resp.text
+            assert "<module>" in resp.text
+
+    def test_modules_state_contains_yang_library_module(
+        self, server_process, client
+    ):
+        """
+        Le module ietf-yang-library lui-meme DOIT apparaitre dans
+        sa propre liste de modules (RFC 8040 Sec 3.3.3, RFC 7895).
+        """
+        resp = client.get(
+            "/restconf/data/ietf-yang-library:modules-state",
+            headers={"Accept": "application/yang-data+json"},
+        )
+
+        if resp.status_code != 200:
+            pytest.skip(
+                f"modules-state non accessible: {resp.status_code}"
+            )
+
+        data = resp.json()
+        modules_state = data.get(
+            "ietf-yang-library:modules-state", data
+        )
+        names = {
+            m.get("name") for m in modules_state.get("module", [])
+        }
+        assert "ietf-yang-library" in names, (
+            "ietf-yang-library doit lister son propre module "
+            f"(modules trouves: {sorted(n for n in names if n)})"
+        )
 
 
 class TestHTTPMethods:

@@ -7,7 +7,6 @@ RFC References:
 - RFC 8040 §8 : Considerations for a RESTCONF Server Implementation
 """
 
-from functools import wraps
 import json
 import pytest
 import time
@@ -16,19 +15,15 @@ import threading
 import random
 import string
 
+from conftest import (
+    check_restconf_test_module,
+    require_restconf_test_module,
+)
+
 
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
-def check_restconf_test_module(client):
-    """Verifie que le module restconf-test.yang est charge."""
-    resp = client.get("/restconf/data/rt:restconf-test")
-    if resp.status_code == 404:
-        pytest.skip("Module restconf-test.yang non charge sur le serveur")
-    assert resp.status_code in (200, 401, 403), \
-        f"Erreur lors de la verification du module: {resp.status_code}"
-
-
 def generate_random_string(length=10):
     """Genere une chaine aleatoire."""
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
@@ -53,23 +48,6 @@ def measure_response_time(client, path, method="GET", body=None, headers=None):
     
     elapsed_time = (time.time() - start_time) * 1000  # en millisecondes
     return resp, elapsed_time
-
-
-def require_restconf_test_module(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        client_arg = None
-        if 'client' in kwargs:
-            client_arg = kwargs['client']
-        else:
-            for arg in args:
-                if hasattr(arg, 'get') and hasattr(arg, '_connect'):
-                    client_arg = arg
-                    break
-        if client_arg:
-            check_restconf_test_module(client_arg)
-        return func(*args, **kwargs)
-    return wrapper
 
 
 # ---------------------------------------------------------------------------

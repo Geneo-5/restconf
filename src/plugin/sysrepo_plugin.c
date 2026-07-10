@@ -423,8 +423,38 @@ void plugin_handle_get(
 	}
 
 	sr_data_t *data = NULL;
-	sr_session_ctx_t *sess = select_session(
-		ctx, req->datastore);
+	sr_session_ctx_t *sess;
+
+	if (req->res_type == RC_RES_DATA) {
+		/*
+		 * RFC 8040 Sec 3.5 / Sec 3.4.1 : {+restconf}/data est
+		 * la vue unifiee du datastore conceptuel — equivalent
+		 * NETCONF <get>, PAS <get-config>. Elle DOIT exposer a
+		 * la fois les donnees de configuration et les donnees
+		 * d'etat (config false), p.ex.
+		 * ietf-yang-library:modules-state.
+		 *
+		 * La session RUNNING de sysrepo ne contient QUE la
+		 * config : sr_get_data() y renvoie un arbre vide pour
+		 * tout noeud config false, d'ou un 204 non conforme.
+		 * La session OPERATIONAL fusionne running + donnees
+		 * d'etat (modele NMDA de sysrepo), c'est donc elle
+		 * qu'il faut utiliser pour toute LECTURE via
+		 * /restconf/data.
+		 *
+		 * Les edits (POST/PUT/PATCH/DELETE) continuent de
+		 * cibler running explicitement via select_session()
+		 * dans plugin_handle_edit() — inchange.
+		 *
+		 * Sous /restconf/ds/<datastore> (RC_RES_DS), la
+		 * selection explicite du datastore NMDA (RFC 8527
+		 * Sec 3.1) reste inchangee : /ds/running ne doit
+		 * renvoyer QUE la configuration.
+		 */
+		sess = ctx->sess_operational;
+	} else {
+		sess = select_session(ctx, req->datastore);
+	}
 
 	if (req->username) {
 		sr_session_set_user(sess, req->username);

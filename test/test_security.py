@@ -10,7 +10,6 @@ RFC References:
 - RFC 8341 : Network Configuration Access Control Model (NACM)
 """
 
-from functools import wraps
 import json
 import pytest
 import base64
@@ -19,19 +18,15 @@ import hmac
 import time
 from datetime import datetime, timedelta, timezone
 
+from conftest import (
+    check_restconf_test_module,
+    require_restconf_test_module,
+)
+
 
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
-def check_restconf_test_module(client):
-    """Verifie que le module restconf-test.yang est charge."""
-    resp = client.get("/restconf/data/rt:restconf-test")
-    if resp.status_code == 404:
-        pytest.skip("Module restconf-test.yang non charge sur le serveur")
-    assert resp.status_code in (200, 401, 403), \
-        f"Erreur lors de la verification du module: {resp.status_code}"
-
-
 def create_test_jwt(secret="test-secret", sub="testuser", exp_minutes=5):
     """
     Cree un JWT de test pour les tests d'authentification.
@@ -68,23 +63,6 @@ def create_test_jwt(secret="test-secret", sub="testuser", exp_minutes=5):
     signature_encoded = base64.urlsafe_b64encode(signature).decode().rstrip("=")
     
     return f"{header_encoded}.{payload_encoded}.{signature_encoded}"
-
-
-def require_restconf_test_module(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        client_arg = None
-        if 'client' in kwargs:
-            client_arg = kwargs['client']
-        else:
-            for arg in args:
-                if hasattr(arg, 'get') and hasattr(arg, '_connect'):
-                    client_arg = arg
-                    break
-        if client_arg:
-            check_restconf_test_module(client_arg)
-        return func(*args, **kwargs)
-    return wrapper
 
 
 # ---------------------------------------------------------------------------
