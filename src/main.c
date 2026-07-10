@@ -382,6 +382,18 @@ static void on_restconf_request(
 	/* 6. Routage vers le plugin sysrepo (Data / Operations) */
 	if (req.res_type == RC_RES_DATA ||
 	    req.res_type == RC_RES_DS) {
+		if (strcmp(method, "OPTIONS") == 0) {
+			/* RFC 8040 Sec 4.1: OPTIONS sur data */
+			h2c_send_response_ex(
+				session, stream_id, 200,
+				NULL, NULL,
+				"allow",
+				"GET, HEAD, POST, PUT, PATCH, "
+				"DELETE, OPTIONS",
+				NULL, 0);
+			router_free_request(&req);
+			return;
+		}
 		if (strcmp(method, "GET") == 0 ||
 		    strcmp(method, "HEAD") == 0) {
 
@@ -437,7 +449,50 @@ static void on_restconf_request(
 				"Method not allowed");
 		}
 	} else if (req.res_type == RC_RES_OPERATIONS) {
-		/* RFC 8040 Sec 3.6: Invocation RPC/Action */
+		/* RFC 8040 Sec 3.3.2 / Sec 3.6 */
+		if (strcmp(method, "OPTIONS") == 0) {
+			h2c_send_response_ex(
+				session, stream_id, 200,
+				NULL, NULL,
+				"allow",
+				"GET, HEAD, POST, OPTIONS",
+				NULL, 0);
+			router_free_request(&req);
+			return;
+		}
+		/* GET /restconf/operations : liste des RPCs
+		 * RFC 8040 Sec 3.3.2 */
+		if ((strcmp(method, "GET") == 0 ||
+		     strcmp(method, "HEAD") == 0) &&
+		    (!req.rpc_name || *req.rpc_name == '\0')) {
+			const char *ops_ctype =
+				(req.accept_type == MEDIA_TYPE_XML) ?
+				"application/yang-data+xml" :
+				"application/yang-data+json";
+			const char *ops_body;
+			if (req.accept_type == MEDIA_TYPE_XML) {
+				ops_body =
+					"<operations xmlns="
+					"\"urn:ietf:params:xml:ns:yang"
+					":ietf-restconf\"/>";
+			} else {
+				ops_body =
+					"{\"ietf-restconf:operations\":{}}";
+			}
+			if (strcmp(method, "HEAD") == 0) {
+				h2c_send_response(
+					session, stream_id, 200,
+					ops_ctype, NULL, NULL, 0);
+			} else {
+				h2c_send_response(
+					session, stream_id, 200,
+					ops_ctype, NULL,
+					(const uint8_t *)ops_body,
+					strlen(ops_body));
+			}
+			router_free_request(&req);
+			return;
+		}
 		if (strcmp(method, "POST") == 0) {
 			if (!req.rpc_name) {
 				send_error_response(

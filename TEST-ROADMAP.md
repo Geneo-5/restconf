@@ -10,22 +10,26 @@ Ce document liste **toutes les tâches** à implémenter pour valider la conform
 
 ## 📊 **Tableau de Bord Global**
 
-| Phase | Description | RFC | Tests Implémentés | Tests Passants | Tests Skippés | Statut |
+| Phase | Description | RFC | Tests Implémentés | Tests Passants | Tests Échoués | Statut |
 |-------|-------------|-----|-------------------|----------------|---------------|--------|
 | **1** | Infrastructure RESTCONF | RFC 8040 §2-3 | 12/12 | 12 | 0 | 🟢 **Terminé** |
-| **2** | Sécurité & JWT | RFC 8040 §4, RFC 7515-7519 | 6/6 | 0 | 6 | 🟡 Partiel |
-| **3** | Opérations CRUD | RFC 8040 §4.2-4.7 | 20/20 | 0 | 20 | 🟡 Partiel |
-| **4** | Paramètres de Requête | RFC 8040 §4.8 | 15/15 | 0 | 15 | 🟡 Partiel |
-| **5** | RPC, Actions, Notifications | RFC 8040 §5-6, RFC 7950 §7.15-7.16 | 25/25 | 0 | 25 | 🟡 Partiel |
-| **6** | NMDA (Datastores) | RFC 8527 | 15/15 | 0 | 15 | 🟡 Partiel |
-| **7** | Gestion des Erreurs | RFC 8040 §7 | 18/18 | 9 | 9 | 🟡 Partiel |
-| **8** | Sécurité Avancée | RFC 8341 | 15/15 | 0 | 15 | 🟡 Partiel |
-| **9** | Performance & Robustesse | RFC 8040 §8 | 14/14 | 0 | 14 | 🟡 Partiel |
-| **10** | Intégration CI/CD | - | 0/5 | 0 | 0 | ⚪ À faire |
+| **2** | Sécurité & JWT | RFC 8040 §4, RFC 7515-7519 | 6/6 | 2 | 4 | 🟡 Partiel |
+| **3** | Opérations CRUD | RFC 8040 §4.2-4.7 | 20/20 | 12 | 8 | 🟡 Partiel |
+| **4** | Paramètres de Requête | RFC 8040 §4.8 | 15/15 | 14 | 1 | 🟡 Partiel |
+| **5** | RPC, Actions, Notifications | RFC 8040 §5-6, RFC 7950 §7.15-7.16 | 25/25 | 17 | 8 | 🟡 Partiel |
+| **6** | NMDA (Datastores) | RFC 8527 | 15/15 | 0 | 15 | 🔴 En échec |
+| **7** | Gestion des Erreurs | RFC 8040 §7 | 18/18 | 15 | 3 | 🟡 Partiel |
+| **8** | Sécurité Avancée | RFC 8341 | 15/15 | 13 | 2 | 🟡 Partiel |
+| **9** | Performance & Robustesse | RFC 8040 §8 | 14/14 | 13 | 1 | 🟡 Partiel |
+| **10** | Intégration CI/CD | - | 5/5 | 2 | 3 | 🟡 Partiel |
 
-**Total : 142/142 tests implémentés (100%)** | **31 tests passent, 78 skippés, 33 échouent**
+**Total : 145/145 tests implémentés (100%)** | **100 tests passent ✅, 45 échouent ❌**
 
-**Note sur les skips** : 78 tests sont skippés car les modules YANG (`restconf-test.yang`, `oven.yang`) ou les fonctionnalités (NMDA, actions YANG 1.1) ne sont pas encore complètement supportés par le serveur. Cela est attendu et correct - les décorateurs `@require_*_module` fonctionnent correctement.
+**Note sur les échecs** : Les 45 tests qui échouent sont principalement dus à :
+- Routes `/restconf/data` et `/restconf/ds/<datastore>` sans réponse (None)
+- Parsing des listes avec clés (`list=key`) qui retourne 400
+- Opérations CRUD (POST/PUT/PATCH/DELETE) qui retournent 400/500
+- RPC et streams SSE qui retournent des erreurs
 
 ---
 

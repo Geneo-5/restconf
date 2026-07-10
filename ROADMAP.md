@@ -155,24 +155,30 @@ dans les colonnes "Détails Techniques" ci-dessus et dans `git log`) :
 
 | Sujet | Item(s) | Fichier(s) | Impact |
 | :--- | :---: | :--- | :--- |
-| Pas d'ETag / Last-Modified / If-Match (collision prevention) | 4.14 | `main.c`, `plugin_api.h`, `h2c_server.c` | ~~Pas de détection de conflit d'édition concurrente (RFC 8040 §3.4.1)~~ ✅ ETag FNV-1a + If-Match implémentés |
+| GET /restconf/data et GET /restconf/ds/<ds> sans réponse | 4.5, 5.1 | `main.c`, `router.c` | Routes retournent `status_code=None` (connexion fermée sans réponse) |
+| Parsing listes avec clés échoue | 4.1, 4.2 | `router.c`, `sysrepo_plugin.c` | `GET /restconf/data/module:list=key` retourne 400 Bad Request |
+| Opérations CRUD retournent 400/500 | 4.6, 4.7, 4.8 | `main.c`, `sysrepo_plugin.c` | POST/PUT/PATCH/DELETE échouent sur les ressources data |
+| RPC retournent 400 | 4.10 | `main.c`, `sysrepo_plugin.c` | `POST /restconf/operations/module:rpc` échoue |
+| Streams SSE retournent 406 | 6.2 | `main.c`, `sse_stream.c` | `GET /restconf/stream/netconf` retourne Not Acceptable |
 | Notifications sysrepo non câblées vers les flux SSE | 3.7, 6.1, 6.5 | `sysrepo_plugin.c`, `sse_stream.c`, `main.c` | `establish-subscription` répond avec un ID mais aucun événement n'est jamais poussé ; pas de registre des flux SSE actifs |
 | Contexte libyang indisponible en mode Externe | 3.5, 3.10 | `uds_gateway.c`, `router.c` | Toute URI RESTCONF avec clé de liste échoue au parsing en mode Externe (IPC) |
 | `plugin_subscribe_notifications` stub côté gateway externe | 3.8 (partiel) | `uds_gateway.c` | Dépend de 6.1 |
 | Pas de limitation de ressources | 7.3 | `h2c_server.c` | Pas de `WINDOW_UPDATE` nghttp2 ni de timeouts `libevent` explicites |
 | Couverture de tests incomplète | 7.4, 8.6–8.9 | `test/` | Pas de tests CRUD/NMDA/RPC, pas d'intégration `ctest` dans `CMakeLists.txt` |
-| 3 tests d'erreurs en échec | 8.5 | `test/test_basic.py` | Crash serveur sur `DELETE /restconf` et sur une URI percent-encodée invalide |
 
 ---
 
 ## 🎯 Prochaines Étapes (par priorité)
 
-0. **fix test et modules-states**
-   Update `check_restconf_test_module` et `check_oven_module`.
-   Ils doivent utiliser `/restconf/data/ietf-yang-library:modules-state`
-   pour vérifier les modules installé. Il faut ajouté dans `test_basic`
-   la récupération de `/restconf/data/ietf-yang-library:modules-state`.
-   De plus, cette accès retourne 204 ce qui n'est pas conforme.
+0. **Corriger les tests qui échouent (45/145)**
+   Problèmes identifiés :
+   - `GET /restconf/data` et `GET /restconf/ds/<datastore>` retournent
+     `status_code=None` (pas de réponse serveur) au lieu de 200/401/403
+   - Listes avec clés (`list=key`) retournent 400 Bad Request
+   - POST/PUT/PATCH/DELETE sur ressources data retournent 400 ou 500
+   - RPC retournent 400 au lieu de 200/204
+   - Streams SSE retournent 406 Not Acceptable
+   - Problèmes de validation percent-encoding
 
 1. **6.1 — Câblage des notifications sysrepo réelles vers SSE**
    `plugin_subscribe_notifications` doit s'abonner via
@@ -194,9 +200,6 @@ dans les colonnes "Détails Techniques" ci-dessus et dans `git log`) :
 5. **7.4, 8.6–8.9 — Tests** : conformité RFC 8040/8527, CRUD/NMDA/RPC,
    intégration `ctest`.
 
-6. **8.5 — Corriger les 3 tests d'erreurs en échec** (crash serveur sur
-   `DELETE /restconf` et sur URI percent-encodée invalide).
-
 ---
 
 ## 📋 **Roadmap des Tests**
@@ -205,10 +208,15 @@ Une feuille de route détaillée pour les tests de conformité RESTCONF est disp
 - **TEST-ROADMAP.md** (à la racine) : [Lien](./TEST-ROADMAP.md)
 - **doc/test/TEST-ROADMAP.md** : Version détaillée avec statistiques et prochaines étapes
 
-**Statut actuel des tests (2026-07-09)** :
-- 142 tests implémentés (100%)
-- 31 tests passent
-- 78 tests skippés (modules non chargés)
-- 33 tests échouent (problèmes fonctionnels)
+**Statut actuel des tests (2026-07-10)** :
+- 145 tests implémentés (100%)
+- **100 tests passent** ✅
+- **45 tests échouent** ❌ (problèmes fonctionnels restants)
+
+Principaux problèmes restants :
+- Routes `/restconf/data` et `/restconf/ds/<datastore>` sans réponse (None)
+- Parsing des listes avec clés (`list=key`) retourne 400
+- Opérations CRUD (POST/PUT/PATCH/DELETE) retournent 400/500
+- RPC et streams SSE retournent des erreurs
 
 Voir TEST-ROADMAP.md pour plus de détails sur chaque phase de test.

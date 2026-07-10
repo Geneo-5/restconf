@@ -533,9 +533,14 @@ void plugin_handle_get(
 
 	/* Note: sr_get_data() utilise la mémoire partagée (SHM)
 	 * de sysrepo, ce qui rend l'opération très rapide.
-	 * Le "blocage" est minime (accès mémoire, pas réseau). */
+	 * Le "blocage" est minime (accès mémoire, pas réseau).
+	 *
+	 * RFC 8040 Sec 3.4 : GET sur la racine du datastore
+	 * ({+restconf}/data ou {+restconf}/ds/<datastore>) sans
+	 * xpath spécifique retourne toutes les données. */
+	const char *xpath_query = req->xpath ? req->xpath : "/*";
 	int rc = sr_get_data(
-		sess, req->xpath, max_depth, 0, opts, &data);
+		sess, xpath_query, max_depth, 0, opts, &data);
 
 	build_get_response(
 		req, data, rc, &status, &body, &body_len, &etag);
@@ -826,6 +831,14 @@ void plugin_handle_edit(
 	}
 
 	if (strcmp(req->method, "DELETE") == 0) {
+		if (!req->xpath || *req->xpath == '\0') {
+			/* RFC 8040: DELETE on datastore root
+			 * is not allowed */
+			callback(405, "operation-not-supported",
+				"Cannot delete datastore root",
+				NULL, user_data);
+			return;
+		}
 		rc = sr_delete_item(
 			sess, req->xpath, SR_EDIT_DEFAULT);
 		if (rc == SR_ERR_OK) {

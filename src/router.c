@@ -317,11 +317,17 @@ int router_parse_request(
 	}
 
 	const char *rest_path = NULL;
-	if (strncmp(path, "/restconf/data/", 15) == 0) {
+	if (strcmp(path, "/restconf/data") == 0 ||
+	    strncmp(path, "/restconf/data/", 15) == 0) {
 		req_out->res_type = RC_RES_DATA;
 		/* RFC 8040: /restconf/data cible running par défaut */
 		req_out->datastore = RC_DS_RUNNING;
-		rest_path = path + 15;
+		rest_path = (path[14] == '/') ? path + 15 : "";
+	} else if (strcmp(path, "/restconf/ds") == 0) {
+		/* RFC 8527: /restconf/ds sans datastore = erreur */
+		req_out->res_type = RC_RES_DS;
+		req_out->datastore = RC_DS_UNKNOWN;
+		rest_path = "";
 	} else if (strncmp(path, "/restconf/ds/", 13) == 0) {
 		req_out->res_type = RC_RES_DS;
 		const char *ds_start = path + 13;
@@ -346,11 +352,29 @@ int router_parse_request(
 			}
 			rest_path = ds_end + 1;
 		} else {
-			return -1;
+			/* /restconf/ds/<datastore> sans slash final
+			 * (racine du datastore NMDA) */
+			size_t ds_len = strlen(ds_start);
+			char ds_identity[256];
+			if (ds_len >= sizeof(ds_identity)) return -1;
+			memcpy(ds_identity, ds_start, ds_len);
+			ds_identity[ds_len] = '\0';
+
+			if (strstr(ds_identity, "running")) {
+				req_out->datastore = RC_DS_RUNNING;
+			} else if (strstr(ds_identity, "operational")) {
+				req_out->datastore = RC_DS_OPERATIONAL;
+			} else if (strstr(ds_identity, "intended")) {
+				req_out->datastore = RC_DS_INTENDED;
+			} else {
+				req_out->datastore = RC_DS_UNKNOWN;
+			}
+			rest_path = "";
 		}
-	} else if (strncmp(path, "/restconf/operations/", 21) == 0) {
+	} else if (strcmp(path, "/restconf/operations") == 0 ||
+	           strncmp(path, "/restconf/operations/", 21) == 0) {
 		req_out->res_type = RC_RES_OPERATIONS;
-		rest_path = path + 21;
+		rest_path = (path[20] == '/') ? path + 21 : "";
 
 		/* Parser le module:rpc-name depuis l'URI operations */
 		if (rest_path && *rest_path != '\0') {
@@ -376,11 +400,16 @@ int router_parse_request(
 				req_out->rpc_name = strdup(rpc_path);
 			}
 		}
-	} else if (strncmp(path, "/streams/", 9) == 0) {
+	} else if (strncmp(path, "/restconf/stream/", 17) == 0 ||
+	           strncmp(path, "/streams/", 9) == 0) {
 		/* RFC 8040 Sec 6.3: Event Stream URIs */
 		req_out->res_type = RC_RES_EVENT_STREAM;
 		/* Le reste du path identifie le stream */
-		req_out->xpath = strdup(path + 9);
+		if (strncmp(path, "/restconf/stream/", 17) == 0) {
+			req_out->xpath = strdup(path + 17);
+		} else {
+			req_out->xpath = strdup(path + 9);
+		}
 	} else {
 		req_out->res_type = RC_RES_UNKNOWN;
 		return -1;

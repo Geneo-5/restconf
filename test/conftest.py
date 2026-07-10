@@ -145,7 +145,59 @@ class H2cClient:
         if body is not None:
             if isinstance(body, str):
                 body = body.encode("utf-8")
-            conn.send_data(stream_id, body, end_stream=True)
+            # Handle HTTP/2 flow control: send data in chunks
+            # that fit within the flow control window
+            offset = 0
+            while offset < len(body):
+                window = conn.local_flow_control_window(stream_id)
+                # Also respect max frame size (usually 16384)
+                max_frame = min(
+                    window,
+                    conn.max_outbound_frame_size,
+                    len(body) - offset,
+                )
+                if max_frame <= 0:
+                    # Need to wait for WINDOW_UPDATE from server
+                    sock.sendall(conn.data_to_send())
+                    try:
+                        resp_data = sock.recv(65535)
+                        if resp_data:
+                            events = conn.receive_data(resp_data)
+                            sock.sendall(conn.data_to_send())
+                            # Process any non-flow-control events
+                            for ev in events:
+                                if isinstance(
+                                    ev,
+                                    h2.events.ResponseReceived,
+                                ):
+                                    pass  # handled later
+                                elif isinstance(
+                                    ev,
+                                    h2.events.DataReceived,
+                                ):
+                                    pass
+                                elif isinstance(
+                                    ev, h2.events.StreamEnded
+                                ):
+                                    sock.sendall(
+                                        conn.data_to_send()
+                                    )
+                                    return H2cResponse(
+                                        response_status,
+                                        response_headers,
+                                        response_body,
+                                    )
+                    except socket.timeout:
+                        break
+                    continue
+                is_last = offset + max_frame >= len(body)
+                conn.send_data(
+                    stream_id,
+                    body[offset : offset + max_frame],
+                    end_stream=is_last,
+                )
+                sock.sendall(conn.data_to_send())
+                offset += max_frame
 
         sock.sendall(conn.data_to_send())
 

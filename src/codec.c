@@ -10,6 +10,10 @@
 media_type_t codec_parse_content_type(const char *header)
 {
 	if (!header) return MEDIA_TYPE_UNKNOWN;
+	/* RFC 8040 Sec 4.6.1 : Plain Patch utilise les mêmes media
+	 * types que les autres opérations (application/yang-data+json
+	 * ou application/yang-data+xml). Les media types
+	 * application/yang-data+patch+json/xml n'existent pas. */
 	if (strstr(header, "application/yang-data+json")) {
 		return MEDIA_TYPE_JSON;
 	}

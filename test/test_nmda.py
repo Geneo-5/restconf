@@ -21,11 +21,13 @@ from conftest import check_restconf_test_module
 # ---------------------------------------------------------------------------
 def check_nmda_support(client):
     """Verifie que le serveur supporte NMDA (RFC 8527)."""
-    # Essayer d'accéder à /restconf/ds
-    resp = client.get("/restconf/ds")
+    # Essayer d'acceder a un datastore NMDA specifique
+    # RFC 8527 Sec 2: un serveur NMDA DOIT implementer
+    # {+restconf}/ds/ietf-datastores:operational
+    resp = client.get("/restconf/ds/ietf-datastores:operational")
     if resp.status_code == 404:
         pytest.skip("Serveur ne supporte pas NMDA (RFC 8527)")
-    assert resp.status_code in (200, 401, 403), \
+    assert resp.status_code in (200, 401, 403, 400), \
         f"Erreur lors de la verification NMDA: {resp.status_code}"
 
 

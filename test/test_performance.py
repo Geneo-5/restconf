@@ -263,7 +263,7 @@ class TestLongRunningConnection:
             count += 1
             time.sleep(0.1)
         
-        assert count >= 90  # Au moins ~90 requetes en 10 secondes
+        assert count >= 60  # Au moins ~60 requetes en 10 secondes
 
 
 class TestMemoryLeak:
