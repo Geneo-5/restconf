@@ -83,6 +83,7 @@ To run build and test, run :
 ### Data Flow & Event Integration
 - `libevent` listens on a TCP socket.
 - `nghttp2` parses HTTP/2 frames.
+- `libyang` sysrepo use libyang2
 - `sysrepo` file descriptors (obtained via `sr_get_event_fd()`) are registered in `libevent` using `event_new(..., EV_READ)`.
 - When `sysrepo` has data/notifications, the FD triggers a `libevent` callback, which calls `sr_subscription_process_events()` **inside the main thread**.
 

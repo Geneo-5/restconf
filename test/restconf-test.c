@@ -1,5 +1,5 @@
 /**
- * resconf-test.c - Plugin Sysrepo pour le module restconf-test.yang
+ * restconf-test.c - Plugin Sysrepo pour le module restconf-test.yang
  * 
  * Plugin externe charge par sysrepo-plugind.
  * Il gere les RPCs du module restconf-test.yang.
@@ -383,11 +383,14 @@ int sr_plugin_init_cb(sr_session_ctx_t *session, void **private_ctx)
     rc = sr_rpc_subscribe(session, "/restconf-test:trigger-event", rpc_trigger_event_cb, ctx, 0, SR_SUBSCR_NO_THREAD, &sub);
     if (rc != SR_ERR_OK) { SRPLG_LOG_ERR("restconf-test", "RPC trigger-event subscribe failed: %s", sr_strerror(rc)); goto error; }
     
+    ctx->subscription = sub;
     *private_ctx = ctx;
     SRPLG_LOG_DBG("restconf-test", "restconf-test plugin initialized successfully");
     return SR_ERR_OK;
     
 error:
+    if (sub)
+        sr_unsubscribe(sub);
     free(ctx);
     return rc;
 }

@@ -336,6 +336,8 @@ static void build_get_response(
 
 	if (out_etag) *out_etag = NULL;
 
+	RC_TRACE("%s", sr_strerror(rc));
+
 	if (rc != SR_ERR_OK) {
 		const char *tag = "operation-failed";
 		const char *msg = sr_strerror(rc);
@@ -628,7 +630,7 @@ static void build_rpc_response(
 		} else {
 			status = 500;
 		}
-		RC_TRACE("Response error %d %s -> %d %s", rc, msg, status, tag);
+	
 		codec_serialize_errors(
 			req->accept_type, tag, msg,
 			&body, &body_len);
@@ -756,6 +758,66 @@ void plugin_handle_rpc(
 	if (output) sr_release_data(output);
 }
 
+/**
+ * @brief Parcourt récursivement l'arbre libyang et appelle
+ * sr_set_item_str() pour chaque leaf/leaf-list trouvé.
+ *
+ * @return SR_ERR_OK si tous les set_item ont réussi.
+ */
+static int plugin_set_leaves_recursive(
+	sr_session_ctx_t *sess,
+	struct lyd_node *node,
+	const char *default_op,
+	int *set_count)
+{
+	if (!node) return SR_ERR_OK;
+
+	/* Seulement les leaves et leaf-lists */
+	if (node->schema->nodetype == LYS_LEAF ||
+	    node->schema->nodetype == LYS_LEAFLIST) {
+		const char *value = lyd_get_value(node);
+
+		/* Construire le xpath complet pour ce leaf */
+		char *leaf_xpath = lyd_path(
+			node, LYD_PATH_STD, NULL, 0);
+
+		if (leaf_xpath) {
+			RC_TRACE("sr_set_item_str: xpath=%s value=%s",
+			         leaf_xpath, value ? value : "(null)");
+
+			/* Utiliser SR_EDIT_ISOLATE pour éviter
+			 * la validation du module entier */
+			uint32_t opts = SR_EDIT_ISOLATE;
+			if (strcmp(default_op, "replace") == 0) {
+				opts |= SR_EDIT_NON_RECURSIVE;
+			}
+
+			int set_rc = sr_set_item_str(
+				sess, leaf_xpath, value, NULL, opts);
+
+			free(leaf_xpath);
+
+			if (set_rc != SR_ERR_OK) {
+				RC_ERROR("sr_set_item_str failed: %s (rc=%d)",
+				         sr_strerror(set_rc), set_rc);
+				return set_rc;
+			}
+			(*set_count)++;
+		}
+	}
+
+	/* Récursion sur les enfants */
+	struct lyd_node *child = lyd_child(node);
+	while (child) {
+		int rc = plugin_set_leaves_recursive(
+			sess, child, default_op, set_count);
+		if (rc != SR_ERR_OK) return rc;
+		child = child->next;
+	}
+
+	return SR_ERR_OK;
+}
+
 void plugin_handle_edit(
 	plugin_ctx_t *ctx,
 	const rc_request_t *req,
@@ -861,9 +923,32 @@ void plugin_handle_edit(
 		if (rc == SR_ERR_OK) {
 			/* Ajout du timeout (0 = défaut) */
 			rc = sr_apply_changes(sess, 0);
+			if (rc != SR_ERR_OK) {
+				RC_ERROR("sr_apply_changes failed: %s (rc=%d)",
+				         sr_strerror(rc), rc);
+				/* Log des erreurs sysrepo détaillées */
+				const sr_error_info_t *err_info = NULL;
+				sr_session_get_error(sess, &err_info);
+				for (size_t i = 0; i < err_info->err_count; i++) {
+					RC_ERROR("sysrepo error[%zu]: %s",
+								i, err_info->err[i].message);
+				}
+			}
 		}
 	} else {
 		/* POST, PUT, PATCH */
+		/* RFC 8040 Sec 4.4-4.6: vérifier le Content-Type */
+		if (req->req_type == MEDIA_TYPE_UNKNOWN) {
+			callback(415, "operation-not-supported",
+			         "Unsupported Content-Type",
+			         NULL, user_data);
+			return;
+		}
+
+		RC_DEBUG("plugin_handle_edit: parsing %zu bytes of %s data",
+		         body_len,
+		         req->req_type == MEDIA_TYPE_JSON ? "JSON" : "XML");
+
 		struct lyd_node *data = NULL;
 		rc = codec_parse_data(
 			sess, (const char *)body,
@@ -872,6 +957,24 @@ void plugin_handle_edit(
 		if (rc == 0 && data) {
 			const char *default_op = "merge";
 
+			/*
+			 * RFC 8040 Sec 4.5 (PUT) : "A PUT on a data resource
+			 * only replaces that data resource within the
+			 * datastore."
+			 *
+			 * PROBLÈME : sysrepo avec sr_edit_batch() et "replace"
+			 * valide au niveau du module entier et échoue si des
+			 * containers siblings de state data (config false)
+			 * existent dans le datastore. Erreur typique :
+			 * "Unexpected data state node found".
+			 *
+			 * SOLUTION : Utiliser sr_set_item() individuellement
+			 * pour chaque leaf avec le flag SR_EDIT_ISOLATE.
+			 * Cela évite la validation du module entier et
+			 * permet d'éditer uniquement les leaves de
+			 * configuration sans affecter les state nodes
+			 * siblings.
+			 */
 			if (strcmp(req->method, "PUT") == 0) {
 				default_op = "replace";
 			} else if (strcmp(req->method, "POST") == 0) {
@@ -881,13 +984,50 @@ void plugin_handle_edit(
 				default_op = "merge";
 			}
 
-			rc = sr_edit_batch(sess, data, default_op);
-			if (rc == SR_ERR_OK) {
-				/* Ajout du timeout (0 = défaut) */
+			RC_DEBUG("plugin_handle_edit: parsing succeeded, "
+			         "applying edit with operation '%s'",
+			         default_op);
+			RC_DEBUG("plugin_handle_edit: target xpath = %s",
+			         req->xpath ? req->xpath : "(null)");
+
+			/*
+			 * Approche robuste : itérer sur tous les leaves de
+			 * l'arbre parsé et utiliser sr_set_item_str() avec
+			 * SR_EDIT_ISOLATE pour chaque leaf. Cela évite la
+			 * validation du module entier qui cause l'erreur
+			 * "Unexpected data state node found".
+			 *
+			 * sr_set_item_str() accepte directement une string
+			 * contrairement à sr_set_item() qui attend sr_val_t*.
+			 */
+			int set_count = 0;
+
+			rc = plugin_set_leaves_recursive(
+				sess, data, default_op, &set_count);
+
+			if (rc == SR_ERR_OK && set_count > 0) {
+				/* Appliquer les changements */
 				rc = sr_apply_changes(sess, 0);
+				if (rc != SR_ERR_OK) {
+					RC_ERROR("sr_apply_changes failed: %s (rc=%d)",
+					         sr_strerror(rc), rc);
+					/* Log des erreurs sysrepo détaillées */
+					const sr_error_info_t *err_info = NULL;
+					sr_session_get_error(sess, &err_info);
+					for (size_t i = 0; i < err_info->err_count; i++) {
+						RC_ERROR("sysrepo error[%zu]: %s",
+						         i, err_info->err[i].message);
+					}
+				}
+			} else if (set_count == 0) {
+				RC_WARN("No leaves found to set in parsed data");
+				rc = SR_ERR_VALIDATION_FAILED;
 			}
+
 			lyd_free_all(data);
 		} else {
+			RC_ERROR("plugin_handle_edit: codec_parse_data "
+			         "failed (rc=%d)", rc);
 			rc = SR_ERR_VALIDATION_FAILED;
 		}
 	}

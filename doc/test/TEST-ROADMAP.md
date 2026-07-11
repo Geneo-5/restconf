@@ -30,7 +30,7 @@ Ce document liste **toutes les tâches** à implémenter pour la suite de qualif
 - [x] **DONE** - Module `restconf-test.yang` déplacé dans `doc/test/modules/`
 
 ### 2. Infrastructure de test
-- [x] **DONE** - Créer `test/resconf-test.c` (plugin sysrepo)
+- [x] **DONE** - Créer `test/restconf-test.c` (plugin sysrepo)
 - [x] **DONE** - Créer `test/CMakeLists.txt` avec targets
 - [x] **DONE** - Intégrer `add_subdirectory(test)` dans `CMakeLists.txt` principal
 - [ ] **TODO** - Tester la compilation du plugin avec `cmake -DBUILD_TEST_PLUGIN=ON`

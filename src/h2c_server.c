@@ -12,6 +12,7 @@
 #include <event2/buffer.h>
 #include <nghttp2/nghttp2.h>
 #include "h2c_server.h"
+#include "logger.h"
 
 #define MAKE_NV(NAME, VALUE, VALUELEN) \
 	((nghttp2_nv){(uint8_t *)(NAME), (uint8_t *)(VALUE), \
@@ -399,18 +400,23 @@ int h2c_send_response_with_headers(
 
 	if (has_body) {
 		src = malloc(sizeof(data_source_t));
-		src->data = malloc(body_len);
+		src->data = malloc(body_len + 1);
 		if (!src->data) {
 			free(src);
 			free(hdrs);
 			return -1;
 		}
 		memcpy((void *)src->data, body, body_len);
+		((uint8_t *)src->data)[body_len] = 0;
 		src->len = body_len;
 		src->offset = 0;
 		data_prd.source.ptr = src;
 		data_prd.read_callback = data_read_callback;
 	}
+
+	RC_TRACE("RESPONSE: %d -> %ld", status_code, body_len);
+	if (has_body)
+		RC_TRACE("    BODY: %s", src->data);
 
 	nghttp2_submit_response(
 		session->ng_session, stream_id, hdrs, hdr_count,
@@ -483,17 +489,22 @@ int h2c_send_response_ex(
 		if (!src) return 0;
 		/* Copy the body so it survives after the caller */
 		/* returns (who may free(body) immediately after). */
-		src->data = malloc(body_len);
+		src->data = malloc(body_len + 1);
 		if (!src->data) {
 			free(src);
 			return 0;
 		}
 		memcpy((void *)src->data, body, body_len);
+		((uint8_t *)src->data)[body_len] = 0;
 		src->len = body_len;
 		src->offset = 0;
 		data_prd.source.ptr = src;
 		data_prd.read_callback = data_read_callback;
 	}
+
+	RC_TRACE("RESPONSE: %d -> %ld", status_code, body_len);
+	if (has_body)
+		RC_TRACE("    BODY: %s", src->data);
 
 	nghttp2_submit_response(
 		session->ng_session, stream_id, hdrs, hdr_count,
@@ -594,6 +605,7 @@ h2c_sse_stream_t *h2c_sse_stream_open(
 	data_prd.source.ptr = stream;
 	data_prd.read_callback = sse_data_read_callback;
 
+	RC_TRACE("RESPONSE: 200 type stream");
 	/* Soumettre la réponse avec headers + data provider */
 	nghttp2_submit_response(
 		session->ng_session, stream_id,

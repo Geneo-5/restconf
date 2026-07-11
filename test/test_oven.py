@@ -144,7 +144,7 @@ class TestOvenConfiguration:
         resp = client.patch(
             "/restconf/data/oven:oven",
             body=json.dumps(patch),
-            headers={"Content-Type": "application/yang-data+patch+json"}
+            headers={"Content-Type": "application/yang-data+json"}
         )
         
         # PATCH peut utiliser yang-data+json ou yang-data+patch+json

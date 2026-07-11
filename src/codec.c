@@ -6,18 +6,29 @@
 #include <libyang/libyang.h>
 #include <sysrepo.h>
 #include "codec.h"
+#include "logger.h"
 
 media_type_t codec_parse_content_type(const char *header)
 {
 	if (!header) return MEDIA_TYPE_UNKNOWN;
 	/* RFC 8040 Sec 4.6.1 : Plain Patch utilise les mêmes media
 	 * types que les autres opérations (application/yang-data+json
-	 * ou application/yang-data+xml). Les media types
-	 * application/yang-data+patch+json/xml n'existent pas. */
-	if (strstr(header, "application/yang-data+json")) {
+	 * ou application/yang-data+xml).
+	 *
+	 * RFC 8072 Sec 2.1 : YANG Patch utilise
+	 * application/yang-patch+json ou application/yang-patch+xml.
+	 *
+	 * Certains clients envoient aussi
+	 * application/yang-data+patch+json par erreur — l'accepter
+	 * comme JSON pour la toléranceinteropérabilité. */
+	if (strstr(header, "application/yang-data+json") ||
+	    strstr(header, "application/yang-patch+json") ||
+	    strstr(header, "application/yang-data+patch+json")) {
 		return MEDIA_TYPE_JSON;
 	}
-	if (strstr(header, "application/yang-data+xml")) {
+	if (strstr(header, "application/yang-data+xml") ||
+	    strstr(header, "application/yang-patch+xml") ||
+	    strstr(header, "application/yang-data+patch+xml")) {
 		return MEDIA_TYPE_XML;
 	}
 	return MEDIA_TYPE_UNKNOWN;
@@ -72,7 +83,8 @@ int codec_serialize_data_wd(
 		                  "explicit") == 0) {
 			options |= LYD_PRINT_WD_EXPLICIT;
 		}
-	}
+	} else 
+		options |= LYD_PRINT_WD_ALL;
 
 	if (lyd_print_mem(out_buf, tree, ly_fmt, options) != 0) {
 		return -1;
@@ -98,8 +110,23 @@ int codec_parse_data(
 		sr_session_get_connection(session));
 	if (!ly_ctx) return -1;
 
-	uint32_t parse_opts = LYD_PARSE_STRICT | LYD_PARSE_OPAQ;
-	uint32_t validate_opts = LYD_VALIDATE_PRESENT;
+	/*
+	 * RFC 8040 Sec 4.5 (PUT) : Quand on édite une data resource
+	 * spécifique (ex: /oven:oven), on ne doit PAS valider le module
+	 * entier car cela inclurait les state nodes (config false) qui
+	 * ne font pas partie de l'édition.
+	 *
+	 * LYD_PARSE_ONLY : Parse la syntaxe sans validation complète.
+	 * La validation sera effectuée par sysrepo lors de
+	 * sr_apply_changes() au niveau du datastore, avec les bons
+	 * flags pour ignorer les state nodes non concernés.
+	 *
+	 * Cela évite l'erreur "Unexpected data state node found" quand
+	 * le module contient à la fois des containers de configuration
+	 * et de state data au niveau supérieur.
+	 */
+	uint32_t parse_opts = LYD_PARSE_STRICT | LYD_PARSE_OPAQ | LYD_PARSE_ONLY;
+	uint32_t validate_opts = 0;
 
 	/* lyd_parse_data_mem expects a NUL-terminated string */
 	char *null_term = malloc(len + 1);
@@ -111,9 +138,28 @@ int codec_parse_data(
 	memcpy(null_term, payload, len);
 	null_term[len] = '\0';
 
-	if (lyd_parse_data_mem(
+	LY_ERR ly_rc = lyd_parse_data_mem(
 	        ly_ctx, null_term, ly_fmt,
-	        parse_opts, validate_opts, tree) != 0) {
+	        parse_opts, validate_opts, tree);
+
+	/* Note: avec LYD_PARSE_ONLY, la validation est différée à
+	 * sr_apply_changes() qui utilise les flags appropriés pour
+	 * ignorer les state nodes non concernés par l'édition. */
+
+	if (ly_rc != LY_SUCCESS) {
+		/* Log detailed libyang error for debugging */
+		const struct ly_err_item *err = ly_err_first(ly_ctx);
+		if (err) {
+			RC_ERROR("codec_parse_data: libyang error: %s",
+			         err->msg ? err->msg : "(no message)");
+			if (err->data_path) {
+				RC_ERROR("codec_parse_data: at path: %s",
+				         err->data_path);
+			}
+		} else {
+			RC_ERROR("codec_parse_data: libyang error "
+			         "(no details available)");
+		}
 		free(null_term);
 		sr_release_context(
 			sr_session_get_connection(session));

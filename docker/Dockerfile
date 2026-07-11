@@ -50,6 +50,7 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     libjson-c-dev \
     python3 \
+    strace \
     && rm -rf /var/lib/apt/lists/*
 
 # ==============================================================================

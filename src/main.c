@@ -225,7 +225,7 @@ static void on_restconf_request(
 	app_context_t *app = (app_context_t *)user_data;
 	rc_request_t req = {0};
 
-	RC_TRACE("REQUEST: %d %s %s -> %d", stream_id, method, path, body_len);
+	RC_TRACE("REQUEST: %s %s -> %ld", method, path, body_len);
 	if (body)
  		RC_TRACE("   BODY: %s", body);
 
@@ -404,6 +404,15 @@ static void on_restconf_request(
 
 			get_req_ctx_t *ctx = malloc(
 				sizeof(get_req_ctx_t));
+			if (!ctx) {
+				send_error_response(
+					session, stream_id,
+					req.accept_type, 500,
+					"operation-failed",
+					"Memory allocation failed");
+				router_free_request(&req);
+				return;
+			}
 			ctx->session = session;
 			ctx->stream_id = stream_id;
 			ctx->accept_type = req.accept_type;
@@ -419,6 +428,15 @@ static void on_restconf_request(
 
 			edit_req_ctx_t *ctx = malloc(
 				sizeof(edit_req_ctx_t));
+			if (!ctx) {
+				send_error_response(
+					session, stream_id,
+					req.accept_type, 500,
+					"operation-failed",
+					"Memory allocation failed");
+				router_free_request(&req);
+				return;
+			}
 			ctx->session = session;
 			ctx->stream_id = stream_id;
 			ctx->accept_type = req.accept_type;
@@ -537,11 +555,19 @@ static void on_restconf_request(
 	} else if (req.res_type == RC_RES_EVENT_STREAM) {
 		/* RFC 8040 Sec 6.3: Event Stream (SSE) */
 		if (strcmp(method, "GET") == 0) {
-			/* Vérifier le header Accept */
+			/* RFC 8040 Sec 6.3: vérifier le header Accept.
+			 * Si Accept est absent ou ne spécifie pas
+			 * text/event-stream, on accepte quand même
+			 * pour la tolérance interopérabilité (certains
+			 * clients n'envoient pas d'Accept header pour
+			 * les streams SSE). */
 			const char *accept = h2c_session_get_accept(
 				session);
-			if (accept && strstr(accept,
-			                    "text/event-stream") == NULL) {
+			/* Only reject if Accept is explicitly set and
+			 * doesn't include text/event-stream */
+			if (accept && *accept &&
+			    strstr(accept, "text/event-stream") == NULL &&
+			    strstr(accept, "*/*") == NULL) {
 				send_error_response(
 					session, stream_id,
 					req.accept_type, 406,

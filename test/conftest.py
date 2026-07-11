@@ -350,24 +350,23 @@ def sysrepo_plugin_process():
         proc.kill()
         proc.wait()
 
+# Cache des modules YANG installés
+_INSTALLED_MODULES_CACHE = None
+
 
 def _fetch_installed_modules(client):
     """
-    Recupere l'ensemble des modules YANG charges sur le serveur, via
-    GET /restconf/data/ietf-yang-library:modules-state (RFC 8040
-    Sec 3.3.3, RFC 7895).
+    Récupère l'ensemble des modules YANG chargés.
 
-    C'est la source de verite protocolaire pour la presence d'un
-    module : interroger directement une ressource de donnees
-    specifique au module (ex. /restconf/data/oven:oven) est fragile,
-    puisqu'une telle ressource peut legitimement etre absente/vide
-    (404) pour d'autres raisons que "module non charge" (ex.
-    conteneur presence non instancie).
-
-    Retourne un tuple (status_code, set_de_noms_de_modules_ou_None).
-    `modules` est None si le status n'est pas 200 (impossible de
-    lister dans ce cas).
+    Le premier résultat HTTP 200 est conservé en cache pour toute la
+    durée de la session de tests. Les réponses en erreur ne sont pas
+    mémorisées.
     """
+    global _INSTALLED_MODULES_CACHE
+
+    if _INSTALLED_MODULES_CACHE is not None:
+        return 200, _INSTALLED_MODULES_CACHE
+
     resp = client.get(
         "/restconf/data/ietf-yang-library:modules-state",
         headers={"Accept": "application/yang-data+json"},
@@ -380,12 +379,14 @@ def _fetch_installed_modules(client):
     modules_state = data.get(
         "ietf-yang-library:modules-state", data
     )
-    names = {
+    modules = {
         m.get("name")
         for m in modules_state.get("module", [])
         if m.get("name")
     }
-    return resp.status_code, names
+
+    _INSTALLED_MODULES_CACHE = modules
+    return 200, modules
 
 
 def _require_module(client, module_name, yang_file_hint):
@@ -521,6 +522,7 @@ def server_process(sysrepo_plugin_process):
     yield proc
 
     # Arrêt du serveur
+    time.sleep(1)
     proc.send_signal(signal.SIGTERM)
     print(proc.stdout.read().decode(errors='backslashreplace'))
     try:

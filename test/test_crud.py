@@ -227,7 +227,7 @@ class TestCRUDUpdate:
         resp = client.patch(
             "/restconf/data/restconf-test:system/config",
             body=json.dumps(patch_data),
-            headers={"Content-Type": "application/yang-data+patch+json"}
+            headers={"Content-Type": "application/yang-data+json"}
         )
         
         # PATCH peut retourner 204 No Content ou 404 si la ressource n'existe pas

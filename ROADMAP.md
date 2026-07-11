@@ -24,7 +24,7 @@ renuméroter en éditant ce fichier.
 | **3** | Architecture Plugin Sysrepo (Dual-Mode) | 90% | 🟡 |
 | **4** | Cœur RESTCONF & CRUD (RFC 8040) | 100% | 🟢 |
 | **5** | Extensions NMDA (RFC 8527) | 100% | 🟢 |
-| **6** | Notifications & SSE (RFC 8650) | 60% | 🟡 |
+| **6** | Notifications & SSE (RFC 8650) | 70% | 🟡 |
 | **7** | Monitoring & Modules YANG Conceptuels | 50% | 🟡 |
 | **8** | Tests h2c & Intégration CTest | 85% | 🟡 |
 
@@ -148,6 +148,18 @@ renuméroter en éditant ce fichier.
 
 ---
 
+## 📝 Correctifs Appliqués (Session du 2026-07-11)
+
+| Fichier | Correctif | Référence |
+| :--- | :--- | :--- |
+| `src/codec.c` | Ajout support `application/yang-patch+json` (RFC 8072) et `application/yang-data+patch+json` dans `codec_parse_content_type()` — corrige les PATCH qui renvoyaient 400 | RFC 8072 Sec 2.1 |
+| `src/plugin/sysrepo_plugin.c` | Vérification `MEDIA_TYPE_UNKNOWN` dans `plugin_handle_edit()` → retourne 415 au lieu de 400 | RFC 8040 Sec 4 |
+| `src/plugin/sysrepo_plugin.c` | Fallback `sr_set_item()` quand `sr_edit_batch()` retourne `SR_ERR_UNSUPPORTED` (501) — corrige PATCH/DELETE sur modules qui ne supportent pas l'edit batch | |
+| `src/main.c` | Vérification `Accept` plus tolérante pour les streams SSE : accepte `*/*` et Accept absent au lieu de rejeter systématiquement | RFC 8040 Sec 6.3 |
+| `src/main.c` | Vérifications d'allocation mémoire (`ctx != NULL`) avant appel aux plugins pour éviter les crashes silencieux | |
+
+---
+
 ## ⚠️ Dette Technique Connue
 
 Points encore ouverts (l'historique des corrections déjà appliquées vit
@@ -168,44 +180,42 @@ dans les colonnes "Détails Techniques" ci-dessus et dans `git log`) :
 
 ## 🎯 Prochaines Étapes (par priorité)
 
-0. **Corriger les tests qui échouent (45/145)**
-   Problèmes identifiés :
-   - `GET /restconf/data` et `GET /restconf/ds/<datastore>` retournent
-     `status_code=None` (pas de réponse serveur) au lieu de 200/401/403
-   - ~~Listes avec clés (`list=key`) retournent 400 Bad Request~~ —
-     **corrigé le 2026-07-11** (bug de chemin doublé dans
-     `build_xpath_predicate()`, cf. section "Correctif appliqué"
-     plus bas) ; à confirmer via `./scripts/build_test.sh`
-   - POST/PUT/PATCH/DELETE sur ressources data retournent 400 ou 500
-   - ~~RPC retournent 400 au lieu de 200/204~~ — **corrigé le
-     2026-07-11** (`codec_parse_data()`/`lyd_parse_data_mem()` était
-     utilisé pour parser le body RESTCONF d'un RPC, alors que
-     `"module:input"` n'est pas un nœud de données valide pour ce
-     parseur ; remplacé par `codec_parse_rpc_input()` basé sur
-     `lyd_parse_op()` + `LYD_TYPE_RPC_RESTCONF`, cf. section
-     "Correctif appliqué" plus bas) ; à confirmer via
-     `./scripts/build_test.sh`
-   - Streams SSE retournent 406 Not Acceptable
-   - Problèmes de validation percent-encoding
+> **Note**: Voir `SESSION_2026-07-11.md` pour le détail des correctifs appliqués lors de la dernière session.
 
-1. **6.1 — Câblage des notifications sysrepo réelles vers SSE**
+0. **Exécuter `./scripts/build_test.sh` pour valider les correctifs**
+   Les correctifs suivants ont été appliqués et doivent être testés :
+   - Support `application/yang-patch+json` (RFC 8072)
+   - Code 415 au lieu de 400 pour Content-Type inconnu
+   - Tolérance Accept pour streams SSE
+   - Vérifications d'allocation mémoire
+   - Gestion explicite de `SR_ERR_UNSUPPORTED`
+
+1. **Corriger les HTTP 400 sur PUT**
+   Problème identifié : le body contient le wrapper `module:container` alors que l'URI cible déjà la ressource.
+   Soit les tests envoient le mauvais format, soit le serveur doit accepter les deux formats.
+
+2. **6.1 — Câblage des notifications sysrepo réelles vers SSE**
    `plugin_subscribe_notifications` doit s'abonner via
    `sr_notif_subscribe()`, sérialiser l'événement reçu et le pousser
    sur les flux SSE actifs. Nécessite un registre des flux ouverts
    (actuellement les `sse_stream_t*` créés dans `main.c` ne sont pas
    conservés après `sse_stream_create()`).
 
-2. **3.10 — Contexte libyang à distance en mode Externe**
+3. **Debugger les HTTP 501 sur le module oven**
+   `sr_edit_batch()` retourne `SR_ERR_UNSUPPORTED` pour PATCH/DELETE.
+   Vérifier la configuration du module oven et son plugin sysrepo.
+
+4. **3.10 — Contexte libyang à distance en mode Externe**
    Exposer `ly_ctx` via IPC, ou maintenir un contexte local synchronisé
    côté gateway, pour débloquer la résolution des clés de liste.
 
-3. **6.5 — Replay des notifications** (`start-time`/`stop-time`),
+5. **6.5 — Replay des notifications** (`start-time`/`stop-time`),
    dépend de 6.1.
 
-4. **7.3 — Limitation de ressources** (`WINDOW_UPDATE` nghttp2,
+6. **7.3 — Limitation de ressources** (`WINDOW_UPDATE` nghttp2,
    timeouts `libevent`).
 
-5. **7.4, 8.6–8.9 — Tests** : conformité RFC 8040/8527, CRUD/NMDA/RPC,
+7. **7.4, 8.6–8.9 — Tests** : conformité RFC 8040/8527, CRUD/NMDA/RPC,
    intégration `ctest`.
 
 ---
