@@ -450,15 +450,24 @@ int router_parse_request(
 				req_out->rpc_name = strdup(rpc_path);
 			}
 		}
-	} else if (strncmp(path, "/restconf/stream/", 17) == 0 ||
+	} else if (strcmp(path, "/restconf/stream") == 0 ||
+	           strncmp(path, "/restconf/stream/", 17) == 0 ||
+	           strcmp(path, "/streams") == 0 ||
 	           strncmp(path, "/streams/", 9) == 0) {
-		/* RFC 8040 Sec 6.3: Event Stream URIs */
+		/* RFC 8040 Sec 6.3: Event Stream URIs.
+		 * Une requete sur la racine ("/restconf/stream" ou
+		 * "/streams", sans nom de stream) est une ressource
+		 * valide au sens du routage (pas une 400 Bad URI) : elle
+		 * laisse xpath a NULL, et c'est a l'appelant (main.c) de
+		 * decider quoi en faire (ex. 404 faute de stream precis,
+		 * cf. ROADMAP.md item 6.1/8.x). */
 		req_out->res_type = RC_RES_EVENT_STREAM;
-		/* Le reste du path identifie le stream */
 		if (strncmp(path, "/restconf/stream/", 17) == 0) {
 			req_out->xpath = strdup(path + 17);
-		} else {
+		} else if (strncmp(path, "/streams/", 9) == 0) {
 			req_out->xpath = strdup(path + 9);
+		} else {
+			req_out->xpath = NULL;
 		}
 	} else {
 		req_out->res_type = RC_RES_UNKNOWN;

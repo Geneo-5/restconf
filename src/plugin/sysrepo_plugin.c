@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sysrepo.h>
 #include <libyang/libyang.h>
 #include <event2/event.h>
@@ -554,12 +555,140 @@ void plugin_handle_get(
 	if (data) sr_release_data(data);
 }
 
+/**
+ * @brief Serialize a sysrepo notification tree into the RFC 8040
+ * Sec 6.4 SSE envelope:
+ * {"ietf-restconf:notification":{"eventTime":"...",
+ * "<module>:<event>":{...}}}.
+ *
+ * codec_serialize_data() prints @p notif as a top-level JSON
+ * object keyed by its qualified name (e.g.
+ * {"restconf-test:system-startup":{...}}) : the outer braces are
+ * stripped so its content can be spliced into the RESTCONF
+ * envelope alongside "eventTime", per the RFC 8040 Sec 6.4
+ * example.
+ *
+ * @return malloc'd JSON string, or NULL on error. Caller frees.
+ */
+static char *build_notification_payload(
+	const struct lyd_node *notif, struct timespec *timestamp)
+{
+	char *body = NULL;
+	size_t body_len = 0;
+	char time_buf[64];
+	struct tm tm_utc;
+	time_t sec;
+	char *envelope = NULL;
+	const char *inner;
+	size_t inner_len;
+
+	if (!notif) return NULL;
+
+	if (codec_serialize_data(
+			notif, MEDIA_TYPE_JSON,
+			&body, &body_len) != 0 || !body) {
+		return NULL;
+	}
+
+	inner = body;
+	inner_len = body_len;
+	if (inner_len >= 2 && inner[0] == '{' &&
+	    inner[inner_len - 1] == '}') {
+		inner++;
+		inner_len -= 2;
+	}
+
+	sec = timestamp ? timestamp->tv_sec : time(NULL);
+	gmtime_r(&sec, &tm_utc);
+	strftime(time_buf, sizeof(time_buf),
+	         "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+
+	if (asprintf(&envelope,
+		"{\"ietf-restconf:notification\":{"
+		"\"eventTime\":\"%s\",%.*s}}",
+		time_buf, (int)inner_len, inner) < 0) {
+		envelope = NULL;
+	}
+
+	free(body);
+	return envelope;
+}
+
+/**
+ * @brief sr_event_notif_cb (RFC 8040 Sec 6 — ROADMAP.md item 6.1).
+ * Reçoit une notification sysrepo réelle, la formate en enveloppe
+ * RESTCONF (build_notification_payload()) et la transmet au
+ * callback transport-agnostique enregistré via
+ * plugin_subscribe_notifications() (relayé vers les flux SSE
+ * actifs par on_notification_cb() dans main.c).
+ */
+static void notif_event_cb(
+	sr_session_ctx_t *session UNUSED,
+	uint32_t sub_id UNUSED,
+	const sr_ev_notif_type_t notif_type UNUSED,
+	const struct lyd_node *notif,
+	struct timespec *timestamp,
+	void *private_data)
+{
+	plugin_ctx_t *plugin = (plugin_ctx_t *)private_data;
+	char *payload;
+	char *xpath;
+	const char *module_name;
+
+	/* Événements de contrôle (replay-complete, stop-time, ...)
+	 * sans arbre de notification réel : rien à diffuser. */
+	if (!notif || !plugin->notif_cb) return;
+
+	payload = build_notification_payload(notif, timestamp);
+	if (!payload) return;
+
+	module_name = (notif->schema && notif->schema->module) ?
+		notif->schema->module->name : "";
+	xpath = lyd_path(
+		(struct lyd_node *)notif, LYD_PATH_STD, NULL, 0);
+
+	plugin->notif_cb(
+		module_name, xpath ? xpath : "",
+		payload, plugin->notif_user_data);
+
+	free(xpath);
+	free(payload);
+}
+
 void plugin_subscribe_notifications(
 	plugin_ctx_t *ctx, plugin_notif_cb callback,
 	void *user_data)
 {
+	int rc;
+
 	ctx->notif_cb = callback;
 	ctx->notif_user_data = user_data;
+
+	/*
+	 * RFC 8040 Sec 6 (ROADMAP.md item 6.1) : abonnement réel aux
+	 * notifications sysrepo du module de qualification (cf.
+	 * doc/test/modules/restconf-test.yang), poussées ensuite vers
+	 * tous les flux SSE actifs via notif_event_cb() ci-dessus /
+	 * on_notification_cb() dans main.c. Réutilise
+	 * &ctx->subscription, comme les abonnements oper_get et RPC
+	 * dans plugin_init() : sysrepo fusionne les souscriptions
+	 * dans la même sr_subscription_ctx_t (même pipe d'événement
+	 * libevent).
+	 *
+	 * NOTE : un seul module est câblé en dur pour l'instant. Une
+	 * découverte automatique de tous les modules implémentés
+	 * définissant au moins une notification top-level (parcours
+	 * de lysc_module->notifs) est laissée pour une itération
+	 * future.
+	 */
+	rc = sr_notif_subscribe(
+		ctx->session, "restconf-test", NULL, NULL, NULL,
+		notif_event_cb, ctx, SR_SUBSCR_NO_THREAD,
+		&ctx->subscription);
+	if (rc != SR_ERR_OK) {
+		RC_WARN("sr_notif_subscribe(restconf-test) failed: %s",
+		        sr_strerror(rc));
+	}
 }
 
 void plugin_destroy(plugin_ctx_t *ctx) {

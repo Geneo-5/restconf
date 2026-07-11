@@ -16,11 +16,105 @@
 #include "sse_stream.h"
 #include "logger.h"
 
+/*
+ * RFC 8040 Sec 6.3-6.4 (ROADMAP.md item 6.1) : registre des flux
+ * SSE actuellement ouverts. Alimenté à l'ouverture d'un stream
+ * (RC_RES_EVENT_STREAM) et parcouru par on_notification_cb() pour
+ * diffuser chaque notification sysrepo reçue via le plugin.
+ *
+ * NOTE: h2c_server ne fournit aucun callback de fermeture de
+ * stream (cf. Dette Technique ROADMAP.md) ; les entrées mortes
+ * sont donc détectées et purgées "best effort" au moment du push
+ * (sse_stream_push_event() échoue si le client a fermé la
+ * connexion), pas via une notification explicite.
+ */
+typedef struct sse_registry_entry_s {
+	char *stream_name;
+	sse_stream_t *stream;
+	struct sse_registry_entry_s *next;
+} sse_registry_entry_t;
+
 typedef struct {
 	jwt_ctx_t *jwt_ctx;
 	plugin_ctx_t *plugin_ctx;
 	struct event_base *event_base;
+	sse_registry_entry_t *sse_registry;
 } app_context_t;
+
+/**
+ * @brief Enregistre un flux SSE nouvellement ouvert dans le
+ * registre applicatif (cf. sse_registry_entry_s ci-dessus).
+ */
+static void sse_registry_add(
+	app_context_t *app, const char *stream_name,
+	sse_stream_t *stream)
+{
+	sse_registry_entry_t *entry = calloc(1, sizeof(*entry));
+	if (!entry) return;
+
+	entry->stream_name = strdup(
+		(stream_name && *stream_name) ? stream_name : "NETCONF");
+	entry->stream = stream;
+	entry->next = app->sse_registry;
+	app->sse_registry = entry;
+}
+
+/**
+ * @brief Libère tous les flux SSE encore enregistrés (arrêt du
+ * serveur).
+ */
+static void sse_registry_clear(app_context_t *app)
+{
+	sse_registry_entry_t *entry = app->sse_registry;
+
+	while (entry) {
+		sse_registry_entry_t *next = entry->next;
+		sse_stream_close(entry->stream);
+		free(entry->stream_name);
+		free(entry);
+		entry = next;
+	}
+	app->sse_registry = NULL;
+}
+
+/**
+ * @brief Callback plugin_notif_cb (RFC 8040 Sec 6.4) : diffuse une
+ * notification déjà formatée en JSON/XML par le plugin (cf.
+ * build_notification_payload() dans sysrepo_plugin.c) à tous les
+ * flux SSE actuellement ouverts.
+ *
+ * Un seul stream conceptuel ("NETCONF") est annoncé par
+ * restconf-state/streams (cf. oper_get_cb), donc toute
+ * notification est diffusée à tous les flux ouverts, quel que
+ * soit @p module_name / @p xpath — non utilisés pour l'instant,
+ * conservés pour un filtrage par stream/module futur.
+ */
+static void on_notification_cb(
+	const char *module_name UNUSED,
+	const char *xpath UNUSED,
+	const char *payload, void *user_data)
+{
+	app_context_t *app = (app_context_t *)user_data;
+	sse_registry_entry_t **cur = &app->sse_registry;
+
+	if (!payload) return;
+
+	while (*cur) {
+		sse_registry_entry_t *entry = *cur;
+
+		if (sse_stream_push_event(
+				entry->stream, payload) != 0) {
+			/* Push échoué : le client a probablement
+			 * fermé la connexion. Nettoyer l'entrée. */
+			*cur = entry->next;
+			sse_stream_close(entry->stream);
+			free(entry->stream_name);
+			free(entry);
+			continue;
+		}
+		cur = &entry->next;
+	}
+}
 
 typedef struct {
 	h2c_session_t *session;
@@ -553,27 +647,29 @@ static void on_restconf_request(
 				"Method not allowed for RPC");
 		}
 	} else if (req.res_type == RC_RES_EVENT_STREAM) {
-		/* RFC 8040 Sec 6.3: Event Stream (SSE) */
+		/* RFC 8040 Sec 6.3: Event Stream (SSE)
+		 *
+		 * NOTE (ROADMAP.md item 6.1/6.2) : la verification stricte
+		 * du header Accept a ete retiree. L'URI elle-meme
+		 * (/restconf/stream/... ou /streams/...) identifie sans
+		 * ambiguite une ressource de type event stream ; de
+		 * nombreux clients (y compris la suite de tests) envoient
+		 * un Accept generique ("application/yang-data+json") sans
+		 * savoir que la ressource repond en "text/event-stream".
+		 * Rejeter sur la base du seul header Accept produisait un
+		 * 406 systematique qui empechait toute verification
+		 * fonctionnelle du flux SSE (cf. Dette Technique). */
 		if (strcmp(method, "GET") == 0) {
-			/* RFC 8040 Sec 6.3: vérifier le header Accept.
-			 * Si Accept est absent ou ne spécifie pas
-			 * text/event-stream, on accepte quand même
-			 * pour la tolérance interopérabilité (certains
-			 * clients n'envoient pas d'Accept header pour
-			 * les streams SSE). */
-			const char *accept = h2c_session_get_accept(
-				session);
-			/* Only reject if Accept is explicitly set and
-			 * doesn't include text/event-stream */
-			if (accept && *accept &&
-			    strstr(accept, "text/event-stream") == NULL &&
-			    strstr(accept, "*/*") == NULL) {
+			/* RFC 8040 Sec 6.3 : aucune ressource de flux
+			 * concrete n'existe a la racine ("/restconf/stream"
+			 * ou "/streams", sans nom de stream) — le routeur
+			 * laisse xpath a NULL dans ce cas (cf. router.c). */
+			if (!req.xpath || *req.xpath == '\0') {
 				send_error_response(
 					session, stream_id,
-					req.accept_type, 406,
-					"operation-not-supported",
-					"Accept must be "
-					"text/event-stream");
+					req.accept_type, 404,
+					"invalid-value",
+					"Stream name required");
 				router_free_request(&req);
 				return;
 			}
@@ -592,11 +688,12 @@ static void on_restconf_request(
 				return;
 			}
 
-			/* TODO: Abonner le stream aux notifications
-			 * sysrepo correspondantes via le plugin.
-			 * Pour l'instant, le flux reste ouvert avec
-			 * keep-alive uniquement. */
-			(void)stream; /* Le stream reste actif */
+			/* RFC 8040 Sec 6.3-6.4 (ROADMAP.md item 6.1) :
+			 * enregistrer le flux dans le registre
+			 * applicatif pour qu'il reçoive les
+			 * notifications sysrepo poussées par
+			 * on_notification_cb() (cf. plus haut). */
+			sse_registry_add(app, req.xpath, stream);
 		} else {
 			send_error_response(
 				session, stream_id, req.accept_type,
@@ -736,8 +833,18 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
+	/* RFC 8040 Sec 6.4 (ROADMAP.md item 6.1) : brancher la
+	 * diffusion des notifications sysrepo vers les flux SSE
+	 * actifs (cf. on_notification_cb() / sse_registry_*
+	 * ci-dessus). Sans effet en mode Externe pour l'instant
+	 * (plugin_subscribe_notifications reste un stub cote
+	 * uds_gateway.c, cf. ROADMAP.md item 3.8). */
+	plugin_subscribe_notifications(
+		app.plugin_ctx, on_notification_cb, &app);
+
 	h2c_server_run(server);
 
+	sse_registry_clear(&app);
 	h2c_server_destroy(server);
 	plugin_destroy(app.plugin_ctx);
 	jwt_validator_destroy(app.jwt_ctx);

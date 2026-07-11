@@ -24,7 +24,7 @@ renuméroter en éditant ce fichier.
 | **3** | Architecture Plugin Sysrepo (Dual-Mode) | 90% | 🟡 |
 | **4** | Cœur RESTCONF & CRUD (RFC 8040) | 100% | 🟢 |
 | **5** | Extensions NMDA (RFC 8527) | 100% | 🟢 |
-| **6** | Notifications & SSE (RFC 8650) | 70% | 🟡 |
+| **6** | Notifications & SSE (RFC 8650) | 80% | 🟡 |
 | **7** | Monitoring & Modules YANG Conceptuels | 50% | 🟡 |
 | **8** | Tests h2c & Intégration CTest | 85% | 🟡 |
 
@@ -113,7 +113,7 @@ renuméroter en éditant ce fichier.
 
 | ID | Tâche | Référence | Détails Techniques | Statut |
 | :--- | :--- | :--- | :--- | :---: |
-| 6.1 | RPC `establish-subscription` | YANG `rsn` | `rpc_establish_sub_cb` extrait le stream demandé, génère un ID unique, le retourne dans l'output. Câblage vers `sr_notif_subscribe()` + `sse_stream_push_event()` reste à faire — nécessite un registre des flux SSE actifs (cf. section "Dette Technique") | `[~]` |
+| 6.1 | RPC `establish-subscription` | YANG `rsn` | `rpc_establish_sub_cb` extrait le stream demandé, génère un ID unique, le retourne dans l'output. Câblage vers `sr_notif_subscribe()` + `sse_stream_push_event()` fait — mais indépendamment de ce RPC (cf. ci-dessous) : `plugin_subscribe_notifications()` (`sysrepo_plugin.c`) s'abonne au démarrage aux notifications du module `restconf-test` via `sr_notif_subscribe()` (réutilise `&ctx->subscription`, `SR_SUBSCR_NO_THREAD`), les reçoit dans `notif_event_cb()`, les formate en enveloppe RFC 8040 Sec 6.4 (`build_notification_payload()` — `{"ietf-restconf:notification":{"eventTime":...,"module:event":{...}}}`) et les transmet via le callback `plugin_notif_cb` déjà décrit dans `plugin_api.h`. Côté `main.c`, un registre `sse_registry_entry_t` (liste chaînée dans `app_context_t`) est alimenté à chaque ouverture de stream SSE (`sse_registry_add()`) ; `on_notification_cb()` diffuse chaque notification reçue à tous les flux enregistrés via `sse_stream_push_event()`, et purge (best-effort, faute de callback de fermeture côté `h2c_server`) les flux dont le push échoue. **Limites connues** : (1) un seul module est câblé en dur (`restconf-test`) plutôt qu'une découverte de tous les modules avec notifications top-level ; (2) diffusion à tous les flux ouverts, sans filtrage par nom de stream/xpath ; (3) le RPC `establish-subscription` lui-même reste un stub qui ne fait que retourner un ID — il ne crée pas de souscription filtrée dédiée ; (4) mode Externe (IPC) non câblé, `plugin_subscribe_notifications` reste un stub côté `uds_gateway.c` (cf. 3.8) ; (5) signature `sr_notif_subscribe()`/`sr_event_notif_cb` non vérifiée par compilation dans cette session (pas d'accès exécution) — **à valider en priorité via `./scripts/build_test.sh`** | `[~]` |
 | 6.2 | Ouverture Stream SSE | RFC 8040 Sec 6.3 | `h2c_sse_stream_open()` via `nghttp2_submit_response()` avec data provider SSE | `[x]` |
 | 6.3 | Push Asynchrone | RFC 8040 Sec 6.4 | `h2c_sse_stream_push()` avec file d'attente + `NGHTTP2_ERR_DEFERRED` + `nghttp2_session_resume_data()` | `[x]` |
 | 6.4 | Keep-Alive SSE | RFC 8040 Sec 6.4 | Timer libevent `EV_PERSIST` (30s) envoie `: ping\n\n` | `[x]` |
@@ -157,6 +157,9 @@ renuméroter en éditant ce fichier.
 | `src/plugin/sysrepo_plugin.c` | Fallback `sr_set_item()` quand `sr_edit_batch()` retourne `SR_ERR_UNSUPPORTED` (501) — corrige PATCH/DELETE sur modules qui ne supportent pas l'edit batch | |
 | `src/main.c` | Vérification `Accept` plus tolérante pour les streams SSE : accepte `*/*` et Accept absent au lieu de rejeter systématiquement | RFC 8040 Sec 6.3 |
 | `src/main.c` | Vérifications d'allocation mémoire (`ctx != NULL`) avant appel aux plugins pour éviter les crashes silencieux | |
+| `src/main.c`, `src/plugin/sysrepo_plugin.c` | **ROADMAP 6.1** : câblage réel `sr_notif_subscribe()` (module `restconf-test`) → registre de flux SSE (`sse_registry_*`) → diffusion via `on_notification_cb()` / `sse_stream_push_event()` | RFC 8040 Sec 6.4 |
+| `src/main.c` | Suppression du rejet 406 basé sur le header `Accept` pour `/restconf/stream/...` (l'URI identifie déjà la ressource sans ambiguïté) — corrige `test_020_stream_subscription` | RFC 8040 Sec 6.3 |
+| `src/router.c`, `src/main.c` | `GET /restconf/stream` / `GET /streams` (racine, sans nom de stream) renvoient désormais 404 (`"Stream name required"`) au lieu de 400 `"Bad URI"` — corrige `test_021_notification_reception` | RFC 8040 Sec 6.3 |
 
 ---
 
@@ -169,8 +172,8 @@ dans les colonnes "Détails Techniques" ci-dessus et dans `git log`) :
 | :--- | :---: | :--- | :--- |
 | GET /restconf/data et GET /restconf/ds/<ds> sans réponse | 4.5, 5.1 | `main.c`, `router.c` | Routes retournent `status_code=None` (connexion fermée sans réponse) |
 | Opérations CRUD retournent 400/500 | 4.6, 4.7, 4.8 | `main.c`, `sysrepo_plugin.c` | POST/PUT/PATCH/DELETE échouent sur les ressources data |
-| Streams SSE retournent 406 | 6.2 | `main.c`, `sse_stream.c` | `GET /restconf/stream/netconf` retourne Not Acceptable |
-| Notifications sysrepo non câblées vers les flux SSE | 3.7, 6.1, 6.5 | `sysrepo_plugin.c`, `sse_stream.c`, `main.c` | `establish-subscription` répond avec un ID mais aucun événement n'est jamais poussé ; pas de registre des flux SSE actifs |
+| Streams SSE retournent 406 | 6.2 | `main.c`, `sse_stream.c` | **Résolu (session du 2026-07-11)** : la vérification stricte du header `Accept` sur `/restconf/stream/...` a été retirée (l'URI identifie déjà sans ambiguïté une ressource event-stream) ; corrigeait un 406 systématique qui bloquait `TestNotifications.test_020_stream_subscription` |
+| Notifications sysrepo non câblées vers les flux SSE | 3.7, 6.1, 6.5 | `sysrepo_plugin.c`, `sse_stream.c`, `main.c` | **Partiellement résolu (session du 2026-07-11, mode Interne uniquement)** : `plugin_subscribe_notifications()` s'abonne désormais réellement via `sr_notif_subscribe()` (module `restconf-test` uniquement) et diffuse vers tous les flux SSE ouverts via un nouveau registre (`sse_registry_entry_t` dans `main.c`). Reste : (a) à valider par compilation/tests (`sr_notif_subscribe`/`sr_event_notif_cb` non vérifiés ici), (b) `establish-subscription` (6.1) reste un stub déconnecté du câblage réel (pas de filtrage par souscription), (c) pas de découverte automatique multi-modules, (d) mode Externe (IPC) toujours stub, (e) replay (6.5) toujours dépendant de start-time/stop-time non implémenté |
 | Contexte libyang indisponible en mode Externe | 3.5, 3.10 | `uds_gateway.c`, `router.c` | Toute URI RESTCONF avec clé de liste échoue au parsing en mode Externe (IPC) |
 | `plugin_subscribe_notifications` stub côté gateway externe | 3.8 (partiel) | `uds_gateway.c` | Dépend de 6.1 |
 | Pas de limitation de ressources | 7.3 | `h2c_server.c` | Pas de `WINDOW_UPDATE` nghttp2 ni de timeouts `libevent` explicites |
@@ -189,6 +192,12 @@ dans les colonnes "Détails Techniques" ci-dessus et dans `git log`) :
    - Tolérance Accept pour streams SSE
    - Vérifications d'allocation mémoire
    - Gestion explicite de `SR_ERR_UNSUPPORTED`
+   - **NOUVEAU (6.1)** : câblage `sr_notif_subscribe()` → SSE. Vérifier en
+     priorité que `sysrepo_plugin.c` compile (signatures `sr_notif_subscribe()`
+     / `sr_event_notif_cb` non vérifiées par un build réel dans cette
+     session), puis tester `GET /restconf/streams/NETCONF` en parallèle d'une
+     notification `restconf-test:system-startup`/`event-notification` émise
+     côté sysrepo (`sysrepo-cli` ou script de test).
 
 1. **Corriger les HTTP 400 sur PUT**
    Problème identifié : le body contient le wrapper `module:container` alors que l'URI cible déjà la ressource.
