@@ -8,6 +8,7 @@
 #include <event2/event.h>
 #include "plugin_api.h"
 #include "codec.h"
+#include "logger.h"
 
 /* RFC 8040 Sec 3.4.1: ETag / Last-Modified / If-Match */
 
@@ -627,6 +628,7 @@ static void build_rpc_response(
 		} else {
 			status = 500;
 		}
+		RC_TRACE("Response error %d %s -> %d %s", rc, msg, status, tag);
 		codec_serialize_errors(
 			req->accept_type, tag, msg,
 			&body, &body_len);
@@ -674,44 +676,59 @@ void plugin_handle_rpc(
 		return;
 	}
 
-	/* Parser le body d'entrée (input du RPC) */
+	/*
+	 * RFC 8040 Sec 3.6.1 : le nœud RPC/action nu est TOUJOURS
+	 * construit en premier via lyd_new_path(), que la requête ait
+	 * ou non un corps. C'est requis par lyd_parse_op() ci-dessous
+	 * (voir codec_parse_rpc_input()) : pour LYD_TYPE_RPC_RESTCONF,
+	 * libyang exige que le paramètre "parent" pointe déjà sur ce
+	 * nœud d'opération, dans lequel les enfants parsés depuis
+	 * l'input sont directement rattachés. Cela couvre aussi
+	 * naturellement le cas d'un RPC/action sans input (message-
+	 * body absent, RFC 8040 Sec 3.6.1) : le nœud reste nu.
+	 */
+	const struct ly_ctx *ly_ctx = sr_acquire_context(ctx->conn);
+	if (!ly_ctx) {
+		build_rpc_response(
+			req, NULL, SR_ERR_OPERATION_FAILED,
+			&out_status, &out_body, &out_len);
+		callback(out_status, out_body, out_len, user_data);
+		/* NOTE: out_body est libéré par le callback */
+		return;
+	}
+	char rpc_path[512];
+	snprintf(rpc_path, sizeof(rpc_path),
+	         "/%s:%s",
+	         req->rpc_module, req->rpc_name);
+	rc = lyd_new_path(NULL, ly_ctx, rpc_path, NULL, 0, &input);
+	sr_release_context(ctx->conn);
+	if (rc != LY_SUCCESS || !input) {
+		build_rpc_response(
+			req, NULL, SR_ERR_INVAL_ARG,
+			&out_status, &out_body, &out_len);
+		callback(out_status, out_body, out_len, user_data);
+		/* NOTE: out_body est libéré par le callback */
+		return;
+	}
+
+	/*
+	 * Si un corps a été envoyé, le parser DIRECTEMENT dans le
+	 * nœud d'opération via lyd_parse_op(..., LYD_TYPE_RPC_RESTCONF,
+	 * ...) : le corps RESTCONF encode l'input comme
+	 * "module:input" (JSON) / <input> (XML), ce qui n'est PAS un
+	 * nœud de données de premier niveau valide et ne peut donc pas
+	 * être parsé par codec_parse_data() / lyd_parse_data_mem()
+	 * (cf. ROADMAP.md item 4.10 : c'était la cause du 400 Bad
+	 * Request systématique sur les RPC avec input).
+	 */
 	if (body && body_len > 0) {
-		rc = codec_parse_data(
-			ctx->sess_running,
-			(const char *)body, body_len,
-			req->req_type, &input);
-		if (rc != 0) {
+		if (codec_parse_rpc_input(
+				ctx->sess_running, input,
+				(const char *)body, body_len,
+				req->req_type) != 0) {
+			lyd_free_all(input);
 			build_rpc_response(
 				req, NULL, SR_ERR_VALIDATION_FAILED,
-				&out_status, &out_body, &out_len);
-			callback(out_status, out_body,
-			         out_len, user_data);
-			/* NOTE: out_body est libéré par le callback */
-			return;
-		}
-	} else {
-		/* RPC sans input : créer le nœud racine RPC */
-		const struct ly_ctx *ly_ctx =
-			sr_acquire_context(ctx->conn);
-		if (!ly_ctx) {
-			build_rpc_response(
-				req, NULL, SR_ERR_OPERATION_FAILED,
-				&out_status, &out_body, &out_len);
-			callback(out_status, out_body,
-			         out_len, user_data);
-			/* NOTE: out_body est libéré par le callback */
-			return;
-		}
-		char rpc_path[512];
-		snprintf(rpc_path, sizeof(rpc_path),
-		         "/%s:%s",
-		         req->rpc_module, req->rpc_name);
-		rc = lyd_new_path(NULL, ly_ctx, rpc_path,
-		                  NULL, 0, &input);
-		sr_release_context(ctx->conn);
-		if (rc != LY_SUCCESS || !input) {
-			build_rpc_response(
-				req, NULL, SR_ERR_INVAL_ARG,
 				&out_status, &out_body, &out_len);
 			callback(out_status, out_body,
 			         out_len, user_data);

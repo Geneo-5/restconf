@@ -156,13 +156,14 @@ static int on_data_chunk_recv_callback(
 	void *user_data)
 {
 	h2c_session_t *h2_session = (h2c_session_t *)user_data;
-	if (h2_session->body_len + len > h2_session->body_cap) {
-		h2_session->body_cap = (h2_session->body_len + len) * 2;
+	if (h2_session->body_len + len + 1 > h2_session->body_cap) {
+		h2_session->body_cap = (h2_session->body_len + len) * 2 + 1;
 		h2_session->body = realloc(
 			h2_session->body, h2_session->body_cap);
 	}
 	memcpy(h2_session->body + h2_session->body_len, data, len);
 	h2_session->body_len += len;
+	h2_session->body[h2_session->body_len] = 0;
 	return 0;
 }
 

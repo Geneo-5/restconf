@@ -333,44 +333,17 @@ def sysrepo_plugin_process():
     
     # Démarrer sysrepo-plugind en arrière-plan
     proc = subprocess.Popen(
-        [plugin_bin, "--debug", "--verbosity", "5", "--fatal-plugin-fail"],
+        [plugin_bin, "--debug", "--fatal-plugin-fail"],
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
-    
-    # Attendre que sysrepo-plugind soit prêt
-    start_time = time.time()
-    ready = False
-    
-    while time.time() - start_time < DEFAULT_TIMEOUT:
-        try:
-            # Vérifier que sysrepo répond
-            result = subprocess.run(
-                ["sysrepoctl", "-l"],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
-            if result.returncode == 0:
-                ready = True
-                break
-        except Exception:
-            time.sleep(0.1)
-    
-    if not ready:
-        proc.terminate()
-        proc.wait()
-        stdout = proc.stdout.read().decode() if proc.stdout else ""
-        stderr = proc.stderr.read().decode() if proc.stderr else ""
-        pytest.fail(
-            f"sysrepo-plugind n'a pas démarré dans les {DEFAULT_TIMEOUT}s\n"
-            f"stdout: {stdout}\nstderr: {stderr}"
-        )
-    
+
+    time.sleep(0.5)
     yield proc
     
     # Arrêt de sysrepo-plugind
     proc.send_signal(signal.SIGTERM)
+    print(proc.stdout.read().decode(errors='backslashreplace'))
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
@@ -513,7 +486,7 @@ def server_process(sysrepo_plugin_process):
             "-v", "0",
         ],
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
 
     # Attendre que le serveur soit prêt (h2c Prior Knowledge)
@@ -539,17 +512,17 @@ def server_process(sysrepo_plugin_process):
         proc.terminate()
         proc.wait()
         stdout = proc.stdout.read().decode() if proc.stdout else ""
-        stderr = proc.stderr.read().decode() if proc.stderr else ""
         pytest.fail(
             f"Le serveur n'a pas démarré dans les "
             f"{DEFAULT_TIMEOUT}s\n"
-            f"stdout: {stdout}\nstderr: {stderr}"
+            f"stdout: {stdout}"
         )
 
     yield proc
 
     # Arrêt du serveur
     proc.send_signal(signal.SIGTERM)
+    print(proc.stdout.read().decode(errors='backslashreplace'))
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:

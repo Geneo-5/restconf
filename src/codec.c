@@ -126,6 +126,66 @@ int codec_parse_data(
 	return 0;
 }
 
+int codec_parse_rpc_input(
+	sr_session_ctx_t *session,
+	struct lyd_node *op_node,
+	const char *payload,
+	size_t len,
+	media_type_t type)
+{
+	if (!session || !op_node || !payload) return -1;
+
+	LYD_FORMAT ly_fmt = (type == MEDIA_TYPE_XML) ?
+		LYD_XML : LYD_JSON;
+
+	const struct ly_ctx *ly_ctx = sr_acquire_context(
+		sr_session_get_connection(session));
+	if (!ly_ctx) return -1;
+
+	/* lyd_parse_op() (via ly_in) expects a NUL-terminated
+	 * string, just like lyd_parse_data_mem() above. */
+	char *null_term = malloc(len + 1);
+	if (!null_term) {
+		sr_release_context(
+			sr_session_get_connection(session));
+		return -1;
+	}
+	memcpy(null_term, payload, len);
+	null_term[len] = '\0';
+
+	struct ly_in *in = NULL;
+	if (ly_in_new_memory(null_term, &in) != LY_SUCCESS || !in) {
+		free(null_term);
+		sr_release_context(
+			sr_session_get_connection(session));
+		return -1;
+	}
+
+	/*
+	 * RFC 8040 Sec 3.6.1: the RESTCONF-encoded RPC/action input
+	 * is "module:input" (JSON) or <input> (XML). For
+	 * LYD_TYPE_RPC_RESTCONF, libyang requires "parent" to be the
+	 * already-created operation node (op_node): the parsed input
+	 * children are appended directly under it, and the "op"
+	 * output parameter MUST be NULL in that case. "tree" still
+	 * has to be provided: it receives the separate RESTCONF
+	 * opaque envelope tree (if any), which we don't need but
+	 * must free.
+	 */
+	struct lyd_node *envelope = NULL;
+	LY_ERR rc = lyd_parse_op(
+		ly_ctx, op_node, in, ly_fmt,
+		LYD_TYPE_RPC_RESTCONF, LYD_PARSE_STRICT, &envelope, NULL);
+
+	ly_in_free(in, 0);
+	free(null_term);
+
+	if (envelope) lyd_free_all(envelope);
+
+	sr_release_context(sr_session_get_connection(session));
+	return (rc == LY_SUCCESS) ? 0 : -1;
+}
+
 int codec_serialize_errors(
 	media_type_t type,
 	const char *error_tag,

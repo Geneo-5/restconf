@@ -80,7 +80,7 @@ renuméroter en éditant ce fichier.
 
 | ID | Tâche | Référence | Détails Techniques | Statut |
 | :--- | :--- | :--- | :--- | :---: |
-| 4.1 | Parseur URI RESTCONF | RFC 8040 Sec 3.5.3 | Conversion `list=key` → XPath via `libyang` | `[x]` |
+| 4.1 | Parseur URI RESTCONF | RFC 8040 Sec 3.5.3 | Conversion `list=key` → XPath via `libyang` ; bug de chemin doublé dans `build_xpath_predicate()` corrigé le 2026-07-11 (cf. section "Correctif appliqué" plus bas) | `[x]` |
 | 4.2 | Percent-Encoding | RFC 8040 Sec 3.5.3 | Décodage des clés de listes (`%2C`, etc.) | `[x]` |
 | 4.3 | Codec JSON/XML | RFC 8040 Sec 3.2, 5.2 | `lyd_print_mem()` / `lyd_parse_data_mem()` | `[x]` |
 | 4.4 | Erreurs RESTCONF | RFC 8040 Sec 7.1 | `codec_serialize_errors()` JSON/XML (`yang-errors`) | `[x]` |
@@ -89,7 +89,7 @@ renuméroter en éditant ce fichier.
 | 4.7 | Méthode PATCH | RFC 8040 Sec 4.6 | `sr_edit_batch` (merge), Plain Patch | `[x]` |
 | 4.8 | Méthode DELETE | RFC 8040 Sec 4.7 | `sr_delete_item()` | `[x]` |
 | 4.9 | API Resource | YANG `ietf-restconf` | `GET /restconf` (data, operations, yang-library-version) | `[x]` |
-| 4.10 | Invocation RPC / Action | RFC 8040 Sec 3.6 | `plugin_handle_rpc` parse le body input, appelle `sr_rpc_send_tree()`, encapsule l'output. `main.c` route vers `rpc_data_cb` (200/204/4xx/5xx) | `[x]` |
+| 4.10 | Invocation RPC / Action | RFC 8040 Sec 3.6 | `plugin_handle_rpc` crée le nœud RPC/action nu via `lyd_new_path()`, puis parse l'input RESTCONF (`"module:input"`) directement dedans via `codec_parse_rpc_input()` (`lyd_parse_op()` + `LYD_TYPE_RPC_RESTCONF`, cf. correctif 2026-07-11) au lieu de `lyd_parse_data_mem()` ; appelle `sr_rpc_send_tree()`, encapsule l'output. `main.c` route vers `rpc_data_cb` (200/204/4xx/5xx) | `[x]` |
 | 4.11 | Query: content | RFC 8040 Sec 4.8.1 | `config`/`nonconfig`/`all` via `SR_OPER_NO_STATE`/`SR_OPER_NO_CONFIG` dans `plugin_handle_get` | `[x]` |
 | 4.12 | Query: depth | RFC 8040 Sec 4.8.2 | `req->depth` transmis comme `max_depth` à `sr_get_data()` (0 = illimité si absent/`unbounded`) | `[x]` |
 | 4.13 | Query: fields | RFC 8040 Sec 4.8.3 | `codec_filter_fields()` filtre les nœuds de premier niveau selon `;`-séparés (basique — sous-chemins et parenthèses partiellement supportés, niveau racine uniquement) | `[x]` |
@@ -156,9 +156,7 @@ dans les colonnes "Détails Techniques" ci-dessus et dans `git log`) :
 | Sujet | Item(s) | Fichier(s) | Impact |
 | :--- | :---: | :--- | :--- |
 | GET /restconf/data et GET /restconf/ds/<ds> sans réponse | 4.5, 5.1 | `main.c`, `router.c` | Routes retournent `status_code=None` (connexion fermée sans réponse) |
-| Parsing listes avec clés échoue | 4.1, 4.2 | `router.c`, `sysrepo_plugin.c` | `GET /restconf/data/module:list=key` retourne 400 Bad Request |
 | Opérations CRUD retournent 400/500 | 4.6, 4.7, 4.8 | `main.c`, `sysrepo_plugin.c` | POST/PUT/PATCH/DELETE échouent sur les ressources data |
-| RPC retournent 400 | 4.10 | `main.c`, `sysrepo_plugin.c` | `POST /restconf/operations/module:rpc` échoue |
 | Streams SSE retournent 406 | 6.2 | `main.c`, `sse_stream.c` | `GET /restconf/stream/netconf` retourne Not Acceptable |
 | Notifications sysrepo non câblées vers les flux SSE | 3.7, 6.1, 6.5 | `sysrepo_plugin.c`, `sse_stream.c`, `main.c` | `establish-subscription` répond avec un ID mais aucun événement n'est jamais poussé ; pas de registre des flux SSE actifs |
 | Contexte libyang indisponible en mode Externe | 3.5, 3.10 | `uds_gateway.c`, `router.c` | Toute URI RESTCONF avec clé de liste échoue au parsing en mode Externe (IPC) |
@@ -174,9 +172,19 @@ dans les colonnes "Détails Techniques" ci-dessus et dans `git log`) :
    Problèmes identifiés :
    - `GET /restconf/data` et `GET /restconf/ds/<datastore>` retournent
      `status_code=None` (pas de réponse serveur) au lieu de 200/401/403
-   - Listes avec clés (`list=key`) retournent 400 Bad Request
+   - ~~Listes avec clés (`list=key`) retournent 400 Bad Request~~ —
+     **corrigé le 2026-07-11** (bug de chemin doublé dans
+     `build_xpath_predicate()`, cf. section "Correctif appliqué"
+     plus bas) ; à confirmer via `./scripts/build_test.sh`
    - POST/PUT/PATCH/DELETE sur ressources data retournent 400 ou 500
-   - RPC retournent 400 au lieu de 200/204
+   - ~~RPC retournent 400 au lieu de 200/204~~ — **corrigé le
+     2026-07-11** (`codec_parse_data()`/`lyd_parse_data_mem()` était
+     utilisé pour parser le body RESTCONF d'un RPC, alors que
+     `"module:input"` n'est pas un nœud de données valide pour ce
+     parseur ; remplacé par `codec_parse_rpc_input()` basé sur
+     `lyd_parse_op()` + `LYD_TYPE_RPC_RESTCONF`, cf. section
+     "Correctif appliqué" plus bas) ; à confirmer via
+     `./scripts/build_test.sh`
    - Streams SSE retournent 406 Not Acceptable
    - Problèmes de validation percent-encoding
 
@@ -207,15 +215,3 @@ dans les colonnes "Détails Techniques" ci-dessus et dans `git log`) :
 Une feuille de route détaillée pour les tests de conformité RESTCONF est disponible dans :
 - **TEST-ROADMAP.md** (à la racine) : [Lien](./TEST-ROADMAP.md)
 - **doc/test/TEST-ROADMAP.md** : Version détaillée avec statistiques et prochaines étapes
-
-### Correctif appliqué (2026-07-10) : URI des tests
-
-Tous les fichiers `test/*.py` utilisaient a tort le **prefix YANG** `rt:`
-(declare par `prefix rt;` dans `restconf-test.yang`) a la place du
-**module-name** `restconf-test:` dans les URI RESTCONF, en violation de
-RFC 8040 §3.5.3 ("the module name ... MUST be prepended", jamais le
-prefix).
-
-Point restant : le filtre XPath du query parameter `filter` (RFC 8040
-§4.8.5, streams SSE) n'a pas ete audite pour la resolution
-prefix/namespace, faute de tests dedies dans la suite actuelle.

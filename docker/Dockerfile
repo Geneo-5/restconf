@@ -142,7 +142,8 @@ ENV BUILD_EXTERNAL_PLUGIN=${BUILD_EXTERNAL_PLUGIN}
 ENV BUILD_TEST_PLUGIN=ON
 
 # Niveau de log: 0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=FATAL
-ENV LOG_LEVEL=2
+ARG LOG_LEVEL=2
+ENV LOG_LEVEL=${LOG_LEVEL}
 
 # ==============================================================================
 # Compilation du projet RESTCONF principal
@@ -188,4 +189,4 @@ RUN chmod +x /entrypoint.sh
 WORKDIR /workspace
 
 # Message de succès
-CMD ["/entrypoint.sh"]
+ENTRYPOINT ["/entrypoint.sh"]

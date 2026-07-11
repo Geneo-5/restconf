@@ -238,7 +238,20 @@ class TestOvenRPC:
         assert resp.status_code in (200, 204, 404, 401, 403)
 
     @require_oven_module
-    def test_011_rpc_insert_food_on_ready(self, server_process, client):
+    def test_011_rpc_remove_food(self, server_process, client):
+        """
+        TC-OVEN-012 : RPC remove-food
+        
+        Executer l'operation remove-food (sans parametres).
+        
+        Expected: 200 OK
+        """
+        resp = client.post("/restconf/operations/oven:remove-food")
+        
+        assert resp.status_code in (200, 204, 404, 401, 403)
+
+    @require_oven_module
+    def test_012_rpc_insert_food_on_ready(self, server_process, client):
         """
         TC-OVEN-011 : RPC insert-food avec time=on-oven-ready
         
@@ -257,19 +270,6 @@ class TestOvenRPC:
             body=json.dumps(rpc_data),
             headers={"Content-Type": "application/yang-data+json"}
         )
-        
-        assert resp.status_code in (200, 204, 404, 401, 403)
-
-    @require_oven_module
-    def test_012_rpc_remove_food(self, server_process, client):
-        """
-        TC-OVEN-012 : RPC remove-food
-        
-        Executer l'operation remove-food (sans parametres).
-        
-        Expected: 200 OK
-        """
-        resp = client.post("/restconf/operations/oven:remove-food")
         
         assert resp.status_code in (200, 204, 404, 401, 403)
 

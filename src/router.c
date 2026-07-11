@@ -103,32 +103,39 @@ static int validate_percent_encoding(const char *src, size_t len)
 /**
  * @brief Build the XPath predicate for a list or leaf-list.
  * Uses the YANG schema to find key names.
+ *
+ * @param[in] ctx libyang context.
+ * @param[in] node_path Full schema/data path of the list or
+ *            leaf-list node whose predicate is being built (e.g.
+ *            "/mod:top/mod:list1"). The caller has ALREADY
+ *            appended "/module:node" to @p out_buf before calling
+ *            this function (cf. parse_segment()), so @p node_path
+ *            and the current content of @p out_buf are the same
+ *            string: it MUST be used as-is for the schema lookup,
+ *            not rebuilt from a module/node pair, or the resulting
+ *            path would be duplicated (".../mod:node/mod:node")
+ *            and lys_find_path() would always fail (cf. 4.1, 4.2).
+ * @param[in] values_str Raw (still percent-encoded) key value(s)
+ *            string taken from the URI, e.g. "key1,key2" or a
+ *            single leaf-list value.
+ * @param[in,out] out_buf XPath buffer being built (same string as
+ *            @p node_path); the predicate is appended to it.
+ * @param[in,out] out_len Current length of @p out_buf, updated in
+ *            place as the predicate is appended.
+ *
+ * @return 0 on success, -1 on error (unknown node, or '=' used on
+ *         a non-list/leaf-list node).
  */
 static int build_xpath_predicate(
 	const struct ly_ctx *ctx,
-	const char *current_xpath,
-	const char *module_name,
-	const char *node_name,
+	const char *node_path,
 	const char *values_str,
 	char *out_buf, size_t *out_len)
 {
-	char path[2048];
 	int written;
 
-	if (module_name) {
-		written = snprintf(path, sizeof(path), "%s/%s:%s",
-		                   current_xpath, module_name,
-		                   node_name);
-	} else {
-		written = snprintf(path, sizeof(path), "%s/%s",
-		                   current_xpath, node_name);
-	}
-	if (written < 0 || (size_t)written >= sizeof(path)) {
-		return -1;
-	}
-
 	const struct lysc_node *node = lys_find_path(
-		ctx, NULL, path, 0);
+		ctx, NULL, node_path, 0);
 
 	if (!node) {
 		/* Fallback if schema is not loaded */
@@ -226,11 +233,14 @@ static int parse_segment(
 		if (written < 0) return -1;
 		*xpath_len += written;
 
-		/* Ajouter le prédicat [key='val'] */
+		/* Ajouter le prédicat [key='val'] : current_xpath
+		 * contient déjà le chemin complet du nœud ("/mod:node"
+		 * qu'on vient d'ajouter ci-dessus), on le réutilise tel
+		 * quel pour la résolution du schéma (cf. 4.1, 4.2). */
 		if (ctx) {
 			return build_xpath_predicate(
-				ctx, current_xpath, module_name,
-				node_name, values_str,
+				ctx, current_xpath,
+				values_str,
 				current_xpath, xpath_len);
 		}
 		return -1; /* Contexte requis pour les listes */

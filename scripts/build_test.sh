@@ -13,6 +13,9 @@ DOCKER_FILE="docker/Dockerfile"
 # Mode de compilation (par défaut: avec JWT insecure, sans plugin externe)
 JWT_MODE="ON"
 PLUGIN_MODE="OFF"
+PYTEST_OPT="--show-capture no"
+LOG_LEVEL=5
+PORT=
 
 # Parser des arguments
 while [ $# -gt 0 ]; do
@@ -35,8 +38,18 @@ while [ $# -gt 0 ]; do
             PLUGIN_MODE="${PLUGIN_MODE:-OFF}"
             shift
             ;;
-        *)
-            echo "Usage: $0 [options]"
+        --verbose)
+            PYTEST_OPT="-vv"
+            LOG_LEVEL=0
+            shift
+            ;;
+        --listen=*)
+            PORT="-it -p ${1#*=}:8080"
+            PYTEST_OPT="--listen"
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: $0 [options] [PYTEST_OPTION]"
             echo ""
             echo "Options:"
             echo "  --no-cache    Ne pas utiliser le cache Docker"
@@ -46,6 +59,8 @@ while [ $# -gt 0 ]; do
             echo "  --plugin-on   Compiler AVEC plugin externe"
             echo "  --plugin-off  Compiler SANS plugin externe (default)"
             echo ""
+            echo "PYTEST_OPTION:  Forward to pythtest"
+            echo ""
             echo "Exemples:"
             echo "  $0                              # Build avec cache, JWT ON, plugin OFF"
             echo "  $0 --no-cache --jwt-off         # Build sans cache, JWT OFF"
@@ -53,6 +68,8 @@ while [ $# -gt 0 ]; do
             echo "  $0 --jwt-off --plugin-on         # Build avec cache, JWT OFF, plugin ON"
             exit 1
             ;;
+        *)
+            break;;
     esac
 done
 
@@ -65,6 +82,7 @@ fi
 # Passer les options de compilation au Dockerfile via --build-arg
 BUILD_ARGS="${BUILD_ARGS} --build-arg ALLOW_INSECURE_JWT=${JWT_MODE}"
 BUILD_ARGS="${BUILD_ARGS} --build-arg BUILD_EXTERNAL_PLUGIN=${PLUGIN_MODE}"
+BUILD_ARGS="${BUILD_ARGS} --build-arg LOG_LEVEL=${LOG_LEVEL}"
 
 echo "🚀 Démarrage du build Docker..."
 echo "   Cache: ${USE_CACHE}"
@@ -75,6 +93,7 @@ echo ""
 
 # Construire l'image Docker
 docker build ${BUILD_ARGS} .
+docker image prune -f
 
 echo ""
 echo "✅ Image Docker construite avec succès"
@@ -87,4 +106,6 @@ docker run --rm \
     --name restconf-test \
     -e ALLOW_INSECURE_JWT=${JWT_MODE} \
     -e BUILD_EXTERNAL_PLUGIN=${PLUGIN_MODE} \
-    ${TAG}
+    ${PORT} \
+    ${TAG} \
+    ${PYTEST_OPT} $@
