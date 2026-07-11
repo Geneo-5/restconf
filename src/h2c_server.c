@@ -76,6 +76,7 @@ static ssize_t data_read_callback(
 	size_t remaining = src->len - src->offset;
 	size_t to_copy = remaining < length ? remaining : length;
 
+	RC_TRACE("send: %ld/%ld", to_copy, remaining);
 	memcpy(buf, src->data + src->offset, to_copy);
 	src->offset += to_copy;
 

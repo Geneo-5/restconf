@@ -160,6 +160,7 @@ renuméroter en éditant ce fichier.
 | `src/main.c`, `src/plugin/sysrepo_plugin.c` | **ROADMAP 6.1** : câblage réel `sr_notif_subscribe()` (module `restconf-test`) → registre de flux SSE (`sse_registry_*`) → diffusion via `on_notification_cb()` / `sse_stream_push_event()` | RFC 8040 Sec 6.4 |
 | `src/main.c` | Suppression du rejet 406 basé sur le header `Accept` pour `/restconf/stream/...` (l'URI identifie déjà la ressource sans ambiguïté) — corrige `test_020_stream_subscription` | RFC 8040 Sec 6.3 |
 | `src/router.c`, `src/main.c` | `GET /restconf/stream` / `GET /streams` (racine, sans nom de stream) renvoient désormais 404 (`"Stream name required"`) au lieu de 400 `"Bad URI"` — corrige `test_021_notification_reception` | RFC 8040 Sec 6.3 |
+| `src/plugin/sysrepo_plugin.c` | **Correctif crash critique** : `sr_session_get_error()` peut laisser `err_info` à `NULL` ; les deux boucles de log d'erreurs détaillées (après `sr_apply_changes()` sur DELETE et sur POST/PUT/PATCH) le déréférençaient sans vérifier, provoquant un SIGSEGV (connexion fermée sans réponse, `status_code=None` côté client) dès qu'un edit échouait à la validation sysrepo (ex. `PUT oven:oven` avec `temperature` hors plage `0..250`) — corrige `TestOvenEdgeCases.test_014_temperature_range` et probablement d'autres échecs "crash serveur" listés en 8.5 | RFC 8040 Sec 7 |
 
 ---
 

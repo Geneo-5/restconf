@@ -342,6 +342,7 @@ def sysrepo_plugin_process():
     yield proc
     
     # Arrêt de sysrepo-plugind
+    time.sleep(0.5)
     proc.send_signal(signal.SIGTERM)
     print(proc.stdout.read().decode(errors='backslashreplace'))
     try:
@@ -481,6 +482,7 @@ def server_process(sysrepo_plugin_process):
     # Démarrage du serveur avec JWT insecure pour les tests
     proc = subprocess.Popen(
         [
+            #"gdb", "-ex", "run", "-ex", "bt", "--args", 
             server_bin,
             "-a", BIND_ADDR,
             "-p", str(PORT),

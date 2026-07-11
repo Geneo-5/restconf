@@ -899,7 +899,7 @@ static int plugin_set_leaves_recursive(
 	const char *default_op,
 	int *set_count)
 {
-	if (!node) return SR_ERR_OK;
+	if (!node || !node->schema) return SR_ERR_OK;
 
 	/* Seulement les leaves et leaf-lists */
 	if (node->schema->nodetype == LYS_LEAF ||
@@ -1055,12 +1055,21 @@ void plugin_handle_edit(
 			if (rc != SR_ERR_OK) {
 				RC_ERROR("sr_apply_changes failed: %s (rc=%d)",
 				         sr_strerror(rc), rc);
-				/* Log des erreurs sysrepo détaillées */
+				/* Log des erreurs sysrepo détaillées.
+				 * NOTE : sr_session_get_error() peut laisser
+				 * err_info a NULL (ex: echec sans detail
+				 * applicatif) ; le dereferencer sans verifier
+				 * provoquait un SIGSEGV -> connexion coupee
+				 * sans reponse (cf. ROADMAP.md, crash observe
+				 * sur violation de contrainte range). */
 				const sr_error_info_t *err_info = NULL;
 				sr_session_get_error(sess, &err_info);
-				for (size_t i = 0; i < err_info->err_count; i++) {
-					RC_ERROR("sysrepo error[%zu]: %s",
-								i, err_info->err[i].message);
+				if (err_info) {
+					for (size_t i = 0;
+					     i < err_info->err_count; i++) {
+						RC_ERROR("sysrepo error[%zu]: %s",
+							i, err_info->err[i].message);
+					}
 				}
 			}
 		}
@@ -1140,12 +1149,23 @@ void plugin_handle_edit(
 				if (rc != SR_ERR_OK) {
 					RC_ERROR("sr_apply_changes failed: %s (rc=%d)",
 					         sr_strerror(rc), rc);
-					/* Log des erreurs sysrepo détaillées */
+					/* Log des erreurs sysrepo détaillées.
+					 * NOTE : sr_session_get_error() peut
+					 * laisser err_info a NULL ; le dereferencer
+					 * sans verifier provoquait un SIGSEGV ->
+					 * connexion coupee sans reponse (crash
+					 * observe sur violation de contrainte
+					 * range, ex. PUT oven:oven/temperature
+					 * hors range 0..250). */
 					const sr_error_info_t *err_info = NULL;
 					sr_session_get_error(sess, &err_info);
-					for (size_t i = 0; i < err_info->err_count; i++) {
-						RC_ERROR("sysrepo error[%zu]: %s",
-						         i, err_info->err[i].message);
+					if (err_info) {
+						for (size_t i = 0;
+						     i < err_info->err_count;
+						     i++) {
+							RC_ERROR("sysrepo error[%zu]: %s",
+							         i, err_info->err[i].message);
+						}
 					}
 				}
 			} else if (set_count == 0) {

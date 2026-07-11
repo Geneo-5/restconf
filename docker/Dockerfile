@@ -31,7 +31,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV CFLAGS="-Wall -Wextra -Wmissing-declarations -Wstrict-prototypes \
 	-Wshadow -Wformat=2 -Wuninitialized \
 	-fstack-protector-strong -D_FORTIFY_SOURCE=2 \
-	-O2"
+	-O2 -ggdb3"
 ENV CXXFLAGS="${CFLAGS}"
 ENV LDFLAGS="-Wl,-z,relro,-z,now"
 
@@ -51,6 +51,7 @@ RUN apt-get update && apt-get install -y \
     libjson-c-dev \
     python3 \
     strace \
+    gdb \
     && rm -rf /var/lib/apt/lists/*
 
 # ==============================================================================
