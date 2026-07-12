@@ -35,7 +35,7 @@ déjà livrés vit dans `git log`, pas dans ce fichier.
 | **3** | Architecture Plugin Sysrepo (Dual-Mode) | 92% | 🟡 |
 | **4** | Cœur RESTCONF & CRUD (RFC 8040) | 100% | 🟢 |
 | **5** | Extensions NMDA (RFC 8527) | 100% | 🟢 |
-| **6** | Notifications & SSE (RFC 8650) | 80% | 🟡 |
+| **6** | Notifications & SSE (RFC 8650) | 88% | 🟡 |
 | **7** | Monitoring & Modules YANG Conceptuels | 50% | 🟡 |
 | **8** | Tests h2c & Intégration CTest | 85% | 🟡 |
 

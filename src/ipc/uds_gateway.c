@@ -86,6 +86,12 @@ struct plugin_ctx_s {
 	 * disk. Read-only after init, never mutated concurrently
 	 * (gateway process is single-threaded, AGENTS.md rule #1). */
 	struct ly_ctx *local_ly_ctx;
+	/* ROADMAP 6.1: notification callback set by
+	 * plugin_subscribe_notifications(), invoked from
+	 * uds_read_cb() on IPC_MSG_NOTIF_PUSH (cf. uds_plugin.c
+	 * daemon_notif_push_cb()). */
+	plugin_notif_cb notif_cb;
+	void *notif_user_data;
 };
 
 static pending_req_t *add_pending(
@@ -145,13 +151,45 @@ static void fail_all_pending(plugin_ctx_t *ctx)
 
 /**
  * @brief Route an IPC response (DATA_RES/EDIT_RES/RPC_RES) to the
- * waiting callback that matches the header's msg_id.
+ * waiting callback that matches the header's msg_id, or forward an
+ * unsolicited IPC_MSG_NOTIF_PUSH (ROADMAP 6.1) to the registered
+ * notification callback.
  */
 static void dispatch_ipc_response(
 	plugin_ctx_t *ctx, const ipc_msg_header_t *hdr,
 	const uint8_t *payload, size_t len)
 {
-	pending_req_t *p = take_pending(ctx, hdr->msg_id);
+	pending_req_t *p;
+
+	if (hdr->type == IPC_MSG_NOTIF_PUSH) {
+		/* ROADMAP.md item 6.1 : notification poussee par le
+		 * daemon (uds_plugin.c: daemon_notif_push_cb()), non
+		 * correlee a un msg_id de requete (0, cf. emission). */
+		size_t pos = 0;
+		char *module_name = NULL;
+		char *xpath = NULL;
+		char *notif_payload = NULL;
+
+		if (uds_proto_get_str(
+				payload, len, &pos, &module_name) == 0 &&
+		    uds_proto_get_str(
+				payload, len, &pos, &xpath) == 0 &&
+		    uds_proto_get_str(
+				payload, len, &pos, &notif_payload) == 0 &&
+		    ctx->notif_cb) {
+			ctx->notif_cb(
+				module_name ? module_name : "",
+				xpath ? xpath : "",
+				notif_payload ? notif_payload : "",
+				ctx->notif_user_data);
+		}
+		free(module_name);
+		free(xpath);
+		free(notif_payload);
+		return;
+	}
+
+	p = take_pending(ctx, hdr->msg_id);
 
 	if (!p) {
 		/* Reponse orpheline (timeout cote appelant deja
@@ -395,6 +433,7 @@ plugin_ctx_t *plugin_init(
 
 	if (connect(fd, (struct sockaddr *)&addr,
 		sizeof(addr)) < 0) {
+		RC_ERROR("Cannot connect to %s", uds_path);
 		close(fd);
 		free(ctx);
 		return NULL;
@@ -648,14 +687,26 @@ void plugin_handle_rpc(
 }
 
 void plugin_subscribe_notifications(
-	plugin_ctx_t *ctx UNUSED,
-	plugin_notif_cb callback UNUSED,
-	void *user_data UNUSED)
+	plugin_ctx_t *ctx, plugin_notif_cb callback,
+	void *user_data)
 {
-	/* TODO: Envoyer une requete d'abonnement via UDS et router
-	 * les IPC_MSG_NOTIF_PUSH recus vers callback(). Depend de
-	 * l'implementation complete du RPC establish-subscription
-	 * (voir rpc_establish_sub_cb dans sysrepo_plugin.c). */
+	/*
+	 * ROADMAP.md item 6.1 - Mode Externe.
+	 *
+	 * Cote gateway, il n'y a rien a "souscrire" explicitement :
+	 * c'est le daemon (uds_plugin.c) qui possede la connexion
+	 * sysrepo et decide, via son propre appel a
+	 * plugin_subscribe_notifications() (sysrepo_plugin.c, cote
+	 * interne, declenche depuis ext_plugin_init_uds()), a quels
+	 * modules il s'abonne. Le gateway se contente d'enregistrer
+	 * le callback applicatif (cf. on_notification_cb() dans
+	 * main.c) : il sera invoque par dispatch_ipc_response() a
+	 * chaque IPC_MSG_NOTIF_PUSH recu du daemon, pour n'importe
+	 * quelle connexion UDS active au moment de l'envoi.
+	 */
+	if (!ctx) return;
+	ctx->notif_cb = callback;
+	ctx->notif_user_data = user_data;
 }
 
 void plugin_destroy(plugin_ctx_t *ctx)

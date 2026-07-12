@@ -347,6 +347,7 @@ def sysrepo_plugin_process():
     # Arrêt de sysrepo-plugind
     time.sleep(0.1)
     proc.send_signal(signal.SIGTERM)
+    print("#" * 30, "sysrepo-plugind", "#" * 30)
     print(proc.stdout.read().decode(errors='backslashreplace'))
     try:
         proc.wait(timeout=5)
@@ -485,16 +486,19 @@ def server_extern_process(sysrepo_plugin_process):
             #"gdb", "-ex", "run", "-ex", "bt", "--args",
             #"strace",
             "/usr/local/bin/restconf-plugin",
+            "-v", "0",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
     
+    time.sleep(0.5)
     yield proc
 
     # Arrêt du serveur
     time.sleep(0.1)
     proc.send_signal(signal.SIGTERM)
+    print("#" * 30, "restconf-plugin", "#" * 30)
     print(proc.stdout.read().decode(errors='backslashreplace'))
     try:
         proc.wait(timeout=5)
@@ -563,7 +567,7 @@ def server_process(server_extern_process):
     # Arrêt du serveur
     time.sleep(0.1)
     proc.send_signal(signal.SIGTERM)
-    print("#" * 40)
+    print("#" * 30, "restconf-server", "#" * 30)
     print(proc.stdout.read().decode(errors='backslashreplace'))
     try:
         proc.wait(timeout=5)

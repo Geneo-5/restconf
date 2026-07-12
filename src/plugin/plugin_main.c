@@ -9,10 +9,6 @@
 #include "plugin_api.h"
 #include "logger.h"
 
-/* Forward declaration from uds_plugin.c */
-extern int ext_plugin_init_uds(
-	struct event_base *base, const char *path,
-	plugin_ctx_t *sr_ctx);
 
 static void sigint_cb(
 	evutil_socket_t sig, short events, void *ctx)

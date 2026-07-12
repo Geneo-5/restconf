@@ -177,7 +177,7 @@ static int plugin_oper_get_cb(
  * or from sr_rpc_send_tree() (worker thread).
  */
 static int plugin_rpc_establish_sub_cb(
-	sr_session_ctx_t *session UNUSED,
+	sr_session_ctx_t *session,
 	uint32_t sub_id UNUSED,
 	const char *op_path UNUSED,
 	const struct lyd_node *input,
@@ -203,13 +203,40 @@ static int plugin_rpc_establish_sub_cb(
 		}
 	}
 
+	/*
+	 * ROADMAP.md item 6.1 (limite restante) : un seul flux
+	 * conceptuel ("NETCONF", cf. plugin_oper_get_cb ci-dessus)
+	 * existe reellement dans cette implementation. On rejette
+	 * donc explicitement toute demande de souscription sur un
+	 * flux inconnu, plutot que de retourner silencieusement un
+	 * identifiant de souscription qui ne recevrait jamais rien.
+	 */
+	if (strcmp(stream_name, "NETCONF") != 0) {
+		sr_session_set_error_message(
+			session,
+			"Unknown notification stream '%s'",
+			stream_name);
+		return SR_ERR_NOT_FOUND;
+	}
+
 	static uint32_t next_sub_id = 1;
 	uint32_t id = next_sub_id++;
 	char id_str[32];
 	snprintf(id_str, sizeof(id_str), "%u", id);
 	lyd_new_term(output, NULL, "id", id_str, 0, NULL);
 
-	(void)stream_name;
+	/*
+	 * @warning Limite connue (cf. dette technique ROADMAP.md) :
+	 * l'identifiant de souscription retourne ici n'est pas
+	 * correle a un flux SSE HTTP/2 particulier (RFC 8650 suppose
+	 * un "receiver" associe a la souscription, non cable cote
+	 * gateway). Les notifications continuent d'etre diffusees a
+	 * tous les flux SSE ouverts sur /streams/NETCONF (cf.
+	 * on_notification_cb dans main.c), independamment de cet
+	 * identifiant. En pratique, un client doit donc ouvrir
+	 * lui-meme GET /streams/NETCONF plutot que de compter sur ce
+	 * RPC pour recevoir des donnees.
+	 */
 	return SR_ERR_OK;
 }
 
@@ -498,43 +525,83 @@ void plugin_subscribe_notifications(
 	ctx->notif_cb = callback;
 	ctx->notif_user_data = user_data;
 
-	/* Subscribe to notifications with SR_SUBSCR_NO_THREAD.
-	 * The callback will be invoked from
-	 * sr_subscription_process_events() in the libevent thread.
-	 * Use sr_notif_subscribe_tree for tree-based callbacks
-	 * (struct lyd_node instead of sr_val_t). */
-	if (ctx->sub_session) {
-		int rc = sr_notif_subscribe_tree(
-			ctx->sub_session,
-			"restconf-test",
-			NULL, NULL, NULL,
-			plugin_notif_event_cb,
-			ctx,
-			SR_SUBSCR_NO_THREAD,
-			&ctx->sub);
-		if (rc != SR_ERR_OK) {
-			RC_WARN("plugin: notif subscribe failed: %s",
-				sr_strerror(rc));
-		}
+	if (!ctx->sub_session) return;
 
-		/* Re-read event pipe after new subscription
-		 * (pipe may have changed) */
-		if (ctx->sub) {
-			int pipe_fd = -1;
-			if (sr_get_event_pipe(ctx->sub, &pipe_fd)
-			    == SR_ERR_OK &&
-			    pipe_fd != ctx->sr_event_fd) {
-				/* Update the libevent registration */
-				if (ctx->sr_event)
-					event_free(ctx->sr_event);
-				ctx->sr_event_fd = pipe_fd;
-				ctx->sr_event = event_new(
-					ctx->base, pipe_fd,
-					EV_READ | EV_PERSIST,
-					plugin_sr_event_cb, ctx);
-				if (ctx->sr_event)
-					event_add(ctx->sr_event, NULL);
+	/*
+	 * ROADMAP.md item 6.1 - Decouverte multi-modules.
+	 *
+	 * Plutot que de cabler un seul module en dur
+	 * ("restconf-test"), on parcourt tous les modules
+	 * *implementes* connus du contexte libyang partage et on
+	 * tente un abonnement a leurs notifications (xpath NULL =
+	 * toutes les notifications de premier niveau du module).
+	 * Chaque appel reussi vient s'ajouter a la meme souscription
+	 * sysrepo (ctx->sub), exactement comme le fait deja plus haut
+	 * plugin_init() pour oper_get/rpc_subscribe.
+	 *
+	 * sr_notif_subscribe_tree() echoue silencieusement pour tout
+	 * module qui ne declare aucune notification (SR_ERR_NOT_FOUND
+	 * ou equivalent) : c'est le cas attendu pour la grande
+	 * majorite des modules (modules de configuration pure), donc
+	 * journalise en DEBUG et non en WARN.
+	 */
+	const struct ly_ctx *ly_ctx = sr_acquire_context(ctx->conn);
+	if (ly_ctx) {
+		uint32_t idx = 0;
+		const struct lys_module *mod;
+		unsigned int subscribed = 0;
+
+		while ((mod = ly_ctx_get_module_iter(ly_ctx, &idx))) {
+			int rc;
+
+			if (!mod->implemented)
+				continue;
+
+			rc = sr_notif_subscribe_tree(
+				ctx->sub_session, mod->name,
+				NULL, NULL, NULL,
+				plugin_notif_event_cb, ctx,
+				SR_SUBSCR_NO_THREAD, &ctx->sub);
+			if (rc == SR_ERR_OK) {
+				subscribed++;
+				RC_DEBUG("plugin: subscribed to "
+					"notifications of module '%s'",
+					mod->name);
+			} else {
+				RC_DEBUG("plugin: module '%s' has no "
+					"notifications to subscribe to "
+					"(%s)", mod->name,
+					sr_strerror(rc));
 			}
+		}
+		sr_release_context(ctx->conn);
+
+		RC_INFO("plugin: notification discovery complete, "
+			"%u module(s) with active subscriptions "
+			"(ROADMAP 6.1)", subscribed);
+	} else {
+		RC_WARN("plugin: sr_acquire_context failed, "
+			"notification discovery skipped");
+	}
+
+	/* Re-read event pipe after the new subscription(s) (pipe
+	 * may have changed, or been created for the first time if
+	 * neither oper_get nor rpc subscribe succeeded earlier). */
+	if (ctx->sub) {
+		int pipe_fd = -1;
+		if (sr_get_event_pipe(ctx->sub, &pipe_fd)
+		    == SR_ERR_OK &&
+		    pipe_fd != ctx->sr_event_fd) {
+			/* Update the libevent registration */
+			if (ctx->sr_event)
+				event_free(ctx->sr_event);
+			ctx->sr_event_fd = pipe_fd;
+			ctx->sr_event = event_new(
+				ctx->base, pipe_fd,
+				EV_READ | EV_PERSIST,
+				plugin_sr_event_cb, ctx);
+			if (ctx->sr_event)
+				event_add(ctx->sr_event, NULL);
 		}
 	}
 }

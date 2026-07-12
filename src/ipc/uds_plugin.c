@@ -32,7 +32,16 @@ typedef struct {
 	struct event_base *base;
 	struct evconnlistener *listener;
 	plugin_ctx_t *sr_ctx; /* Contexte sysrepo interne partage */
+	/* ROADMAP.md item 6.1 : gateways actuellement connectes sur
+	 * l'UDS, pour diffusion des notifications sysrepo poussees
+	 * (IPC_MSG_NOTIF_PUSH, cf. daemon_notif_push_cb() plus bas). */
+	struct gw_conn_s *gw_conns;
 } ext_plugin_ctx_t;
+
+typedef struct gw_conn_s {
+	struct bufferevent *bev;
+	struct gw_conn_s *next;
+} gw_conn_t;
 
 /* Contexte porte le temps de router la reponse (bien que le
  * traitement sysrepo soit synchrone) vers la bonne connexion UDS et
@@ -290,6 +299,109 @@ cleanup:
 	free(req.username);
 }
 
+/*
+ * ROADMAP.md item 6.1 - Mode Externe : diffusion des notifications.
+ *
+ * Le daemon (ce fichier) est celui qui possede la connexion
+ * sysrepo et recoit donc les notifications sysrepo via
+ * plugin_subscribe_notifications() (sysrepo_plugin.c, cf.
+ * daemon_notif_push_cb() ci-dessous). Il doit ensuite les
+ * repousser vers chaque gateway actuellement connecte sur l'UDS,
+ * via un nouveau message IPC_MSG_NOTIF_PUSH (deja defini dans
+ * uds_common.h mais jusqu'ici jamais emis). gw_conn_add/remove
+ * maintiennent la liste des connexions gateway actives.
+ */
+static void gw_conn_add(
+	ext_plugin_ctx_t *pctx, struct bufferevent *bev)
+{
+	gw_conn_t *conn = calloc(1, sizeof(*conn));
+	if (!conn) return;
+	conn->bev = bev;
+	conn->next = pctx->gw_conns;
+	pctx->gw_conns = conn;
+}
+
+static void gw_conn_remove(
+	ext_plugin_ctx_t *pctx, struct bufferevent *bev)
+{
+	gw_conn_t **cur = &pctx->gw_conns;
+
+	while (*cur) {
+		if ((*cur)->bev == bev) {
+			gw_conn_t *found = *cur;
+			*cur = found->next;
+			free(found);
+			return;
+		}
+		cur = &(*cur)->next;
+	}
+}
+
+/**
+ * @brief plugin_notif_cb : diffuse une notification sysrepo a
+ * toutes les gateways actuellement connectees sur l'UDS.
+ *
+ * Appele depuis le thread libevent du daemon (meme thread que
+ * sr_subscription_process_events(), cf. sysrepo_plugin.c) : les
+ * ecritures bufferevent_write() ci-dessous sont donc sans risque
+ * vis-a-vis de la regle d'or #1 (AGENTS.md).
+ */
+static void daemon_notif_push_cb(
+	const char *module_name, const char *xpath,
+	const char *payload, void *user_data)
+{
+	ext_plugin_ctx_t *pctx = (ext_plugin_ctx_t *)user_data;
+	uint8_t stackbuf[1024];
+	uint8_t *ipc_payload = stackbuf;
+	size_t cap = sizeof(stackbuf);
+	size_t pos = 0;
+	uint8_t *heapbuf = NULL;
+	uint8_t *buf = NULL;
+	size_t buf_len = 0;
+	gw_conn_t *conn;
+	int ok;
+
+	if (!pctx->gw_conns)
+		return; /* aucune gateway connectee : rien a faire */
+
+	/* Capacite dynamique si le payload JSON depasse le buffer de
+	 * pile (notifications avec beaucoup de champs). */
+	cap = 64 + strlen(module_name ? module_name : "") +
+		strlen(xpath ? xpath : "") +
+		strlen(payload ? payload : "");
+	if (cap > sizeof(stackbuf)) {
+		heapbuf = malloc(cap);
+		if (!heapbuf) return;
+		ipc_payload = heapbuf;
+	} else {
+		cap = sizeof(stackbuf);
+	}
+
+	ok = uds_proto_put_str(ipc_payload, cap, &pos, module_name);
+	ok |= uds_proto_put_str(ipc_payload, cap, &pos, xpath);
+	ok |= uds_proto_put_str(ipc_payload, cap, &pos, payload);
+	if (ok != 0) {
+		RC_WARN("uds-plugin: notification payload too large, "
+			"dropped");
+		free(heapbuf);
+		return;
+	}
+
+	if (ipc_serialize_message(
+			IPC_MSG_NOTIF_PUSH, 0, 0,
+			ipc_payload, pos, &buf, &buf_len) != 0) {
+		RC_ERROR("uds-plugin: failed to serialize "
+			"IPC_MSG_NOTIF_PUSH");
+		free(heapbuf);
+		return;
+	}
+	free(heapbuf);
+
+	for (conn = pctx->gw_conns; conn; conn = conn->next)
+		bufferevent_write(conn->bev, buf, buf_len);
+	free(buf);
+}
+
 static void gateway_read_cb(struct bufferevent *bev, void *ctx)
 {
 	ext_plugin_ctx_t *pctx = (ext_plugin_ctx_t *)ctx;
@@ -355,9 +467,14 @@ static void gateway_read_cb(struct bufferevent *bev, void *ctx)
 }
 
 static void gateway_event_cb(
-	struct bufferevent *bev, short events, void *ctx UNUSED)
+	struct bufferevent *bev, short events, void *ctx)
 {
+	ext_plugin_ctx_t *pctx = (ext_plugin_ctx_t *)ctx;
+
 	if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+		/* ROADMAP 6.1 : ne plus tenter de pousser de
+		 * notifications vers une connexion fermee. */
+		gw_conn_remove(pctx, bev);
 		bufferevent_free(bev);
 	}
 }
@@ -377,6 +494,10 @@ static void accept_gateway_cb(
 		bev, gateway_read_cb, NULL,
 		gateway_event_cb, pctx);
 	bufferevent_enable(bev, EV_READ | EV_WRITE);
+
+	/* ROADMAP 6.1 : enregistrer la connexion pour la diffusion
+	 * des notifications sysrepo (cf. daemon_notif_push_cb()). */
+	gw_conn_add(pctx, bev);
 }
 
 int ext_plugin_init_uds(
@@ -408,5 +529,16 @@ int ext_plugin_init_uds(
 		free(ctx);
 		return -1;
 	}
+
+	/* ROADMAP.md item 6.1 : brancher les notifications sysrepo
+	 * cote daemon (decouverte multi-modules, cf.
+	 * plugin_subscribe_notifications() dans sysrepo_plugin.c) et
+	 * les repousser vers chaque gateway connectee via
+	 * daemon_notif_push_cb() ci-dessus. Sans ceci, le mode
+	 * Externe n'a jamais recu aucune notification (cf. dette
+	 * technique ROADMAP.md avant cette session). */
+	plugin_subscribe_notifications(
+		sr_ctx, daemon_notif_push_cb, ctx);
+
 	return 0;
 }

@@ -88,4 +88,9 @@ void plugin_handle_edit(
 	plugin_edit_cb callback,
 	void *user_data);
 
+/* Forward declaration from uds_plugin.c */
+extern int ext_plugin_init_uds(
+	struct event_base *base, const char *path,
+	plugin_ctx_t *sr_ctx);
+
 #endif /* PLUGIN_API_H */
