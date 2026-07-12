@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <dirent.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -14,6 +16,15 @@
 #include "ipc/uds_common.h"
 #include "ipc/uds_data_proto.h"
 #include "logger.h"
+
+/* ROADMAP.md item 3.10: default base path of the sysrepo YANG
+ * module repository (modules live under <path>/yang). Overridable
+ * at compile time via -DSR_REPO_PATH_DEFAULT and at runtime via
+ * the SYSREPO_REPOSITORY_PATH environment variable, matching
+ * sysrepo's own convention. */
+#ifndef SR_REPO_PATH_DEFAULT
+#define SR_REPO_PATH_DEFAULT "/etc/sysrepo"
+#endif
 
 /* RFC 8040 Sec 3.4.1: ETag computation (same as sysrepo_plugin.c) */
 static uint32_t gw_fnv1a_hash(const uint8_t *data, size_t len)
@@ -70,6 +81,11 @@ struct plugin_ctx_s {
 	struct bufferevent *bev;
 	uint32_t next_msg_id;
 	pending_req_t *pending;
+	/* ROADMAP 3.10: local schema-only libyang context, built once
+	 * at plugin_init() time from the sysrepo YANG repository on
+	 * disk. Read-only after init, never mutated concurrently
+	 * (gateway process is single-threaded, AGENTS.md rule #1). */
+	struct ly_ctx *local_ly_ctx;
 };
 
 static pending_req_t *add_pending(
@@ -267,6 +283,98 @@ static void uds_event_cb(
 	}
 }
 
+/*
+ * ROADMAP.md item 3.10 - Contexte libyang local (mode Externe).
+ *
+ * En mode Externe, le process gateway n'a pas de connexion sysrepo
+ * directe : plugin_acquire_ly_ctx() renvoyait NULL, desactivant la
+ * resolution des cles de liste dans le routeur (router.c). Plutot
+ * que d'ajouter un aller-retour IPC bloquant sur le chemin critique
+ * de chaque requete (ce qui reintroduirait un risque de blocage du
+ * thread libevent si le daemon est lent/indisponible, cf. AGENTS.md
+ * regle d'or #2), on construit ici un contexte libyang *local et en
+ * lecture seule*, charge une seule fois au demarrage depuis le meme
+ * repertoire de stockage YANG que sysrepo (celui peuple par
+ * `sysrepoctl -i`, cf. docker/Dockerfile).
+ *
+ * Ce contexte ne sert qu'a la resolution de schema (noms de
+ * modules, cles de liste) dans router.c : il ne touche jamais aux
+ * donnees et n'a donc pas besoin d'etre synchronise en direct avec
+ * sysrepo.
+ *
+ * @warning Limite connue : si un module est installe ou desinstalle
+ * a chaud dans sysrepo, le gateway doit etre redemarre pour que la
+ * resolution de schema en tienne compte (evenement rare en
+ * pratique, cf. dette technique ROADMAP.md).
+ *
+ * @return Nouveau contexte libyang, ou NULL si le repertoire YANG
+ *         est inaccessible ou la creation du contexte echoue (la
+ *         resolution de cles de liste reste alors desactivee,
+ *         comme avant cette evolution).
+ */
+static struct ly_ctx *build_local_ly_ctx(void)
+{
+	const char *repo_path = getenv("SYSREPO_REPOSITORY_PATH");
+	char yang_dir[512];
+	struct ly_ctx *ctx = NULL;
+	DIR *dir;
+	struct dirent *ent;
+	unsigned int loaded = 0, failed = 0;
+
+	if (!repo_path || !*repo_path)
+		repo_path = SR_REPO_PATH_DEFAULT;
+	snprintf(yang_dir, sizeof(yang_dir), "%s/yang", repo_path);
+
+	dir = opendir(yang_dir);
+	if (!dir) {
+		RC_WARN("uds-gateway: cannot open YANG dir '%s' (%s); "
+			"list key resolution disabled (ROADMAP 3.10)",
+			yang_dir, strerror(errno));
+		return NULL;
+	}
+
+	if (ly_ctx_new(yang_dir, 0, &ctx) != LY_SUCCESS || !ctx) {
+		RC_WARN("uds-gateway: ly_ctx_new() failed for '%s'",
+			yang_dir);
+		closedir(dir);
+		return NULL;
+	}
+
+	while ((ent = readdir(dir)) != NULL) {
+		size_t name_len = strlen(ent->d_name);
+		char full_path[1024];
+
+		if (name_len < 6 ||
+		    strcmp(ent->d_name + name_len - 5, ".yang") != 0)
+			continue;
+
+		snprintf(full_path, sizeof(full_path), "%s/%s",
+			yang_dir, ent->d_name);
+
+		/* Best-effort: une erreur sur un module isole (import
+		 * manquant, revision en doublon deja implementee,
+		 * etc.) ne doit pas empecher le chargement des autres :
+		 * la resolution degrade proprement au cas par cas dans
+		 * router.c (cf. resolve_module_name()). */
+		if (lys_parse_path(
+				ctx, full_path, LYS_IN_YANG,
+				NULL) != LY_SUCCESS) {
+			RC_DEBUG("uds-gateway: failed to parse '%s' "
+				"into local ly_ctx (non-fatal)",
+				full_path);
+			failed++;
+		} else {
+			loaded++;
+		}
+	}
+	closedir(dir);
+
+	RC_INFO("uds-gateway: local libyang context built from '%s' "
+		"(%u modules loaded, %u skipped) [ROADMAP 3.10]",
+		yang_dir, loaded, failed);
+	return ctx;
+}
+
 plugin_ctx_t *plugin_init(
 	struct event_base *base, bool use_external UNUSED,
 	const char *uds_path)
@@ -298,6 +406,12 @@ plugin_ctx_t *plugin_init(
 		ctx->bev, uds_read_cb, NULL,
 		uds_event_cb, ctx);
 	bufferevent_enable(ctx->bev, EV_READ | EV_WRITE);
+
+	/* ROADMAP 3.10: local schema-only context, independent of
+	 * the UDS connection above (best-effort; NULL is a valid,
+	 * already-handled outcome for callers of
+	 * plugin_acquire_ly_ctx()). */
+	ctx->local_ly_ctx = build_local_ly_ctx();
 
 	return ctx;
 }
@@ -549,6 +663,9 @@ void plugin_destroy(plugin_ctx_t *ctx)
 	if (!ctx) return;
 	fail_all_pending(ctx);
 	if (ctx->bev) bufferevent_free(ctx->bev);
+	/* ROADMAP 3.10: liberer le contexte local s'il a ete
+	 * construit avec succes dans plugin_init(). */
+	if (ctx->local_ly_ctx) ly_ctx_destroy(ctx->local_ly_ctx);
 	free(ctx);
 }
 
@@ -558,18 +675,22 @@ void plugin_destroy(plugin_ctx_t *ctx)
 
 const struct ly_ctx *plugin_acquire_ly_ctx(plugin_ctx_t *ctx)
 {
-	/* En mode externe, le gateway n'a pas d'acces direct a sysrepo.
-	 * On retourne NULL. Le routeur devra fonctionner sans contexte
-	 * (la resolution des cles de listes sera desactivee).
-	 * TODO (roadmap 3.10): Implementer un ly_ctx local dans le
-	 * gateway (charge les memes modules YANG que sysrepo) ou le
-	 * recuperer via un nouvel echange IPC dedie. */
-	(void)ctx;
-	return NULL;
+	/* ROADMAP 3.10: le contexte local est construit une seule
+	 * fois dans plugin_init() (voir build_local_ly_ctx()) et
+	 * jamais mute ensuite : aucun verrou n'est necessaire ici,
+	 * le process gateway etant strictement mono-thread
+	 * (AGENTS.md regle d'or #1). Peut rester NULL si le
+	 * repertoire YANG de sysrepo etait inaccessible au demarrage
+	 * (voir logs) ; les appelants (router.c) gerent deja ce cas. */
+	if (!ctx)
+		return NULL;
+	return ctx->local_ly_ctx;
 }
 
 void plugin_release_ly_ctx(plugin_ctx_t *ctx)
 {
-	/* Rien a liberer puisque nous n'avons pas acquis de contexte */
+	/* Rien a liberer : le contexte local (s'il existe) vit
+	 * jusqu'a plugin_destroy(), il n'est pas acquis/libere par
+	 * requete comme cote sysrepo (cf. sr_worker_acquire_ly_ctx). */
 	(void)ctx;
 }

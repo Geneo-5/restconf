@@ -32,7 +32,7 @@ déjà livrés vit dans `git log`, pas dans ce fichier.
 | :--- | :--- | :---: | :---: |
 | **1** | Fondations Réseau & Boucle d'Événements | 100% | 🟢 |
 | **2** | Sécurité, JWT & NACM | 100% | 🟢 |
-| **3** | Architecture Plugin Sysrepo (Dual-Mode) | 85% | 🟡 |
+| **3** | Architecture Plugin Sysrepo (Dual-Mode) | 92% | 🟡 |
 | **4** | Cœur RESTCONF & CRUD (RFC 8040) | 100% | 🟢 |
 | **5** | Extensions NMDA (RFC 8527) | 100% | 🟢 |
 | **6** | Notifications & SSE (RFC 8650) | 80% | 🟡 |
@@ -43,7 +43,9 @@ déjà livrés vit dans `git log`, pas dans ce fichier.
 `[x]` fait, `[~]` partiel, `[ ]` à faire)*
 
 Phase 3 repasse à 🟡 : l'item **3.12** (thread worker sysrepo confiné)
-est maintenant implémenté. Reste 3.10 (contexte libyang distant).
+est maintenant implémenté, et **3.10** (contexte libyang local en
+mode Externe) également. Reste **3.7** (câblage réel des RPC de
+souscription, dépend de 6.1).
 
 ---
 
@@ -83,12 +85,12 @@ est maintenant implémenté. Reste 3.10 (contexte libyang distant).
 | 3.2 | Mode Interne | - | Liens statiques, appels C directs | `[x]` |
 | 3.3 | Mode Externe (IPC UDS) — connexion | - | `evconnlistener`/`bufferevent` sur `AF_UNIX` (`uds_gateway.c`, `uds_plugin.c`) | `[x]` |
 | 3.4 | Protocole IPC — framing | - | Framing longueur + magic `0x52434E46` (`uds_common.c`) | `[x]` |
-| 3.5 | Contexte Libyang | - | `sr_acquire_context()`/`sr_release_context()` en interne ; `NULL` en externe (cf. 3.10) | `[~]` |
+| 3.5 | Contexte Libyang | - | `sr_acquire_context()`/`sr_release_context()` en interne ; contexte local `ly_ctx` construit au démarrage en externe (cf. 3.10) | `[x]` |
 | 3.6 | Callbacks Oper Data | YANG `rcmon` | `sr_oper_get_subscribe` (NO_THREAD) ; `oper_get_cb` génère capabilities/streams (cf. 7.1) | `[x]` |
 | 3.7 | Callbacks RPC | YANG `rsn` | `sr_rpc_subscribe_tree` (NO_THREAD) ; ID de souscription retourné, pas de notification réelle (cf. 6.1) | `[~]` |
 | 3.8 | Mode Externe — dispatch IPC réel | - | `plugin_data_cb`/`plugin_rpc_cb` transport-agnostiques ; corrélation par `msg_id`. `plugin_subscribe_notifications` reste un stub côté gateway (dépend de 6.1) | `[x]` |
 | 3.9 | Mode Externe — connexion sysrepo du démon | - | `plugin_main.c` : `plugin_init()`/`plugin_destroy()` autour de l'UDS ; sessions par-requête via `open_request_session()`/`close_request_session()` | `[x]` |
-| 3.10 | Mode Externe — contexte libyang à distance | - | `plugin_acquire_ly_ctx()` renvoie `NULL` en externe → résolution des clés de liste désactivée dans `router.c`. Reste à exposer `ly_ctx` via IPC ou contexte local synchronisé | `[ ]` |
+| 3.10 | 🟢 Mode Externe — contexte libyang local | - | `build_local_ly_ctx()` (`src/ipc/uds_gateway.c`) : au démarrage du gateway, scan de `<SYSREPO_REPOSITORY_PATH ou SR_YANG_REPO_PATH>/yang` et chargement de chaque `.yang` trouvé (`lys_parse_path()`, best-effort par fichier) dans un `ly_ctx` **local, en lecture seule, indépendant de la connexion IPC**. `plugin_acquire_ly_ctx()` renvoie désormais ce contexte au lieu de `NULL` — résolution des clés de liste et des préfixes de nouveau active en mode Externe (`router.c`). **Limite connue** : contexte figé au démarrage, pas de hot-reload si un module est (dés)installé à chaud dans sysrepo sans redémarrer `restconf-server`. | `[x]` |
 | 3.11 | `plugin_handle_rpc` en mode interne | RFC 8040 Sec 3.6 | Câblée sur `sr_rpc_send_tree()` (cf. 4.10) | `[x]` |
 | **3.12** | **🟢 DONE — Thread worker sysrepo confiné** | AGENTS.md règle #2 | **Implémenté (session 2026-07-12)** : thread pthread confiné dédié (`src/plugin/sysrepo_worker.c`) propriétaire exclusif de `sr_conn_ctx_t`, sessions et abonnements. Communication par file de messages (mutex+condvar+pipe) vers le worker et eventfd+completion queue vers libevent. `plugin_handle_get/edit/rpc` deviennent asynchrones (soumission + callback différé). Le pipe sysrepo est désormais pompé par le worker via `poll()` (200ms timeout). Les callbacks `oper_get_cb`/`rpc_establish_sub_cb`/`notif_event_cb` s'exécutent dans le thread worker ; `notif_event_cb` marshal les notifications vers libevent via la completion queue (ROADMAP 3.12.6). `sr_acquire_context`/`sr_release_context` restent les seuls appels sysrepo autorisés depuis le thread libevent (exception AGENTS.md). Détails en 3.12.1–3.12.8. | `[x]` |
 | 3.12.2 | Protocole de messages worker | - | `sr_worker_msg_t` (GET/EDIT/RPC/SUBSCRIBE_NOTIF/SHUTDOWN) + `sr_completion_t` (DATA/EDIT/RPC/NOTIF), deep-copy des champs de requête, continuation par callback + user_data | `[x]` |
@@ -177,7 +179,7 @@ est maintenant implémenté. Reste 3.10 (contexte libyang distant).
 | Sujet | Item(s) | Fichier(s) | Impact |
 | :--- | :---: | :--- | :--- |
 | **Blocage `sr_get_data()` sur oper data** | **3.12 ✅** | `sysrepo_worker.c` | **Résolu** — thread confiné dédié |
-| Contexte libyang indisponible en mode Externe | 3.5, 3.10 | `uds_gateway.c`, `router.c` | URI avec clé de liste échoue au parsing en mode Externe |
+| **Contexte libyang indisponible en mode Externe** | **3.5, 3.10 ✅** | `uds_gateway.c` | **Résolu** — contexte local chargé depuis le dépôt YANG de sysrepo au démarrage (limite : pas de hot-reload, cf. 3.10) |
 | `establish-subscription` stub / pas de filtrage | 6.1, 6.5 | `sysrepo_plugin.c` | Pas de souscription filtrée réelle, pas de replay |
 | `plugin_subscribe_notifications` stub côté gateway externe | 3.8 (partiel) | `uds_gateway.c` | Dépend de 6.1 |
 | Pas de limitation de ressources | 7.3 | `h2c_server.c` | Pas de `WINDOW_UPDATE` nghttp2 ni de timeouts explicites |
@@ -187,18 +189,20 @@ est maintenant implémenté. Reste 3.10 (contexte libyang distant).
 
 ## 🎯 Prochaines Étapes (par priorité)
 
-1. **3.10 — Contexte libyang à distance en mode Externe**
-   Exposer `ly_ctx` via IPC, ou maintenir un contexte local synchronisé
-   côté gateway, pour débloquer la résolution des clés de liste.
-
-2. **6.1 — Finaliser le câblage des notifications**
+1. **6.1 — Finaliser le câblage des notifications**
    Filtrage par souscription, découverte multi-modules, mode Externe.
+   Clôt aussi 3.7 (callbacks RPC de souscription).
 
-3. **6.5 — Replay des notifications** (`start-time`/`stop-time`),
+2. **6.5 — Replay des notifications** (`start-time`/`stop-time`),
    dépend de 6.1.
 
-4. **7.3 — Limitation de ressources** (`WINDOW_UPDATE` nghttp2,
+3. **7.3 — Limitation de ressources** (`WINDOW_UPDATE` nghttp2,
    timeouts `libevent`).
+
+4. **3.10.1 (suivi, non bloquant)** — Envisager un rafraîchissement
+   à chaud du contexte libyang local du gateway (mode Externe) si le
+   redémarrage sur (dés)installation de module s'avère gênant en
+   exploitation.
 
 ---
 
@@ -215,6 +219,8 @@ est maintenant implémenté. Reste 3.10 (contexte libyang distant).
 | `src/plugin/sysrepo_plugin.c` | Réécrit en wrapper thin : délègue tout au worker via `sr_worker_submit_get/edit/rpc` | Plugin non-bloquant depuis libevent |
 | `CMakeLists.txt` | Ajout `sysrepo_worker.c` dans PLUGIN_SOURCES, liaison `pthread` | Support compilation multi-thread confiné |
 | `AGENTS.md` | Exception documentée à la règle d'or #1 (thread worker confiné, frontière messages uniquement) | Conformité architecture |
+| `src/ipc/uds_gateway.c` | **ROADMAP 3.10** — Ajout de `build_local_ly_ctx()` : au démarrage du gateway (mode Externe), scan de `<SYSREPO_REPOSITORY_PATH ou SR_YANG_REPO_PATH>/yang` et chargement de chaque `.yang` (`lys_parse_path()`, best-effort) dans un `ly_ctx` local stocké dans `plugin_ctx_s.local_ly_ctx` ; `plugin_acquire_ly_ctx()`/`plugin_release_ly_ctx()` réécrites en conséquence (plus de verrou nécessaire, contexte immuable après init) ; libéré dans `plugin_destroy()` | Résolution des clés de liste et préfixes YANG rétablie en mode Externe (`router.c`) sans aller-retour IPC bloquant sur le chemin critique |
+| `CMakeLists.txt` | **ROADMAP 3.10** — Nouvelle option `SR_YANG_REPO_PATH` (défaut `/etc/sysrepo`) ; définie en compilation via `SR_REPO_PATH_DEFAULT` pour `restconf-server` en mode `BUILD_EXTERNAL_PLUGIN` | Chemin du dépôt YANG configurable sans toucher au code |
 
 ---
 

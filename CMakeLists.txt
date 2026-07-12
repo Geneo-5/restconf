@@ -37,6 +37,15 @@ set(LOG_LEVEL "2" CACHE STRING "Compile-time maximum log level (0=TRACE to 5=FAT
 set(PLUGIN_UDS_PATH "/var/run/restconf-plugin.sock" CACHE STRING
 	"Unix socket path for IPC between restconf-server and restconf-plugin")
 
+# Option 5 : Base du dépôt YANG de sysrepo (ROADMAP.md item 3.10)
+# Utilisé uniquement en mode Externe (BUILD_EXTERNAL_PLUGIN=ON) pour
+# construire le contexte libyang local du gateway, depuis
+# <path>/yang. Doit correspondre au REPO_PATH de sysrepo (défaut
+# amont: /etc/sysrepo). Surchargeable aussi à l'exécution via la
+# variable d'environnement SYSREPO_REPOSITORY_PATH.
+set(SR_YANG_REPO_PATH "/etc/sysrepo" CACHE STRING
+	"Base path of the sysrepo YANG repository (modules under <path>/yang), used to build restconf-server's local libyang context in External Plugin mode")
+
 # ==============================================================================
 # Dépendances
 # ==============================================================================
@@ -114,7 +123,10 @@ if(BUILD_EXTERNAL_PLUGIN)
 		"🔨 Mode: EXTERNAL PLUGIN (Séparation des privilèges)")
 	
 	target_compile_definitions(restconf-server PRIVATE 
-		USE_EXTERNAL_PLUGIN)
+		USE_EXTERNAL_PLUGIN
+		# ROADMAP.md item 3.10 : chemin du dépôt YANG utilisé par
+		# uds_gateway.c pour construire son contexte libyang local.
+		SR_REPO_PATH_DEFAULT="${SR_YANG_REPO_PATH}")
 	
 	target_sources(restconf-server PRIVATE 
 		src/ipc/uds_gateway.c
