@@ -67,7 +67,7 @@ static int percent_decode(
 				dst[j++] = (char)val;
 				i += 3;
 			} else {
-				/* Invalid percent-encoding (e.g., %%%) */
+				/* Invalid percent-encoding */
 				return -1;
 			}
 		} else if (src[i] == '%') {
@@ -89,7 +89,7 @@ static int validate_percent_encoding(const char *src, size_t len)
 {
 	for (size_t i = 0; i < len; i++) {
 		if (src[i] == '%') {
-			/* Must be followed by 2 hexadecimal characters */
+			/* Must be followed by 2 hex characters */
 			if (i + 2 >= len) return -1;
 			if (!isxdigit((unsigned char)src[i+1]) ||
 			    !isxdigit((unsigned char)src[i+2])) {
@@ -107,25 +107,12 @@ static int validate_percent_encoding(const char *src, size_t len)
  *
  * @param[in] ctx libyang context.
  * @param[in] node_path Full schema/data path of the list or
- *            leaf-list node whose predicate is being built (e.g.
- *            "/mod:top/mod:list1"). The caller has ALREADY
- *            appended "/module:node" to @p out_buf before calling
- *            this function (cf. parse_segment()), so @p node_path
- *            and the current content of @p out_buf are the same
- *            string: it MUST be used as-is for the schema lookup,
- *            not rebuilt from a module/node pair, or the resulting
- *            path would be duplicated (".../mod:node/mod:node")
- *            and lys_find_path() would always fail (cf. 4.1, 4.2).
- * @param[in] values_str Raw (still percent-encoded) key value(s)
- *            string taken from the URI, e.g. "key1,key2" or a
- *            single leaf-list value.
- * @param[in,out] out_buf XPath buffer being built (same string as
- *            @p node_path); the predicate is appended to it.
- * @param[in,out] out_len Current length of @p out_buf, updated in
- *            place as the predicate is appended.
+ *            leaf-list node whose predicate is being built.
+ * @param[in] values_str Raw key value(s) string from the URI.
+ * @param[in,out] out_buf XPath buffer being built.
+ * @param[in,out] out_len Current length of @p out_buf.
  *
- * @return 0 on success, -1 on error (unknown node, or '=' used on
- *         a non-list/leaf-list node).
+ * @return 0 on success, -1 on error.
  */
 static int build_xpath_predicate(
 	const struct ly_ctx *ctx,
@@ -167,12 +154,14 @@ static int build_xpath_predicate(
 
 				char decoded[MAX_DECODED_LEN];
 				percent_decode(val_ptr, val_len,
-				               decoded, sizeof(decoded));
+				               decoded,
+				               sizeof(decoded));
 
 				written = snprintf(
 					out_buf + *out_len,
 					MAX_XPATH_LEN - *out_len,
-					"[%s='%s']", key->name, decoded);
+					"[%s='%s']", key->name,
+					decoded);
 				if (written < 0) return -1;
 				*out_len += written;
 
@@ -182,7 +171,8 @@ static int build_xpath_predicate(
 			key = key->next;
 		}
 	} else {
-		return -1; /* Error: '=' used on a non-list/leaf-list node */
+		/* '=' used on non-list/leaf-list node */
+		return -1;
 	}
 	return 0;
 }
@@ -208,7 +198,7 @@ static int parse_segment(
 
 	if (colon_pos && (!eq_pos || colon_pos < eq_pos)) {
 		*colon_pos = '\0';
-		/* Resolve YANG prefix to module name (cf. 4.1) */
+		/* Resolve YANG prefix to module name */
 		module_name = (char *)resolve_module_name(
 			ctx, seg_buf);
 		node_name = colon_pos + 1;
@@ -218,7 +208,6 @@ static int parse_segment(
 		*eq_pos = '\0';
 		char *values_str = eq_pos + 1;
 
-		/* Ajouter /module:node ou /node */
 		int written;
 		if (module_name) {
 			written = snprintf(
@@ -234,19 +223,14 @@ static int parse_segment(
 		if (written < 0) return -1;
 		*xpath_len += written;
 
-		/* Ajouter le prédicat [key='val'] : current_xpath
-		 * contient déjà le chemin complet du nœud ("/mod:node"
-		 * qu'on vient d'ajouter ci-dessus), on le réutilise tel
-		 * quel pour la résolution du schéma (cf. 4.1, 4.2). */
 		if (ctx) {
 			return build_xpath_predicate(
 				ctx, current_xpath,
 				values_str,
 				current_xpath, xpath_len);
 		}
-		return -1; /* Contexte requis pour les listes */
+		return -1;
 	} else {
-		/* Pas de '=', c'est un container, leaf ou racine */
 		int written;
 		if (module_name) {
 			written = snprintf(
@@ -266,8 +250,7 @@ static int parse_segment(
 }
 
 /**
- * @brief Parse les query parameters RESTCONF (RFC 8040 Sec 4.8).
- * Extrait content, depth, fields, with-defaults, with-origin.
+ * @brief Parse RESTCONF query parameters (RFC 8040 Sec 4.8).
  */
 static int parse_query_params(
 	const char *query, rc_request_t *req)
@@ -283,10 +266,8 @@ static int parse_query_params(
 	while (param) {
 		char *eq = strchr(param, '=');
 		if (!eq) {
-			/* Paramètre sans valeur (ex: "with-origin") */
-			if (strcmp(param, "with-origin") == 0) {
+			if (strcmp(param, "with-origin") == 0)
 				req->with_origin = true;
-			}
 			param = strtok_r(NULL, "&", &saveptr);
 			continue;
 		}
@@ -298,11 +279,10 @@ static int parse_query_params(
 		if (strcmp(key, "content") == 0) {
 			req->content_filter = strdup(val);
 		} else if (strcmp(key, "depth") == 0) {
-			if (strcmp(val, "unbounded") == 0) {
+			if (strcmp(val, "unbounded") == 0)
 				req->depth = -1;
-			} else {
+			else
 				req->depth = atoi(val);
-			}
 		} else if (strcmp(key, "fields") == 0) {
 			req->fields_expr = strdup(val);
 		} else if (strcmp(key, "with-defaults") == 0) {
@@ -316,6 +296,25 @@ static int parse_query_params(
 
 	free(q_copy);
 	return 0;
+}
+
+/**
+ * @brief Map a NMDA identityref string to an rc_datastore_t.
+ */
+static rc_datastore_t
+map_nmda_identityref(const char *ds_identity)
+{
+	if (strstr(ds_identity, "ietf-datastores:running"))
+		return RC_DS_RUNNING;
+	if (strstr(ds_identity, "ietf-datastores:operational"))
+		return RC_DS_OPERATIONAL;
+	if (strstr(ds_identity, "ietf-datastores:intended"))
+		return RC_DS_INTENDED;
+	if (strstr(ds_identity, "ietf-datastores:candidate"))
+		return RC_DS_CANDIDATE;
+	if (strstr(ds_identity, "ietf-datastores:startup"))
+		return RC_DS_STARTUP;
+	return RC_DS_UNKNOWN;
 }
 
 int router_parse_request(
@@ -335,12 +334,11 @@ int router_parse_request(
 	req_out->req_type = codec_parse_content_type(content_type);
 	req_out->accept_type = codec_parse_accept(accept);
 
-	/* RFC 8040 Sec 3.4.1: If-Match pour les edits conditionnels */
-	if (if_match && *if_match) {
+	/* RFC 8040 Sec 3.4.1: If-Match */
+	if (if_match && *if_match)
 		req_out->if_match = strdup(if_match);
-	}
 
-	/* Split path et query string (RFC 8040 Sec 3.5.1) */
+	/* Split path and query string (RFC 8040 Sec 3.5.1) */
 	char path_buf[2048];
 	const char *query = NULL;
 	const char *qmark = strchr(path, '?');
@@ -371,11 +369,11 @@ int router_parse_request(
 	if (strcmp(path, "/restconf/data") == 0 ||
 	    strncmp(path, "/restconf/data/", 15) == 0) {
 		req_out->res_type = RC_RES_DATA;
-		/* RFC 8040: /restconf/data cible running par défaut */
+		/* RFC 8040: /restconf/data targets running */
 		req_out->datastore = RC_DS_RUNNING;
 		rest_path = (path[14] == '/') ? path + 15 : "";
 	} else if (strcmp(path, "/restconf/ds") == 0) {
-		/* RFC 8527: /restconf/ds sans datastore = erreur */
+		/* RFC 8527: /restconf/ds without datastore */
 		req_out->res_type = RC_RES_DS;
 		req_out->datastore = RC_DS_UNKNOWN;
 		rest_path = "";
@@ -384,89 +382,76 @@ int router_parse_request(
 		const char *ds_start = path + 13;
 		const char *ds_end = strchr(ds_start, '/');
 		if (ds_end) {
-			/* Extraire l'identityref datastore (RFC 8527) */
-			size_t ds_len = (size_t)(ds_end - ds_start);
+			size_t ds_len =
+				(size_t)(ds_end - ds_start);
 			char ds_identity[256];
-			if (ds_len >= sizeof(ds_identity)) return -1;
+			if (ds_len >= sizeof(ds_identity))
+				return -1;
 			memcpy(ds_identity, ds_start, ds_len);
 			ds_identity[ds_len] = '\0';
 
-			/* Mapper l'identityref vers rc_datastore_t */
-			if (strstr(ds_identity, "ietf-datastores:running")) {
-				req_out->datastore = RC_DS_RUNNING;
-			} else if (strstr(ds_identity, "ietf-datastores:operational")) {
-				req_out->datastore = RC_DS_OPERATIONAL;
-			} else if (strstr(ds_identity, "ietf-datastores:intended")) {
-				req_out->datastore = RC_DS_INTENDED;
-			} else {
-				req_out->datastore = RC_DS_UNKNOWN;
-			}
+			req_out->datastore =
+				map_nmda_identityref(ds_identity);
 			rest_path = ds_end + 1;
 		} else {
-			/* /restconf/ds/<datastore> sans slash final
-			 * (racine du datastore NMDA) */
 			size_t ds_len = strlen(ds_start);
 			char ds_identity[256];
-			if (ds_len >= sizeof(ds_identity)) return -1;
+			if (ds_len >= sizeof(ds_identity))
+				return -1;
 			memcpy(ds_identity, ds_start, ds_len);
 			ds_identity[ds_len] = '\0';
 
-			if (strstr(ds_identity, "ietf-datastores:running")) {
-				req_out->datastore = RC_DS_RUNNING;
-			} else if (strstr(ds_identity, "ietf-datastores:operational")) {
-				req_out->datastore = RC_DS_OPERATIONAL;
-			} else if (strstr(ds_identity, "ietf-datastores:intended")) {
-				req_out->datastore = RC_DS_INTENDED;
-			} else {
-				req_out->datastore = RC_DS_UNKNOWN;
-			}
+			req_out->datastore =
+				map_nmda_identityref(ds_identity);
 			rest_path = "";
 		}
-		RC_TRACE("nmda %d | %s", req_out->datastore, rest_path);
+		RC_TRACE("nmda %d | %s",
+		         req_out->datastore, rest_path);
 	} else if (strcmp(path, "/restconf/operations") == 0 ||
-	           strncmp(path, "/restconf/operations/", 21) == 0) {
+	           strncmp(path, "/restconf/operations/", 21)
+	           == 0) {
 		req_out->res_type = RC_RES_OPERATIONS;
 		rest_path = (path[20] == '/') ? path + 21 : "";
 
-		/* Parser le module:rpc-name depuis l'URI operations */
+		/* Parse module:rpc-name from operations URI */
 		if (rest_path && *rest_path != '\0') {
 			char rpc_path[512];
 			size_t rpc_len = strlen(rest_path);
-			if (rpc_len >= sizeof(rpc_path)) return -1;
+			if (rpc_len >= sizeof(rpc_path))
+				return -1;
 			memcpy(rpc_path, rest_path, rpc_len);
 			rpc_path[rpc_len] = '\0';
 
-			/* Enlever les trailing slashes */
+			/* Remove trailing slashes */
 			while (rpc_len > 0 &&
 			       rpc_path[rpc_len - 1] == '/') {
 				rpc_path[--rpc_len] = '\0';
 			}
 
-			/* Parser module:rpc ou module:action/node */
+			/* Parse module:rpc or module:action/node */
 			char *colon = strchr(rpc_path, ':');
 			if (colon) {
 				*colon = '\0';
-				req_out->rpc_module = strdup(rpc_path);
-				req_out->rpc_name = strdup(colon + 1);
+				req_out->rpc_module =
+					strdup(rpc_path);
+				req_out->rpc_name =
+					strdup(colon + 1);
 			} else {
-				req_out->rpc_name = strdup(rpc_path);
+				req_out->rpc_name =
+					strdup(rpc_path);
 			}
 		}
 	} else if (strcmp(path, "/restconf/stream") == 0 ||
 	           strncmp(path, "/restconf/stream/", 17) == 0 ||
 	           strcmp(path, "/streams") == 0 ||
 	           strncmp(path, "/streams/", 9) == 0) {
-		/* RFC 8040 Sec 6.3: Event Stream URIs.
-		 * Une requete sur la racine ("/restconf/stream" ou
-		 * "/streams", sans nom de stream) est une ressource
-		 * valide au sens du routage (pas une 400 Bad URI) : elle
-		 * laisse xpath a NULL, et c'est a l'appelant (main.c) de
-		 * decider quoi en faire (ex. 404 faute de stream precis,
-		 * cf. ROADMAP.md item 6.1/8.x). */
+		/* RFC 8040 Sec 6.3: Event Stream URIs */
 		req_out->res_type = RC_RES_EVENT_STREAM;
-		if (strncmp(path, "/restconf/stream/", 17) == 0) {
+		if (strncmp(path, "/restconf/stream/", 17)
+		    == 0) {
 			req_out->xpath = strdup(path + 17);
-		} else if (strncmp(path, "/streams/", 9) == 0) {
+		} else if (strncmp(path, "/streams/", 9)
+		           == 0) {
 			req_out->xpath = strdup(path + 9);
 		} else {
 			req_out->xpath = NULL;
@@ -476,12 +461,11 @@ int router_parse_request(
 		return -1;
 	}
 
-	/* Parser les query parameters après extraction du path */
-	if (query && parse_query_params(query, req_out) != 0) {
+	/* Parse query parameters after path extraction */
+	if (query && parse_query_params(query, req_out) != 0)
 		return -1;
-	}
 
-	/* Construire le XPath pour DATA/DS uniquement */
+	/* Build XPath for DATA/DS only */
 	if ((req_out->res_type == RC_RES_DATA ||
 	     req_out->res_type == RC_RES_DS) &&
 	    rest_path && *rest_path != '\0') {
@@ -495,19 +479,22 @@ int router_parse_request(
 			while (*seg_start == '/') seg_start++;
 			if (*seg_start == '\0') break;
 
-			const char *seg_end = strchr(seg_start, '/');
+			const char *seg_end =
+				strchr(seg_start, '/');
 			size_t seg_len = seg_end ?
 				(size_t)(seg_end - seg_start) :
 				strlen(seg_start);
 
-			/* Valider le percent-encoding du segment */
-			if (validate_percent_encoding(seg_start, seg_len) != 0) {
+			/* Validate percent-encoding */
+			if (validate_percent_encoding(
+				seg_start, seg_len) != 0) {
 				free(xpath);
 				return -1;
 			}
 
 			if (parse_segment(ctx, xpath, &xpath_len,
-			                  seg_start, seg_len) != 0) {
+			                  seg_start, seg_len)
+			    != 0) {
 				free(xpath);
 				return -1;
 			}

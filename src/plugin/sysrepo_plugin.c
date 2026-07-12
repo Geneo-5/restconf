@@ -363,11 +363,15 @@ static int open_request_session(
 		sr_ds = SR_DS_OPERATIONAL;
 		break;
 	case RC_DS_INTENDED:
-		/* INTENDED n'a pas de datastore sysrepo direct,
-		 * c'est un datastore conceptuel NMDA. Pour
-		 * l'instant, fallback sur operational (inchange
-		 * par rapport a l'ancien select_session()). */
+		/* INTENDED maps to operational in sysrepo
+		 * (conceptual NMDA datastore). */
 		sr_ds = SR_DS_OPERATIONAL;
+		break;
+	case RC_DS_CANDIDATE:
+		sr_ds = SR_DS_CANDIDATE;
+		break;
+	case RC_DS_STARTUP:
+		sr_ds = SR_DS_STARTUP;
 		break;
 	case RC_DS_RUNNING:
 	default:
@@ -1029,10 +1033,17 @@ static int plugin_set_leaves_recursive(
 
 			/* Utiliser SR_EDIT_ISOLATE pour éviter
 			 * la validation du module entier */
+			/*
+			 * SR_EDIT_ISOLATE: skip module-level validation
+			 * to avoid "Unexpected data state node found"
+			 * when config and state containers are siblings
+			 * at the top level (e.g. oven:oven + oven-state).
+			 *
+			 * Do NOT use SR_EDIT_NON_RECURSIVE: let sysrepo
+			 * auto-create parent containers when they don't
+			 * exist yet (first PUT on a new resource).
+			 */
 			uint32_t opts = SR_EDIT_ISOLATE;
-			if (strcmp(default_op, "replace") == 0) {
-				opts |= SR_EDIT_NON_RECURSIVE;
-			}
 
 			int set_rc = sr_set_item_str(
 				sess, leaf_xpath, value, NULL, opts);

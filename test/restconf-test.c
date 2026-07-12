@@ -1,11 +1,12 @@
 /**
- * restconf-test.c - Plugin Sysrepo pour le module restconf-test.yang
- * 
- * Plugin externe charge par sysrepo-plugind.
- * Il gere les RPCs du module restconf-test.yang.
- * 
- * Les donnees de configuration sont gerees directement par sysrepo.
- * Ce plugin implémente les callbacks RPC pour répondre aux requêtes RESTCONF.
+ * restconf-test.c - Sysrepo plugin for the restconf-test.yang module
+ *
+ * External plugin loaded by sysrepo-plugind.
+ * Handles RPCs for the restconf-test.yang module using the
+ * tree-based API (sr_rpc_subscribe_tree / sr_rpc_send_tree)
+ * which is what the RESTCONF server uses.
+ *
+ * Configuration data is managed directly by sysrepo.
  */
 
 #define _GNU_SOURCE
@@ -15,401 +16,374 @@
 #include <stdbool.h>
 #include <time.h>
 #include <sysrepo.h>
+#include <libyang/libyang.h>
 
-// Definir UNUSED si non defini
 #ifndef UNUSED
 #define UNUSED __attribute__((unused))
 #endif
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
 #define PLUGIN_NAME "restconf-test-plugin"
 #define MODULE_NAME "restconf-test"
 
-// ---------------------------------------------------------------------------
-// Structure pour stocker le contexte du plugin
-// ---------------------------------------------------------------------------
 typedef struct test_plugin_ctx_s {
-    sr_conn_ctx_t *connection;
-    sr_session_ctx_t *session;
-    sr_subscription_ctx_t *subscription;
+	sr_conn_ctx_t *connection;
+	sr_session_ctx_t *session;
+	sr_subscription_ctx_t *subscription;
 } test_plugin_ctx_t;
 
-// ---------------------------------------------------------------------------
-// RPC Callback declarations
-// ---------------------------------------------------------------------------
+/* -------------------------------------------------------------------
+ * Tree-based RPC callback declarations
+ * ------------------------------------------------------------------- */
 static int rpc_get_system_status_cb(
-    sr_session_ctx_t *session UNUSED,
-    uint32_t sub_id UNUSED,
-    const char *path UNUSED,
-    const sr_val_t *input UNUSED,
-    const size_t input_cnt UNUSED,
-    sr_event_t event UNUSED,
-    uint32_t request_id UNUSED,
-    sr_val_t **output,
-    size_t *output_cnt,
-    void *private_ctx UNUSED);
+	sr_session_ctx_t *session,
+	uint32_t sub_id UNUSED,
+	const char *op_path UNUSED,
+	const struct lyd_node *input UNUSED,
+	sr_event_t event UNUSED,
+	uint32_t request_id UNUSED,
+	struct lyd_node *output,
+	void *private_data UNUSED);
 
 static int rpc_configure_device_cb(
-    sr_session_ctx_t *session UNUSED,
-    uint32_t sub_id UNUSED,
-    const char *path UNUSED,
-    const sr_val_t *input,
-    const size_t input_cnt UNUSED,
-    sr_event_t event UNUSED,
-    uint32_t request_id UNUSED,
-    sr_val_t **output,
-    size_t *output_cnt,
-    void *private_ctx UNUSED);
+	sr_session_ctx_t *session,
+	uint32_t sub_id UNUSED,
+	const char *op_path UNUSED,
+	const struct lyd_node *input UNUSED,
+	sr_event_t event UNUSED,
+	uint32_t request_id UNUSED,
+	struct lyd_node *output,
+	void *private_data UNUSED);
 
 static int rpc_create_resource_cb(
-    sr_session_ctx_t *session UNUSED,
-    uint32_t sub_id UNUSED,
-    const char *path UNUSED,
-    const sr_val_t *input,
-    const size_t input_cnt UNUSED,
-    sr_event_t event UNUSED,
-    uint32_t request_id UNUSED,
-    sr_val_t **output,
-    size_t *output_cnt,
-    void *private_ctx UNUSED);
+	sr_session_ctx_t *session,
+	uint32_t sub_id UNUSED,
+	const char *op_path UNUSED,
+	const struct lyd_node *input,
+	sr_event_t event UNUSED,
+	uint32_t request_id UNUSED,
+	struct lyd_node *output,
+	void *private_data UNUSED);
 
 static int rpc_set_operation_mode_cb(
-    sr_session_ctx_t *session UNUSED,
-    uint32_t sub_id UNUSED,
-    const char *path UNUSED,
-    const sr_val_t *input,
-    const size_t input_cnt UNUSED,
-    sr_event_t event UNUSED,
-    uint32_t request_id UNUSED,
-    sr_val_t **output,
-    size_t *output_cnt,
-    void *private_ctx UNUSED);
+	sr_session_ctx_t *session,
+	uint32_t sub_id UNUSED,
+	const char *op_path UNUSED,
+	const struct lyd_node *input UNUSED,
+	sr_event_t event UNUSED,
+	uint32_t request_id UNUSED,
+	struct lyd_node *output,
+	void *private_data UNUSED);
 
 static int rpc_process_data_cb(
-    sr_session_ctx_t *session UNUSED,
-    uint32_t sub_id UNUSED,
-    const char *path UNUSED,
-    const sr_val_t *input UNUSED,
-    const size_t input_cnt UNUSED,
-    sr_event_t event UNUSED,
-    uint32_t request_id UNUSED,
-    sr_val_t **output,
-    size_t *output_cnt,
-    void *private_ctx UNUSED);
+	sr_session_ctx_t *session,
+	uint32_t sub_id UNUSED,
+	const char *op_path UNUSED,
+	const struct lyd_node *input UNUSED,
+	sr_event_t event UNUSED,
+	uint32_t request_id UNUSED,
+	struct lyd_node *output,
+	void *private_data UNUSED);
 
 static int rpc_trigger_event_cb(
-    sr_session_ctx_t *session UNUSED,
-    uint32_t sub_id UNUSED,
-    const char *path UNUSED,
-    const sr_val_t *input UNUSED,
-    const size_t input_cnt UNUSED,
-    sr_event_t event UNUSED,
-    uint32_t request_id UNUSED,
-    sr_val_t **output UNUSED,
-    size_t *output_cnt UNUSED,
-    void *private_ctx UNUSED);
+	sr_session_ctx_t *session,
+	uint32_t sub_id UNUSED,
+	const char *op_path UNUSED,
+	const struct lyd_node *input UNUSED,
+	sr_event_t event UNUSED,
+	uint32_t request_id UNUSED,
+	struct lyd_node *output UNUSED,
+	void *private_data UNUSED);
 
-// ---------------------------------------------------------------------------
-// RPC Callback implementations
-// ---------------------------------------------------------------------------
-static int rpc_get_system_status_cb(
-    sr_session_ctx_t *session UNUSED,
-    uint32_t sub_id UNUSED,
-    const char *path UNUSED,
-    const sr_val_t *input UNUSED,
-    const size_t input_cnt UNUSED,
-    sr_event_t event UNUSED,
-    uint32_t request_id UNUSED,
-    sr_val_t **output,
-    size_t *output_cnt,
-    void *private_ctx UNUSED)
+/* -------------------------------------------------------------------
+ * Tree-based RPC callback implementations
+ * ------------------------------------------------------------------- */
+static int
+rpc_get_system_status_cb(
+	sr_session_ctx_t *session,
+	uint32_t sub_id UNUSED,
+	const char *op_path UNUSED,
+	const struct lyd_node *input UNUSED,
+	sr_event_t event UNUSED,
+	uint32_t request_id UNUSED,
+	struct lyd_node *output,
+	void *private_data UNUSED)
 {
-    (void)session; (void)sub_id; (void)path; (void)input; (void)input_cnt;
-    (void)event; (void)request_id; (void)private_ctx;
-    
-    SRPLG_LOG_DBG("restconf-test", "RPC get-system-status callback called");
-    
-    // Créer la réponse
-    sr_val_t *vals = NULL;
-    int rc = SR_ERR_OK;
-    
-    // Allouer 2 valeurs (status et timestamp)
-    vals = calloc(2, sizeof(*vals));
-    if (!vals) {
-        SRPLG_LOG_ERR("restconf-test", "Memory allocation failed");
-        return SR_ERR_OPERATION_FAILED;
-    }
-    
-    // Statut du système
-    vals[0].xpath = strdup("/restconf-test:output/status");
-    vals[0].type = SR_STRING_T;
-    vals[0].data.string_val = strdup("operational");
-    
-    // Timestamp
-    time_t now = time(NULL);
-    char timestamp[32];
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
-    vals[1].xpath = strdup("/restconf-test:output/timestamp");
-    vals[1].type = SR_STRING_T;
-    vals[1].data.string_val = strdup(timestamp);
-    
-    *output = vals;
-    *output_cnt = 2;
-    
-    return rc;
+	const struct ly_ctx *ctx;
+
+	(void)sub_id; (void)op_path; (void)input;
+	(void)event; (void)request_id; (void)private_data;
+
+	SRPLG_LOG_DBG(MODULE_NAME,
+	              "RPC get-system-status (tree) called");
+
+	ctx = sr_acquire_context(
+		sr_session_get_connection(session));
+	if (!ctx) return SR_ERR_OPERATION_FAILED;
+
+	time_t now = time(NULL);
+	char ts[32];
+
+	strftime(ts, sizeof(ts),
+	         "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
+
+	lyd_new_term(output, NULL, "status",
+	             "operational", 0, NULL);
+	lyd_new_term(output, NULL, "timestamp", ts, 0, NULL);
+
+	sr_release_context(sr_session_get_connection(session));
+	return SR_ERR_OK;
 }
 
-static int rpc_configure_device_cb(
-    sr_session_ctx_t *session UNUSED,
-    uint32_t sub_id UNUSED,
-    const char *path UNUSED,
-    const sr_val_t *input,
-    const size_t input_cnt UNUSED,
-    sr_event_t event UNUSED,
-    uint32_t request_id UNUSED,
-    sr_val_t **output,
-    size_t *output_cnt,
-    void *private_ctx UNUSED)
+static int
+rpc_configure_device_cb(
+	sr_session_ctx_t *session,
+	uint32_t sub_id UNUSED,
+	const char *op_path UNUSED,
+	const struct lyd_node *input UNUSED,
+	sr_event_t event UNUSED,
+	uint32_t request_id UNUSED,
+	struct lyd_node *output,
+	void *private_data UNUSED)
 {
-    (void)session; (void)sub_id; (void)path; (void)input_cnt;
-    (void)event; (void)request_id; (void)private_ctx;
-    
-    SRPLG_LOG_DBG("restconf-test", "RPC configure-device callback called");
-    
-    sr_val_t *vals = NULL;
-    int rc = SR_ERR_OK;
-    
-    // Allouer 2 valeurs (result et device-id)
-    vals = calloc(2, sizeof(*vals));
-    if (!vals) {
-        SRPLG_LOG_ERR("restconf-test", "Memory allocation failed");
-        return SR_ERR_OPERATION_FAILED;
-    }
-    
-    // Résultat de l'opération
-    vals[0].xpath = strdup("/restconf-test:output/result");
-    vals[0].type = SR_STRING_T;
-    vals[0].data.string_val = strdup("success");
-    
-    // ID du device
-    vals[1].xpath = strdup("/restconf-test:output/device-id");
-    vals[1].type = SR_UINT32_T;
-    vals[1].data.uint32_val = 12345;
-    
-    *output = vals;
-    *output_cnt = 2;
-    
-    return rc;
+	const struct ly_ctx *ctx;
+
+	(void)sub_id; (void)op_path; (void)input;
+	(void)event; (void)request_id; (void)private_data;
+
+	SRPLG_LOG_DBG(MODULE_NAME,
+	              "RPC configure-device (tree) called");
+
+	ctx = sr_acquire_context(
+		sr_session_get_connection(session));
+	if (!ctx) return SR_ERR_OPERATION_FAILED;
+
+	lyd_new_term(output, NULL, "result",
+	             "success", 0, NULL);
+	lyd_new_term(output, NULL, "device-id",
+	             "12345", 0, NULL);
+
+	sr_release_context(sr_session_get_connection(session));
+	return SR_ERR_OK;
 }
 
-static int rpc_create_resource_cb(
-    sr_session_ctx_t *session UNUSED,
-    uint32_t sub_id UNUSED,
-    const char *path UNUSED,
-    const sr_val_t *input,
-    const size_t input_cnt UNUSED,
-    sr_event_t event UNUSED,
-    uint32_t request_id UNUSED,
-    sr_val_t **output,
-    size_t *output_cnt,
-    void *private_ctx UNUSED)
+static int
+rpc_create_resource_cb(
+	sr_session_ctx_t *session,
+	uint32_t sub_id UNUSED,
+	const char *op_path UNUSED,
+	const struct lyd_node *input,
+	sr_event_t event UNUSED,
+	uint32_t request_id UNUSED,
+	struct lyd_node *output,
+	void *private_data UNUSED)
 {
-    (void)session; (void)sub_id; (void)path; (void)input_cnt;
-    (void)event; (void)request_id; (void)private_ctx;
-    
-    SRPLG_LOG_DBG("restconf-test", "RPC create-resource callback called");
-    
-    sr_val_t *vals = NULL;
-    int rc = SR_ERR_OK;
-    
-    // Allouer 1 valeur (id)
-    vals = calloc(1, sizeof(*vals));
-    if (!vals) {
-        SRPLG_LOG_ERR("restconf-test", "Memory allocation failed");
-        return SR_ERR_OPERATION_FAILED;
-    }
-    
-    // ID de la ressource créée
-    vals[0].xpath = strdup("/restconf-test:output/id");
-    vals[0].type = SR_UINT32_T;
-    vals[0].data.uint32_val = 54321;
-    
-    *output = vals;
-    *output_cnt = 1;
-    
-    return rc;
+	const struct ly_ctx *ctx;
+	const struct lyd_node *child;
+
+	(void)sub_id; (void)op_path;
+	(void)event; (void)request_id; (void)private_data;
+
+	SRPLG_LOG_DBG(MODULE_NAME,
+	              "RPC create-resource (tree) called");
+
+	/* Validate mandatory 'name' parameter */
+	child = lyd_child(input);
+	while (child) {
+		if (child->schema &&
+		    strcmp(child->schema->name, "name") == 0) {
+			const char *v = lyd_get_value(child);
+			if (!v || !*v) {
+				sr_session_set_error_message(
+					session,
+					"Missing mandatory "
+					"parameter 'name'");
+				return SR_ERR_INVAL_ARG;
+			}
+			break;
+		}
+		child = child->next;
+	}
+
+	ctx = sr_acquire_context(
+		sr_session_get_connection(session));
+	if (!ctx) return SR_ERR_OPERATION_FAILED;
+
+	lyd_new_term(output, NULL, "id", "54321", 0, NULL);
+
+	sr_release_context(sr_session_get_connection(session));
+	return SR_ERR_OK;
 }
 
-static int rpc_set_operation_mode_cb(
-    sr_session_ctx_t *session UNUSED,
-    uint32_t sub_id UNUSED,
-    const char *path UNUSED,
-    const sr_val_t *input,
-    const size_t input_cnt UNUSED,
-    sr_event_t event UNUSED,
-    uint32_t request_id UNUSED,
-    sr_val_t **output,
-    size_t *output_cnt,
-    void *private_ctx UNUSED)
+static int
+rpc_set_operation_mode_cb(
+	sr_session_ctx_t *session,
+	uint32_t sub_id UNUSED,
+	const char *op_path UNUSED,
+	const struct lyd_node *input UNUSED,
+	sr_event_t event UNUSED,
+	uint32_t request_id UNUSED,
+	struct lyd_node *output,
+	void *private_data UNUSED)
 {
-    (void)session; (void)sub_id; (void)path; (void)input_cnt;
-    (void)event; (void)request_id; (void)private_ctx;
-    
-    SRPLG_LOG_DBG("restconf-test", "RPC set-operation-mode callback called");
-    
-    sr_val_t *vals = NULL;
-    int rc = SR_ERR_OK;
-    
-    // Allouer 1 valeur (previous-mode)
-    vals = calloc(1, sizeof(*vals));
-    if (!vals) {
-        SRPLG_LOG_ERR("restconf-test", "Memory allocation failed");
-        return SR_ERR_OPERATION_FAILED;
-    }
-    
-    // Mode précédent (on retourne normal par défaut)
-    vals[0].xpath = strdup("/restconf-test:output/previous-mode");
-    vals[0].type = SR_ENUM_T;
-    vals[0].data.enum_val = strdup("normal");
-    
-    *output = vals;
-    *output_cnt = 1;
-    
-    return rc;
+	const struct ly_ctx *ctx;
+
+	(void)sub_id; (void)op_path; (void)input;
+	(void)event; (void)request_id; (void)private_data;
+
+	SRPLG_LOG_DBG(MODULE_NAME,
+	              "RPC set-operation-mode (tree) called");
+
+	ctx = sr_acquire_context(
+		sr_session_get_connection(session));
+	if (!ctx) return SR_ERR_OPERATION_FAILED;
+
+	lyd_new_term(output, NULL, "previous-mode",
+	             "normal", 0, NULL);
+
+	sr_release_context(sr_session_get_connection(session));
+	return SR_ERR_OK;
 }
 
-static int rpc_process_data_cb(
-    sr_session_ctx_t *session UNUSED,
-    uint32_t sub_id UNUSED,
-    const char *path UNUSED,
-    const sr_val_t *input UNUSED,
-    const size_t input_cnt UNUSED,
-    sr_event_t event UNUSED,
-    uint32_t request_id UNUSED,
-    sr_val_t **output,
-    size_t *output_cnt,
-    void *private_ctx UNUSED)
+static int
+rpc_process_data_cb(
+	sr_session_ctx_t *session,
+	uint32_t sub_id UNUSED,
+	const char *op_path UNUSED,
+	const struct lyd_node *input UNUSED,
+	sr_event_t event UNUSED,
+	uint32_t request_id UNUSED,
+	struct lyd_node *output,
+	void *private_data UNUSED)
 {
-    (void)session; (void)sub_id; (void)path; (void)input; (void)input_cnt;
-    (void)event; (void)request_id; (void)private_ctx;
-    
-    SRPLG_LOG_DBG("restconf-test", "RPC process-data callback called");
-    
-    sr_val_t *vals = NULL;
-    int rc = SR_ERR_OK;
-    
-    // Allouer 1 valeur (processed)
-    vals = calloc(1, sizeof(*vals));
-    if (!vals) {
-        SRPLG_LOG_ERR("restconf-test", "Memory allocation failed");
-        return SR_ERR_OPERATION_FAILED;
-    }
-    
-    // Indique que les données ont été traitées
-    vals[0].xpath = strdup("/restconf-test:output/processed");
-    vals[0].type = SR_BOOL_T;
-    vals[0].data.bool_val = true;
-    
-    *output = vals;
-    *output_cnt = 1;
-    
-    return rc;
+	const struct ly_ctx *ctx;
+
+	(void)sub_id; (void)op_path; (void)input;
+	(void)event; (void)request_id; (void)private_data;
+
+	SRPLG_LOG_DBG(MODULE_NAME,
+	              "RPC process-data (tree) called");
+
+	ctx = sr_acquire_context(
+		sr_session_get_connection(session));
+	if (!ctx) return SR_ERR_OPERATION_FAILED;
+
+	lyd_new_term(output, NULL, "processed",
+	             "true", 0, NULL);
+
+	sr_release_context(sr_session_get_connection(session));
+	return SR_ERR_OK;
 }
 
-static int rpc_trigger_event_cb(
-    sr_session_ctx_t *session UNUSED,
-    uint32_t sub_id UNUSED,
-    const char *path UNUSED,
-    const sr_val_t *input UNUSED,
-    const size_t input_cnt UNUSED,
-    sr_event_t event UNUSED,
-    uint32_t request_id UNUSED,
-    sr_val_t **output UNUSED,
-    size_t *output_cnt UNUSED,
-    void *private_ctx UNUSED)
+static int
+rpc_trigger_event_cb(
+	sr_session_ctx_t *session,
+	uint32_t sub_id UNUSED,
+	const char *op_path UNUSED,
+	const struct lyd_node *input UNUSED,
+	sr_event_t event UNUSED,
+	uint32_t request_id UNUSED,
+	struct lyd_node *output UNUSED,
+	void *private_data UNUSED)
 {
-    (void)session; (void)sub_id; (void)path; (void)input; (void)input_cnt;
-    (void)event; (void)request_id; (void)output; (void)output_cnt; (void)private_ctx;
-    
-    SRPLG_LOG_DBG("restconf-test", "RPC trigger-event callback called");
-    
-    // Pas de sortie pour ce RPC
-    return SR_ERR_OK;
+	(void)session; (void)sub_id; (void)op_path;
+	(void)input; (void)event; (void)request_id;
+	(void)output; (void)private_data;
+
+	SRPLG_LOG_DBG(MODULE_NAME,
+	              "RPC trigger-event (tree) called");
+
+	/* No output for this RPC */
+	return SR_ERR_OK;
 }
 
-// ---------------------------------------------------------------------------
-// Plugin initialization
-// ---------------------------------------------------------------------------
+/* -------------------------------------------------------------------
+ * Plugin entry point
+ * ------------------------------------------------------------------- */
 
 /**
- * Point d'entree du plugin (appele par sysrepod)
+ * Entry point called by sysrepo-plugind.
+ *
+ * Uses sr_rpc_subscribe_tree (tree-based) so that the RESTCONF
+ * server's sr_rpc_send_tree() calls reach our callbacks.
  */
-int sr_plugin_init_cb(sr_session_ctx_t *session, void **private_ctx)
+int
+sr_plugin_init_cb(sr_session_ctx_t *session, void **private_ctx)
 {
-    test_plugin_ctx_t *ctx = NULL;
-    int rc = SR_ERR_OK;
-    
-    SRPLG_LOG_DBG("restconf-test", "Initializing restconf-test plugin");
-    
-    ctx = calloc(1, sizeof(*ctx));
-    if (!ctx) {
-        SRPLG_LOG_ERR("restconf-test", "Failed to allocate plugin context");
-        return SR_ERR_OPERATION_FAILED;
-    }
-    
-    ctx->connection = sr_session_get_connection(session);
-    ctx->session = session;
-    
-    // S'abonner a tous les RPCs du module avec des callbacks spécifiques
-    sr_subscription_ctx_t *sub = NULL;
-    
-    rc = sr_rpc_subscribe(session, "/restconf-test:get-system-status", rpc_get_system_status_cb, ctx, 0, SR_SUBSCR_NO_THREAD, &sub);
-    if (rc != SR_ERR_OK) { SRPLG_LOG_ERR("restconf-test", "RPC get-system-status subscribe failed: %s", sr_strerror(rc)); goto error; }
-    
-    rc = sr_rpc_subscribe(session, "/restconf-test:configure-device", rpc_configure_device_cb, ctx, 0, SR_SUBSCR_NO_THREAD, &sub);
-    if (rc != SR_ERR_OK) { SRPLG_LOG_ERR("restconf-test", "RPC configure-device subscribe failed: %s", sr_strerror(rc)); goto error; }
-    
-    rc = sr_rpc_subscribe(session, "/restconf-test:create-resource", rpc_create_resource_cb, ctx, 0, SR_SUBSCR_NO_THREAD, &sub);
-    if (rc != SR_ERR_OK) { SRPLG_LOG_ERR("restconf-test", "RPC create-resource subscribe failed: %s", sr_strerror(rc)); goto error; }
-    
-    rc = sr_rpc_subscribe(session, "/restconf-test:set-operation-mode", rpc_set_operation_mode_cb, ctx, 0, SR_SUBSCR_NO_THREAD, &sub);
-    if (rc != SR_ERR_OK) { SRPLG_LOG_ERR("restconf-test", "RPC set-operation-mode subscribe failed: %s", sr_strerror(rc)); goto error; }
-    
-    rc = sr_rpc_subscribe(session, "/restconf-test:process-data", rpc_process_data_cb, ctx, 0, SR_SUBSCR_NO_THREAD, &sub);
-    if (rc != SR_ERR_OK) { SRPLG_LOG_ERR("restconf-test", "RPC process-data subscribe failed: %s", sr_strerror(rc)); goto error; }
-    
-    rc = sr_rpc_subscribe(session, "/restconf-test:trigger-event", rpc_trigger_event_cb, ctx, 0, SR_SUBSCR_NO_THREAD, &sub);
-    if (rc != SR_ERR_OK) { SRPLG_LOG_ERR("restconf-test", "RPC trigger-event subscribe failed: %s", sr_strerror(rc)); goto error; }
-    
-    ctx->subscription = sub;
-    *private_ctx = ctx;
-    SRPLG_LOG_DBG("restconf-test", "restconf-test plugin initialized successfully");
-    return SR_ERR_OK;
-    
+	test_plugin_ctx_t *ctx = NULL;
+	sr_subscription_ctx_t *sub = NULL;
+	int rc = SR_ERR_OK;
+
+	SRPLG_LOG_DBG(MODULE_NAME,
+	              "Initializing restconf-test plugin (tree API)");
+
+	ctx = calloc(1, sizeof(*ctx));
+	if (!ctx) {
+		SRPLG_LOG_ERR(MODULE_NAME,
+		              "Failed to allocate plugin context");
+		return SR_ERR_OPERATION_FAILED;
+	}
+
+	ctx->connection = sr_session_get_connection(session);
+	ctx->session = session;
+
+#define SUB_RPC(NAME, CB) \
+	rc = sr_rpc_subscribe_tree( \
+		session, \
+		"/" MODULE_NAME ":" NAME, \
+		CB, ctx, 0, \
+		SR_SUBSCR_NO_THREAD, &sub); \
+	if (rc != SR_ERR_OK) { \
+		SRPLG_LOG_ERR(MODULE_NAME, \
+		              "Subscribe " NAME " failed: %s", \
+		              sr_strerror(rc)); \
+		goto error; \
+	}
+
+	SUB_RPC("get-system-status",
+	        rpc_get_system_status_cb);
+	SUB_RPC("configure-device",
+	        rpc_configure_device_cb);
+	SUB_RPC("create-resource",
+	        rpc_create_resource_cb);
+	SUB_RPC("set-operation-mode",
+	        rpc_set_operation_mode_cb);
+	SUB_RPC("process-data",
+	        rpc_process_data_cb);
+	SUB_RPC("trigger-event",
+	        rpc_trigger_event_cb);
+
+#undef SUB_RPC
+
+	ctx->subscription = sub;
+	*private_ctx = ctx;
+
+	SRPLG_LOG_DBG(MODULE_NAME,
+	              "restconf-test plugin initialized (tree API)");
+	return SR_ERR_OK;
+
 error:
-    if (sub)
-        sr_unsubscribe(sub);
-    free(ctx);
-    return rc;
+	if (sub) sr_unsubscribe(sub);
+	free(ctx);
+	return rc;
 }
 
 /**
- * Cleanup callback (appele par sysrepod)
+ * Cleanup callback called by sysrepo-plugind on shutdown.
  */
-void sr_plugin_cleanup_cb(sr_session_ctx_t *session UNUSED, void *private_ctx)
+void
+sr_plugin_cleanup_cb(
+	sr_session_ctx_t *session UNUSED, void *private_ctx)
 {
-    test_plugin_ctx_t *ctx = (test_plugin_ctx_t *)private_ctx;
-    (void)session;
-    
-    if (!ctx) return;
-    
-    SRPLG_LOG_DBG("restconf-test", "Cleaning up restconf-test plugin");
-    
-    if (ctx->subscription) {
-        sr_unsubscribe(ctx->subscription);
-    }
-    
-    free(ctx);
+	test_plugin_ctx_t *ctx = (test_plugin_ctx_t *)private_ctx;
+	(void)session;
+
+	if (!ctx) return;
+
+	SRPLG_LOG_DBG(MODULE_NAME,
+	              "Cleaning up restconf-test plugin");
+
+	if (ctx->subscription)
+		sr_unsubscribe(ctx->subscription);
+
+	free(ctx);
 }

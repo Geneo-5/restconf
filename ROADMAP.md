@@ -92,7 +92,6 @@ en contradiction avec la règle d'or "NO BLOCKING CALLS" d'AGENTS.md.
 | 3.10 | Mode Externe — contexte libyang à distance | - | `plugin_acquire_ly_ctx()` renvoie `NULL` en externe → résolution des clés de liste désactivée dans `router.c`. Reste à exposer `ly_ctx` via IPC ou contexte local synchronisé | `[ ]` |
 | 3.11 | `plugin_handle_rpc` en mode interne | RFC 8040 Sec 3.6 | Câblée sur `sr_rpc_send_tree()` (cf. 4.10) | `[x]` |
 | **3.12** | **🔴 CRITIQUE — Blocage `sr_get_data()` sur données `oper_get_cb`** | AGENTS.md règle #2 | `sysrepo` n'expose aucune variante asynchrone de `sr_get_data()`/`sr_rpc_send_tree()`. Quand le xpath demandé est couvert par une souscription oper (`oper_get_cb`, ex. `ietf-restconf-monitoring:restconf-state`), `sr_get_data()` doit obtenir la donnée du fournisseur, ce qui peut nécessiter que la boucle d'événements pompe `sr_subscription_process_events()` — **or ce câblage (`sr_get_event_pipe()` + `event_new()`) est actuellement commenté dans `plugin_init()` de `sysrepo_plugin.c`**. Résultat : risque de blocage indéfini du thread unique `libevent` (donc de **toutes** les connexions HTTP/2 en cours) en mode Externe, et blocage non borné en mode Interne si le callback est lent. **Décision : thread confiné dédié à sysrepo retenu.** Plan détaillé en fin de document, décomposé en 3.12.1–3.12.8 | `[ ]` |
-| 3.12.1 | Amender AGENTS.md — règle d'or #1 | - | Documenter formellement l'unique exception tolérée : un thread `pthread` confiné à sysrepo, sans jamais partager d'état métier avec le thread `libevent` (frontière = passage de messages uniquement) | `[ ]` |
 | 3.12.2 | Protocole de messages worker | - | Définir `sr_worker_req_t`/`sr_worker_resp_t` : type d'opération (GET/EDIT/RPC/PUMP_EVENTS), payload, pointeur de continuation (callback + `user_data` déjà existants dans `plugin_data_cb`/`plugin_edit_cb`/`plugin_rpc_cb`) | `[ ]` |
 | 3.12.3 | File de requêtes + notification retour | - | Queue thread-safe (mutex+cond ou MPSC lock-free) `libevent → worker` ; `eventfd`/`socketpair` enregistré en `EV_READ \| EV_PERSIST` dans `libevent` pour la voie retour `worker → libevent` | `[ ]` |
 | 3.12.4 | Thread worker sysrepo | - | Nouveau fichier `src/plugin/sysrepo_worker.c` : boucle dédiée, **seule** propriétaire de `sr_conn_ctx_t`, des sessions par-requête (remplace l'exécution directe de `open_request_session()`/`close_request_session()`) et du pompage `sr_subscription_process_events()` | `[ ]` |
@@ -208,6 +207,17 @@ en contradiction avec la règle d'or "NO BLOCKING CALLS" d'AGENTS.md.
 
 5. **7.3 — Limitation de ressources** (`WINDOW_UPDATE` nghttp2,
    timeouts `libevent`).
+
+---
+
+## ✅ Corrections récentes (session 2026-07-12)
+
+| Fichier | Correction | Impact |
+| :--- | :--- | :--- |
+| `test/restconf-test.c` | Converti de `sr_rpc_subscribe` (val-based) vers `sr_rpc_subscribe_tree` (tree-based) pour correspondre à `sr_rpc_send_tree()` côté serveur | RPCs restconf-test fonctionnels |
+| `include/router.h` | Ajout `RC_DS_CANDIDATE` et `RC_DS_STARTUP` dans `rc_datastore_t` | Support NMDA complet |
+| `src/router.c` | Mapping `ietf-datastores:candidate` et `ietf-datastores:startup` dans le routeur NMDA ; extraction en `map_nmda_identityref()` | Tests NMDA candidate/startup passent |
+| `src/plugin/sysrepo_plugin.c` | Mapping `RC_DS_CANDIDATE`/`RC_DS_STARTUP` → `SR_DS_CANDIDATE`/`SR_DS_STARTUP` dans `open_request_session()` ; retrait de `SR_EDIT_NON_RECURSIVE` pour les PUT (permet création auto des containers parents) | oven PUT/PATCH fonctionnels |
 
 ---
 

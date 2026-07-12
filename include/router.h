@@ -21,6 +21,8 @@ typedef enum {
 	RC_DS_RUNNING,
 	RC_DS_OPERATIONAL,
 	RC_DS_INTENDED,
+	RC_DS_CANDIDATE,
+	RC_DS_STARTUP,
 	RC_DS_UNKNOWN
 } rc_datastore_t;
 
