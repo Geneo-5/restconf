@@ -87,8 +87,8 @@ souscription, dépend de 6.1).
 | 3.4 | Protocole IPC — framing | - | Framing longueur + magic `0x52434E46` (`uds_common.c`) | `[x]` |
 | 3.5 | Contexte Libyang | - | `sr_acquire_context()`/`sr_release_context()` en interne ; contexte local `ly_ctx` construit au démarrage en externe (cf. 3.10) | `[x]` |
 | 3.6 | Callbacks Oper Data | YANG `rcmon` | `sr_oper_get_subscribe` (NO_THREAD) ; `oper_get_cb` génère capabilities/streams (cf. 7.1) | `[x]` |
-| 3.7 | Callbacks RPC | YANG `rsn` | `sr_rpc_subscribe_tree` (NO_THREAD) ; ID de souscription retourné, pas de notification réelle (cf. 6.1) | `[~]` |
-| 3.8 | Mode Externe — dispatch IPC réel | - | `plugin_data_cb`/`plugin_rpc_cb` transport-agnostiques ; corrélation par `msg_id`. `plugin_subscribe_notifications` reste un stub côté gateway (dépend de 6.1) | `[x]` |
+| 3.7 | Callbacks RPC | YANG `rsn` | `sr_rpc_subscribe_tree` (NO_THREAD) ; ID de souscription retourné, flux (`stream`) validé contre le seul flux réel `NETCONF` (`SR_ERR_NOT_FOUND` sinon). **Limite restante** : l'ID retourné n'est pas corrélé à un flux SSE HTTP/2 précis (cf. 6.1) | `[~]` |
+| 3.8 | Mode Externe — dispatch IPC réel | - | `plugin_data_cb`/`plugin_rpc_cb` transport-agnostiques ; corrélation par `msg_id`. **ROADMAP 6.1** : `plugin_subscribe_notifications` câblée coté gateway (enregistre le callback, appelé depuis `dispatch_ipc_response()` sur `IPC_MSG_NOTIF_PUSH`) et coté daemon (`ext_plugin_init_uds()` déclenche l'abonnement sysrepo et diffuse via `daemon_notif_push_cb()` à toutes les gateways connectées) | `[x]` |
 | 3.9 | Mode Externe — connexion sysrepo du démon | - | `plugin_main.c` : `plugin_init()`/`plugin_destroy()` autour de l'UDS ; sessions par-requête via `open_request_session()`/`close_request_session()` | `[x]` |
 | 3.10 | 🟢 Mode Externe — contexte libyang local | - | `build_local_ly_ctx()` (`src/ipc/uds_gateway.c`) : au démarrage du gateway, scan de `<SYSREPO_REPOSITORY_PATH ou SR_YANG_REPO_PATH>/yang` et chargement de chaque `.yang` trouvé (`lys_parse_path()`, best-effort par fichier) dans un `ly_ctx` **local, en lecture seule, indépendant de la connexion IPC**. `plugin_acquire_ly_ctx()` renvoie désormais ce contexte au lieu de `NULL` — résolution des clés de liste et des préfixes de nouveau active en mode Externe (`router.c`). **Limite connue** : contexte figé au démarrage, pas de hot-reload si un module est (dés)installé à chaud dans sysrepo sans redémarrer `restconf-server`. | `[x]` |
 | 3.11 | `plugin_handle_rpc` en mode interne | RFC 8040 Sec 3.6 | Câblée sur `sr_rpc_send_tree()` (cf. 4.10) | `[x]` |
@@ -139,7 +139,7 @@ souscription, dépend de 6.1).
 
 | ID | Tâche | Référence | Détails Techniques | Statut |
 | :--- | :--- | :--- | :--- | :---: |
-| 6.1 | RPC `establish-subscription` + câblage réel | YANG `rsn` | `sr_notif_subscribe()` (module `restconf-test` en dur) → `notif_event_cb()` → enveloppe RFC 8040 Sec 6.4 → registre `sse_registry_entry_t` → diffusion `on_notification_cb()`/`sse_stream_push_event()`. **Limites** : un seul module câblé, pas de filtrage par stream, `establish-subscription` reste un stub déconnecté, mode Externe non câblé, non validé par compilation. **Dépend du même pipe sysrepo que 3.12** | `[~]` |
+| 6.1 | RPC `establish-subscription` + câblage réel | YANG `rsn` | **Découverte multi-modules** : `plugin_subscribe_notifications()` (`sysrepo_plugin.c`) parcourt tous les modules *implémentés* du contexte libyang partagé et tente un abonnement par module (`sr_notif_subscribe_tree`, xpath `NULL`), au lieu du seul module `restconf-test` en dur — `notif_event_cb()` → enveloppe RFC 8040 Sec 6.4 → registre `sse_registry_entry_t` → diffusion `on_notification_cb()`/`sse_stream_push_event()`. **Mode Externe câblé** : le daemon s'abonne via le même mécanisme (`ext_plugin_init_uds()`) et repousse chaque notification à toutes les gateways connectées via un nouveau message `IPC_MSG_NOTIF_PUSH` (`uds_plugin.c`/`uds_gateway.c`). `establish-subscription` valide désormais le nom de flux (cf. 3.7). **Limites restantes** : un seul flux conceptuel (`NETCONF`) existe réellement — pas de filtrage par `xpath-filter`/souscription individuelle, l'ID de souscription RPC n'est pas corrélé à un flux SSE HTTP/2 précis (un client doit ouvrir lui-même `GET /streams/NETCONF`), pas de replay (cf. 6.5). Dépend du même pipe sysrepo que 3.12 | `[~]` |
 | 6.2 | Ouverture Stream SSE | RFC 8040 Sec 6.3 | `nghttp2_submit_response()` + data provider SSE | `[x]` |
 | 6.3 | Push Asynchrone | RFC 8040 Sec 6.4 | File d'attente + `NGHTTP2_ERR_DEFERRED` + `nghttp2_session_resume_data()` | `[x]` |
 | 6.4 | Keep-Alive SSE | RFC 8040 Sec 6.4 | Timer `libevent` `EV_PERSIST` (30s) → `: ping\n\n` | `[x]` |
@@ -180,8 +180,8 @@ souscription, dépend de 6.1).
 | :--- | :---: | :--- | :--- |
 | **Blocage `sr_get_data()` sur oper data** | **3.12 ✅** | `sysrepo_worker.c` | **Résolu** — thread confiné dédié |
 | **Contexte libyang indisponible en mode Externe** | **3.5, 3.10 ✅** | `uds_gateway.c` | **Résolu** — contexte local chargé depuis le dépôt YANG de sysrepo au démarrage (limite : pas de hot-reload, cf. 3.10) |
-| `establish-subscription` stub / pas de filtrage | 6.1, 6.5 | `sysrepo_plugin.c` | Pas de souscription filtrée réelle, pas de replay |
-| `plugin_subscribe_notifications` stub côté gateway externe | 3.8 (partiel) | `uds_gateway.c` | Dépend de 6.1 |
+| `establish-subscription` : pas de filtrage par souscription individuelle / receiver | 6.1, 6.5 | `sysrepo_plugin.c`, `main.c` | Un seul flux conceptuel `NETCONF` diffuse tout ; pas de `xpath-filter` par souscription, pas de replay |
+| ~~`plugin_subscribe_notifications` stub côté gateway externe~~ | **3.8, 6.1 ✅** | `uds_gateway.c`, `uds_plugin.c` | **Résolu** — `IPC_MSG_NOTIF_PUSH` câblé dans les deux sens |
 | Pas de limitation de ressources | 7.3 | `h2c_server.c` | Pas de `WINDOW_UPDATE` nghttp2 ni de timeouts explicites |
 | Couverture de tests incomplète | 7.4, 8.6–8.9 | `test/` | Pas de tests CRUD/NMDA/RPC, pas d'intégration `ctest` |
 
@@ -189,15 +189,17 @@ souscription, dépend de 6.1).
 
 ## 🎯 Prochaines Étapes (par priorité)
 
-1. **6.1 — Finaliser le câblage des notifications**
-   Filtrage par souscription, découverte multi-modules, mode Externe.
-   Clôt aussi 3.7 (callbacks RPC de souscription).
+1. **6.5 — Replay des notifications** (`start-time`/`stop-time`).
+   Peut maintenant s'appuyer sur la découverte multi-modules de 6.1.
 
-2. **6.5 — Replay des notifications** (`start-time`/`stop-time`),
-   dépend de 6.1.
-
-3. **7.3 — Limitation de ressources** (`WINDOW_UPDATE` nghttp2,
+2. **7.3 — Limitation de ressources** (`WINDOW_UPDATE` nghttp2,
    timeouts `libevent`).
+
+3. **6.1 (suivi, non bloquant)** — Filtrage par souscription
+   individuelle (`xpath-filter` RFC 8650) et corrélation d'un
+   identifiant de souscription à un flux SSE HTTP/2 précis (notion
+   de "receiver"). Actuellement, un seul flux conceptuel `NETCONF`
+   diffuse toutes les notifications à tous les clients connectés.
 
 4. **3.10.1 (suivi, non bloquant)** — Envisager un rafraîchissement
    à chaud du contexte libyang local du gateway (mode Externe) si le
@@ -221,6 +223,9 @@ souscription, dépend de 6.1).
 | `AGENTS.md` | Exception documentée à la règle d'or #1 (thread worker confiné, frontière messages uniquement) | Conformité architecture |
 | `src/ipc/uds_gateway.c` | **ROADMAP 3.10** — Ajout de `build_local_ly_ctx()` : au démarrage du gateway (mode Externe), scan de `<SYSREPO_REPOSITORY_PATH ou SR_YANG_REPO_PATH>/yang` et chargement de chaque `.yang` (`lys_parse_path()`, best-effort) dans un `ly_ctx` local stocké dans `plugin_ctx_s.local_ly_ctx` ; `plugin_acquire_ly_ctx()`/`plugin_release_ly_ctx()` réécrites en conséquence (plus de verrou nécessaire, contexte immuable après init) ; libéré dans `plugin_destroy()` | Résolution des clés de liste et préfixes YANG rétablie en mode Externe (`router.c`) sans aller-retour IPC bloquant sur le chemin critique |
 | `CMakeLists.txt` | **ROADMAP 3.10** — Nouvelle option `SR_YANG_REPO_PATH` (défaut `/etc/sysrepo`) ; définie en compilation via `SR_REPO_PATH_DEFAULT` pour `restconf-server` en mode `BUILD_EXTERNAL_PLUGIN` | Chemin du dépôt YANG configurable sans toucher au code |
+| `src/plugin/sysrepo_plugin.c` | **ROADMAP 6.1** — `plugin_subscribe_notifications()` réécrite : parcourt tous les modules *implémentés* du contexte libyang partagé (`ly_ctx_get_module_iter()`) et tente `sr_notif_subscribe_tree()` sur chacun (xpath `NULL`), au lieu du seul module `restconf-test` en dur ; échecs attendus journalisés en DEBUG. `plugin_rpc_establish_sub_cb()` valide désormais le `stream` demandé contre le seul flux réel `NETCONF` (`sr_session_set_error_message()` + `SR_ERR_NOT_FOUND` sinon) | Découverte multi-modules réelle ; RPC `establish-subscription` ne renvoie plus un ID silencieusement inopérant pour un flux inconnu |
+| `src/ipc/uds_plugin.c` | **ROADMAP 6.1** — Ajout du suivi des connexions gateway actives (`gw_conn_t`/`gw_conn_add`/`gw_conn_remove`) et de `daemon_notif_push_cb()` (callback `plugin_notif_cb` qui sérialise et diffuse `IPC_MSG_NOTIF_PUSH` à toutes les gateways connectées) ; `ext_plugin_init_uds()` appelle désormais `plugin_subscribe_notifications()` pour déclencher l'abonnement sysrepo côté daemon | Mode Externe reçoit enfin les notifications sysrepo (auparavant : aucun abonnement déclenché côté daemon) |
+| `src/ipc/uds_gateway.c` | **ROADMAP 6.1** — `plugin_subscribe_notifications()` n'est plus un stub : enregistre le callback applicatif (`notif_cb`/`notif_user_data` dans `plugin_ctx_s`) ; `dispatch_ipc_response()` reconnaît désormais `IPC_MSG_NOTIF_PUSH` (3 chaînes : module, xpath, payload JSON) et invoque ce callback | SSE opérationnel de bout en bout en mode Externe |
 
 ---
 

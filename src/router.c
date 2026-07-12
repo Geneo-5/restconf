@@ -250,6 +250,37 @@ static int parse_segment(
 }
 
 /**
+ * @brief Parse un horodatage RFC 3339 (ex.
+ * "2021-01-01T00:00:00Z") en time_t UTC (RFC 8040 Sec 4.8.7 :
+ * query params start-time/stop-time, ROADMAP.md item 6.5).
+ *
+ * @note Simplification assumee : les fractions de seconde et les
+ * offsets de fuseau horaire autres que "Z" (ex. "+02:00") sont
+ * ignores plutot que geres finement -- suffisant pour les
+ * timestamps generes par les clients RESTCONF usuels (dont notre
+ * propre `build_notif_payload()` cote plugin, qui emet toujours en
+ * UTC avec suffixe "Z"). En cas d'echec de parsing, *out n'est pas
+ * modifie (l'appelant a deja initialise le champ a 0 via memset).
+ *
+ * @return 0 si parse avec succes, -1 sinon.
+ */
+static int parse_rfc3339(const char *str, time_t *out)
+{
+	struct tm tm = { 0 };
+	time_t t;
+
+	if (!str || !*str || !out) return -1;
+	if (!strptime(str, "%Y-%m-%dT%H:%M:%S", &tm))
+		return -1;
+
+	t = timegm(&tm);
+	if (t == (time_t)-1) return -1;
+
+	*out = t;
+	return 0;
+}
+
+/**
  * @brief Parse RESTCONF query parameters (RFC 8040 Sec 4.8).
  */
 static int parse_query_params(
@@ -289,6 +320,11 @@ static int parse_query_params(
 			req->with_defaults = strdup(val);
 		} else if (strcmp(key, "with-origin") == 0) {
 			req->with_origin = true;
+		} else if (strcmp(key, "start-time") == 0) {
+			/* RFC 8040 Sec 4.8.7 (ROADMAP.md item 6.5) */
+			parse_rfc3339(val, &req->start_time);
+		} else if (strcmp(key, "stop-time") == 0) {
+			parse_rfc3339(val, &req->stop_time);
 		}
 
 		param = strtok_r(NULL, "&", &saveptr);

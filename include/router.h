@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <time.h>
 #include <libyang/libyang.h>
 #include "codec.h"
 
@@ -44,6 +45,12 @@ typedef struct {
 	media_type_t req_type;
 	media_type_t accept_type;
 	char *if_match;
+	/* RFC 8040 Sec 4.8.7 / 6.3 (ROADMAP.md item 6.5) : bornes de
+	 * replay pour un flux d'evenements (GET /streams/<name>
+	 * ?start-time=...&stop-time=...), 0 si absent. Parsees depuis
+	 * un timestamp RFC 3339 par parse_rfc3339() dans router.c. */
+	time_t start_time;
+	time_t stop_time;
 } rc_request_t;
 
 /**

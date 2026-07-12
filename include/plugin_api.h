@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <time.h>
 #include <sysrepo.h>
 #include "router.h"
 
@@ -59,6 +60,46 @@ typedef void (*plugin_notif_cb)(
 void plugin_subscribe_notifications(
 	plugin_ctx_t *ctx, plugin_notif_cb callback,
 	void *user_data);
+
+/**
+ * @brief Opaque handle for a per-client, replay-capable
+ * notification subscription (ROADMAP.md item 6.5).
+ */
+typedef struct plugin_replay_sub_s plugin_replay_sub_t;
+
+/**
+ * @brief Open a dedicated notification subscription for a single
+ * SSE client that first replays stored notifications in
+ * [@p start_time, @p stop_time] (RFC 8040 Sec 4.8.7) before
+ * continuing to deliver live notifications, invoking @p callback /
+ * @p user_data exclusively for this client -- unlike
+ * plugin_subscribe_notifications(), which broadcasts to every
+ * registered listener.
+ *
+ * @param start_time Unix timestamp (UTC), inclusive lower bound.
+ *        Must be > 0 for a replay to actually happen; callers
+ *        should not call this function at all when no start-time
+ *        was requested (use plugin_subscribe_notifications()'s
+ *        shared broadcast instead in that case).
+ * @param stop_time Unix timestamp (UTC), inclusive upper bound, or
+ *        0 for an unbounded (live-forever) subscription.
+ * @return Opaque handle to release via
+ *         plugin_close_replay_subscription(), or NULL on failure
+ *         -- including in External Plugin mode, where replay is
+ *         not yet implemented (cf. ROADMAP.md dette technique) :
+ *         callers should treat NULL as "fall back to a live-only
+ *         stream", not as a hard error.
+ */
+plugin_replay_sub_t *plugin_open_replay_subscription(
+	plugin_ctx_t *ctx, time_t start_time, time_t stop_time,
+	plugin_notif_cb callback, void *user_data);
+
+/**
+ * @brief Release a subscription opened by
+ * plugin_open_replay_subscription(). No-op if @p handle is NULL.
+ */
+void plugin_close_replay_subscription(
+	plugin_ctx_t *ctx, plugin_replay_sub_t *handle);
 
 void plugin_destroy(plugin_ctx_t *ctx);
 

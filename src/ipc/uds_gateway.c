@@ -709,6 +709,37 @@ void plugin_subscribe_notifications(
 	ctx->notif_user_data = user_data;
 }
 
+plugin_replay_sub_t *plugin_open_replay_subscription(
+	plugin_ctx_t *ctx UNUSED, time_t start_time UNUSED,
+	time_t stop_time UNUSED, plugin_notif_cb callback UNUSED,
+	void *user_data UNUSED)
+{
+	/*
+	 * ROADMAP.md item 6.5 : le replay de notifications n'est pas
+	 * encore supporte en mode Externe. Le rendre reel demanderait
+	 * un nouveau message IPC dedie (ex. IPC_MSG_REPLAY_OPEN) que
+	 * le daemon traduirait en une souscription sysrepo privee
+	 * (cf. plugin_open_replay_subscription() dans
+	 * sysrepo_plugin.c pour l'equivalent cote interne), plus un
+	 * routage par flux plutot que par simple broadcast
+	 * IPC_MSG_NOTIF_PUSH. Renvoyer NULL ici est un echec "doux" :
+	 * l'appelant (main.c) retombe alors sur un flux live-only,
+	 * sans erreur bloquante pour le client.
+	 */
+	RC_WARN("uds-gateway: notification replay (start-time) is "
+		"not supported in External Plugin mode yet "
+		"(ROADMAP 6.5); falling back to a live-only stream");
+	return NULL;
+}
+
+void plugin_close_replay_subscription(
+	plugin_ctx_t *ctx UNUSED, plugin_replay_sub_t *handle UNUSED)
+{
+	/* Rien a liberer : plugin_open_replay_subscription() renvoie
+	 * toujours NULL en mode Externe, donc handle est toujours
+	 * NULL ici en pratique. */
+}
+
 void plugin_destroy(plugin_ctx_t *ctx)
 {
 	if (!ctx) return;

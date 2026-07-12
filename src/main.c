@@ -28,35 +28,74 @@
  * (sse_stream_push_event() échoue si le client a fermé la
  * connexion), pas via une notification explicite.
  */
+typedef struct app_context_s app_context_t;
+
 typedef struct sse_registry_entry_s {
 	char *stream_name;
 	sse_stream_t *stream;
+	/* ROADMAP.md item 6.5 : souscription de replay dediee a ce
+	 * client (GET ?start-time=...), ou NULL si ce flux reste
+	 * alimente par la souscription partagee (cf.
+	 * on_notification_cb() ci-dessous, qui saute les entrees ayant
+	 * un replay_handle non-NULL pour eviter une double livraison). */
+	plugin_replay_sub_t *replay_handle;
+	/* Back-pointer necessaire pour fermer replay_handle et
+	 * s'auto-retirer du registre depuis on_replay_notification_cb(). */
+	app_context_t *app;
 	struct sse_registry_entry_s *next;
 } sse_registry_entry_t;
 
-typedef struct {
+struct app_context_s {
 	jwt_ctx_t *jwt_ctx;
 	plugin_ctx_t *plugin_ctx;
 	struct event_base *event_base;
 	sse_registry_entry_t *sse_registry;
-} app_context_t;
+};
 
 /**
  * @brief Enregistre un flux SSE nouvellement ouvert dans le
  * registre applicatif (cf. sse_registry_entry_s ci-dessus).
+ *
+ * @return L'entree creee (pour que l'appelant puisse y attacher
+ * une souscription de replay, cf. ROADMAP.md item 6.5), ou NULL
+ * si l'allocation a echoue.
  */
-static void sse_registry_add(
+static sse_registry_entry_t *sse_registry_add(
 	app_context_t *app, const char *stream_name,
 	sse_stream_t *stream)
 {
 	sse_registry_entry_t *entry = calloc(1, sizeof(*entry));
-	if (!entry) return;
+	if (!entry) return NULL;
 
 	entry->stream_name = strdup(
 		(stream_name && *stream_name) ? stream_name : "NETCONF");
 	entry->stream = stream;
+	entry->app = app;
 	entry->next = app->sse_registry;
 	app->sse_registry = entry;
+	return entry;
+}
+
+/**
+ * @brief Retire (sans le liberer) une entree du registre SSE par
+ * pointeur, en retrouvant son predecesseur (liste simplement
+ * chainee). Utilise par on_replay_notification_cb() (ROADMAP 6.5)
+ * pour s'auto-retirer sur echec de push, puisqu'une entree liee a
+ * une souscription de replay n'est plus visitee par la boucle de
+ * on_notification_cb() (cf. plus bas).
+ */
+static void sse_registry_remove_entry(
+	app_context_t *app, sse_registry_entry_t *target)
+{
+	sse_registry_entry_t **cur = &app->sse_registry;
+
+	while (*cur) {
+		if (*cur == target) {
+			*cur = target->next;
+			return;
+		}
+		cur = &(*cur)->next;
+	}
 }
 
 /**
@@ -69,6 +108,11 @@ static void sse_registry_clear(app_context_t *app)
 
 	while (entry) {
 		sse_registry_entry_t *next = entry->next;
+		/* ROADMAP.md item 6.5 : liberer la souscription de
+		 * replay dediee, s'il y en a une. */
+		if (entry->replay_handle)
+			plugin_close_replay_subscription(
+				app->plugin_ctx, entry->replay_handle);
 		sse_stream_close(entry->stream);
 		free(entry->stream_name);
 		free(entry);
@@ -102,6 +146,16 @@ static void on_notification_cb(
 	while (*cur) {
 		sse_registry_entry_t *entry = *cur;
 
+		if (entry->replay_handle) {
+			/* ROADMAP.md item 6.5 : ce client a sa propre
+			 * souscription dediee (replay + live), qui pousse
+			 * deja via on_replay_notification_cb() ci-dessous ;
+			 * le broadcast partage ne doit pas le relivrer en
+			 * double. */
+			cur = &entry->next;
+			continue;
+		}
+
 		if (sse_stream_push_event(
 				entry->stream, payload) != 0) {
 			/* Push échoué : le client a probablement
@@ -113,6 +167,41 @@ static void on_notification_cb(
 			continue;
 		}
 		cur = &entry->next;
+	}
+}
+
+/**
+ * @brief Callback plugin_notif_cb (ROADMAP.md item 6.5) pour une
+ * souscription de replay dediee : pousse exclusivement vers le
+ * client SSE proprietaire de cette souscription (contrairement a
+ * on_notification_cb() ci-dessus, qui diffuse a tout le registre).
+ *
+ * @p user_data est l'entree sse_registry_entry_s elle-meme (voir
+ * l'appel a plugin_open_replay_subscription() dans
+ * on_restconf_request(), cas RC_RES_EVENT_STREAM).
+ */
+static void on_replay_notification_cb(
+	const char *module_name UNUSED,
+	const char *xpath UNUSED,
+	const char *payload, void *user_data)
+{
+	sse_registry_entry_t *entry = (sse_registry_entry_t *)user_data;
+
+	if (!payload || !entry) return;
+
+	if (sse_stream_push_event(entry->stream, payload) != 0) {
+		/* Client deconnecte : meme logique "best effort" que
+		 * on_notification_cb(), mais cette entree n'etant plus
+		 * visitee par ce dernier (cf. le "skip" ci-dessus), elle
+		 * doit s'auto-retirer du registre ici. */
+		sse_registry_remove_entry(entry->app, entry);
+		if (entry->replay_handle)
+			plugin_close_replay_subscription(
+				entry->app->plugin_ctx,
+				entry->replay_handle);
+		sse_stream_close(entry->stream);
+		free(entry->stream_name);
+		free(entry);
 	}
 }
 
@@ -712,7 +801,34 @@ static void on_restconf_request(
 			 * applicatif pour qu'il reçoive les
 			 * notifications sysrepo poussées par
 			 * on_notification_cb() (cf. plus haut). */
-			sse_registry_add(app, req.xpath, stream);
+			sse_registry_entry_t *entry = sse_registry_add(
+				app, req.xpath, stream);
+
+			/* RFC 8040 Sec 4.8.7 (ROADMAP.md item 6.5) :
+			 * si le client a demande un replay via
+			 * ?start-time=..., ouvrir une souscription
+			 * sysrepo dediee qui rejoue d'abord les
+			 * notifications stockees dans la fenetre
+			 * demandee avant de continuer en live —
+			 * exclusivement pour ce client (cf.
+			 * on_replay_notification_cb()). Echec
+			 * silencieux et retour a un flux live-only
+			 * si indisponible (ex. mode Externe, cf.
+			 * dette technique ROADMAP.md). */
+			if (entry && req.start_time > 0) {
+				entry->replay_handle =
+					plugin_open_replay_subscription(
+						app->plugin_ctx,
+						req.start_time,
+						req.stop_time,
+						on_replay_notification_cb,
+						entry);
+				if (!entry->replay_handle) {
+					RC_DEBUG("SSE stream: replay "
+						"unavailable, falling back "
+						"to live-only delivery");
+				}
+			}
 		} else {
 			send_error_response(
 				session, stream_id, req.accept_type,

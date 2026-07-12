@@ -55,6 +55,26 @@ struct plugin_ctx_s {
 	void *notif_user_data;
 };
 
+/**
+ * @brief Handle d'une souscription de notifications dediee a un
+ * seul client SSE, avec replay (ROADMAP.md item 6.5).
+ *
+ * Contrairement a ctx->sub (souscription partagee, diffusee a
+ * tous les clients via plugin_notif_event_cb/ctx->notif_cb), cette
+ * souscription est independante : sa propre sr_subscription_ctx_t,
+ * son propre pipe d'evenement enregistre dans libevent, et son
+ * propre callback de poussee (push_cb/push_user_data), qui ne
+ * concerne qu'un seul flux SSE.
+ */
+struct plugin_replay_sub_s {
+	plugin_ctx_t *owner;
+	sr_subscription_ctx_t *sub;
+	struct event *ev;
+	int event_fd;
+	plugin_notif_cb push_cb;
+	void *push_user_data;
+};
+
 /* ====================================================================
  * Sysrepo callbacks (executed in libevent thread context)
  * ==================================================================== */
@@ -331,6 +351,66 @@ static void plugin_notif_event_cb(
 }
 
 /**
+ * @brief Notification event callback pour une souscription de
+ * replay dediee (ROADMAP.md item 6.5).
+ *
+ * Identique a plugin_notif_event_cb() ci-dessus dans son
+ * traitement de la notification, a une difference pres : la
+ * poussee est dirigee exclusivement vers le client SSE proprietaire
+ * de cette souscription (r->push_cb/r->push_user_data), jamais
+ * diffusee a l'ensemble du registre SSE.
+ */
+static void plugin_replay_notif_cb(
+	sr_session_ctx_t *session UNUSED,
+	uint32_t sub_id UNUSED,
+	const sr_ev_notif_type_t notif_type UNUSED,
+	const struct lyd_node *notif,
+	struct timespec *timestamp,
+	void *private_data)
+{
+	plugin_replay_sub_t *r = (plugin_replay_sub_t *)private_data;
+	char *payload;
+	char *xpath_str;
+	const char *module_name;
+
+	if (!notif || !r->push_cb) return;
+
+	payload = build_notif_payload(notif, timestamp);
+	if (!payload) return;
+
+	module_name = (notif->schema &&
+	               notif->schema->module) ?
+		notif->schema->module->name : "";
+	xpath_str = lyd_path(
+		(struct lyd_node *)notif,
+		LYD_PATH_STD, NULL, 0);
+
+	r->push_cb(
+		module_name,
+		xpath_str ? xpath_str : "",
+		payload,
+		r->push_user_data);
+
+	free(xpath_str);
+	free(payload);
+}
+
+/**
+ * @brief libevent callback pour le pipe d'evenement d'une
+ * souscription de replay dediee (ROADMAP.md item 6.5).
+ */
+static void plugin_replay_event_cb(
+	evutil_socket_t fd UNUSED,
+	short events UNUSED, void *arg)
+{
+	plugin_replay_sub_t *r = (plugin_replay_sub_t *)arg;
+
+	if (r->sub && r->owner)
+		sr_subscription_process_events(
+			r->sub, r->owner->sub_session, NULL);
+}
+
+/**
  * @brief libevent callback for sysrepo event pipe.
  *
  * Pumps sysrepo events (oper_get changes, rpc changes,
@@ -604,6 +684,115 @@ void plugin_subscribe_notifications(
 				event_add(ctx->sr_event, NULL);
 		}
 	}
+}
+
+plugin_replay_sub_t *plugin_open_replay_subscription(
+	plugin_ctx_t *ctx, time_t start_time, time_t stop_time,
+	plugin_notif_cb callback, void *user_data)
+{
+	plugin_replay_sub_t *r;
+	const struct ly_ctx *ly_ctx;
+	struct timespec start_ts = { .tv_sec = start_time, .tv_nsec = 0 };
+	struct timespec stop_ts = { .tv_sec = stop_time, .tv_nsec = 0 };
+	uint32_t idx = 0;
+	const struct lys_module *mod;
+	unsigned int subscribed = 0;
+
+	/*
+	 * ROADMAP.md item 6.5 - Replay des notifications.
+	 *
+	 * Reutilise la meme decouverte multi-modules que
+	 * plugin_subscribe_notifications() (ROADMAP 6.1), mais dans
+	 * une souscription sysrepo *dediee* a ce seul client (pas
+	 * fusionnee dans ctx->sub, contrairement a la souscription
+	 * partagee) : sr_notif_subscribe_tree() avec start_time rejoue
+	 * d'abord les notifications stockees dans la fenetre
+	 * [start_time, stop_time], puis continue a livrer les
+	 * notifications live jusqu'a stop_time (ou indefiniment si
+	 * stop_time == 0), en un seul abonnement continu.
+	 *
+	 * @warning Necessite que sysrepo ait le replay active pour le
+	 * module concerne (`sysrepoctl -e <module> -r`) : sinon
+	 * sr_notif_subscribe_tree() ne renvoie simplement aucune
+	 * notification passee (comportement degrade, pas une erreur).
+	 * La feuille `replay-support` de restconf-state/streams reste
+	 * volontairement a "false" (cf. plugin_oper_get_cb) tant que
+	 * ceci n'est pas garanti pour tous les modules installes.
+	 */
+	if (!ctx || !ctx->sub_session || !ctx->conn ||
+	    start_time <= 0 || !callback)
+		return NULL;
+
+	r = calloc(1, sizeof(*r));
+	if (!r) return NULL;
+	r->owner = ctx;
+	r->push_cb = callback;
+	r->push_user_data = user_data;
+	r->event_fd = -1;
+
+	ly_ctx = sr_acquire_context(ctx->conn);
+	if (!ly_ctx) {
+		free(r);
+		return NULL;
+	}
+
+	while ((mod = ly_ctx_get_module_iter(ly_ctx, &idx))) {
+		int rc;
+
+		if (!mod->implemented)
+			continue;
+
+		rc = sr_notif_subscribe_tree(
+			ctx->sub_session, mod->name, NULL,
+			&start_ts, stop_time > 0 ? &stop_ts : NULL,
+			plugin_replay_notif_cb, r,
+			SR_SUBSCR_NO_THREAD, &r->sub);
+		if (rc == SR_ERR_OK) {
+			subscribed++;
+		} else {
+			RC_DEBUG("plugin: replay subscribe skipped "
+				"for module '%s' (%s)",
+				mod->name, sr_strerror(rc));
+		}
+	}
+	sr_release_context(ctx->conn);
+
+	if (!r->sub || subscribed == 0) {
+		RC_WARN("plugin: replay subscription (ROADMAP 6.5) "
+			"found no notification-capable module");
+		if (r->sub) sr_unsubscribe(r->sub);
+		free(r);
+		return NULL;
+	}
+
+	if (sr_get_event_pipe(r->sub, &r->event_fd) != SR_ERR_OK) {
+		sr_unsubscribe(r->sub);
+		free(r);
+		return NULL;
+	}
+	r->ev = event_new(
+		ctx->base, r->event_fd, EV_READ | EV_PERSIST,
+		plugin_replay_event_cb, r);
+	if (!r->ev) {
+		sr_unsubscribe(r->sub);
+		free(r);
+		return NULL;
+	}
+	event_add(r->ev, NULL);
+
+	RC_INFO("plugin: replay subscription opened (%u module(s), "
+		"start=%ld, stop=%ld) [ROADMAP 6.5]",
+		subscribed, (long)start_time, (long)stop_time);
+	return r;
+}
+
+void plugin_close_replay_subscription(
+	plugin_ctx_t *ctx UNUSED, plugin_replay_sub_t *handle)
+{
+	if (!handle) return;
+	if (handle->ev) event_free(handle->ev);
+	if (handle->sub) sr_unsubscribe(handle->sub);
+	free(handle);
 }
 
 void plugin_destroy(plugin_ctx_t *ctx)
