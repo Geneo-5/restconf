@@ -543,6 +543,7 @@ void plugin_handle_get(
 	 * ({+restconf}/data ou {+restconf}/ds/<datastore>) sans
 	 * xpath spécifique retourne toutes les données. */
 	const char *xpath_query = req->xpath ? req->xpath : "/*";
+	RC_TRACE("sr_get_data %s %d", xpath_query, max_depth);
 	int rc = sr_get_data(
 		sess, xpath_query, max_depth, 0, opts, &data);
 
@@ -1090,7 +1091,7 @@ void plugin_handle_edit(
 		struct lyd_node *data = NULL;
 		rc = codec_parse_data(
 			sess, (const char *)body,
-			body_len, req->req_type, &data);
+			body_len, req->req_type, req->xpath, &data);
 
 		if (rc == 0 && data) {
 			const char *default_op = "merge";

@@ -28,11 +28,56 @@ int codec_serialize_data_wd(
 	char **out_buf,
 	size_t *out_len);
 
+/**
+ * @brief Parse un corps de requête RESTCONF encodant une ressource
+ * de données (RFC 8040 Sec 4.4-4.6) en un arbre lyd_node.
+ *
+ * RFC 8040 §4.5 : le corps représente la ressource CIBLE elle-même
+ * (son propre nom qualifié en clé JSON de premier niveau), pas son
+ * parent. Or ce nom qualifié n'est un nœud de premier niveau du
+ * module que si la ressource ciblée est elle-même top-level (ex.
+ * "/oven:oven"). Pour une ressource imbriquée (ex.
+ * "/restconf-test:system/config", où "config" est un enfant de
+ * "system"), lyd_parse_data_mem() (parsing racine uniquement) ne
+ * peut PAS résoudre la clé "config" : elle n'existe comme nœud de
+ * schéma qu'en tant qu'enfant de "system", jamais au niveau racine
+ * du module. Sans le paramètre @p xpath, cela produisait un nœud
+ * opaque (LYD_PARSE_OPAQ) sans schéma, donc ignoré par
+ * plugin_set_leaves_recursive() → 0 leaf trouvée → 400 Bad Request
+ * systématique sur tout PUT/POST/PATCH ciblant une ressource non
+ * top-level (cf. ROADMAP.md, item "Corriger les HTTP 400 sur PUT").
+ *
+ * Quand @p xpath désigne une ressource imbriquée, cette fonction
+ * construit d'abord le squelette de ses ancêtres via lyd_new_path()
+ * (ex. le nœud "system" vide), puis parse @p payload comme sous-
+ * arbre rattaché sous cet ancêtre via lyd_parse_data() — variante
+ * de lyd_parse_data_mem() acceptant un nœud "parent", où "the data
+ * are expected to describe a subtree ... instead of starting at the
+ * schema root" (doc libyang). Le corps ("config": {...}) est alors
+ * résolu correctement comme enfant de "system". Pour une ressource
+ * déjà top-level, @p xpath ne produit aucun ancêtre et le
+ * comportement est inchangé (parsing racine classique).
+ *
+ * @param[in] session Session sysrepo (contexte libyang).
+ * @param[in] payload Corps brut de la requête.
+ * @param[in] len Longueur de @p payload en octets.
+ * @param[in] type Type de média (JSON ou XML).
+ * @param[in] xpath XPath de la ressource ciblée (ex. celui déjà
+ *            construit par router.c dans rc_request_t::xpath), ou
+ *            NULL/vide pour forcer l'ancien comportement (parsing
+ *            racine uniquement).
+ * @param[out] tree Racine de l'arbre construit (ancêtres + sous-
+ *            arbre parsé le cas échéant) ; à libérer avec
+ *            lyd_free_all().
+ *
+ * @return 0 en cas de succès, -1 en cas d'erreur.
+ */
 int codec_parse_data(
 	sr_session_ctx_t *session,
 	const char *payload,
 	size_t len,
 	media_type_t type,
+	const char *xpath,
 	struct lyd_node **tree);
 
 /**

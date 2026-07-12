@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <libyang/libyang.h>
 #include "router.h"
+#include "logger.h"
 
 #define MAX_XPATH_LEN 4096
 #define MAX_DECODED_LEN 512
@@ -391,11 +392,11 @@ int router_parse_request(
 			ds_identity[ds_len] = '\0';
 
 			/* Mapper l'identityref vers rc_datastore_t */
-			if (strstr(ds_identity, "running")) {
+			if (strstr(ds_identity, "ietf-datastores:running")) {
 				req_out->datastore = RC_DS_RUNNING;
-			} else if (strstr(ds_identity, "operational")) {
+			} else if (strstr(ds_identity, "ietf-datastores:operational")) {
 				req_out->datastore = RC_DS_OPERATIONAL;
-			} else if (strstr(ds_identity, "intended")) {
+			} else if (strstr(ds_identity, "ietf-datastores:intended")) {
 				req_out->datastore = RC_DS_INTENDED;
 			} else {
 				req_out->datastore = RC_DS_UNKNOWN;
@@ -410,17 +411,18 @@ int router_parse_request(
 			memcpy(ds_identity, ds_start, ds_len);
 			ds_identity[ds_len] = '\0';
 
-			if (strstr(ds_identity, "running")) {
+			if (strstr(ds_identity, "ietf-datastores:running")) {
 				req_out->datastore = RC_DS_RUNNING;
-			} else if (strstr(ds_identity, "operational")) {
+			} else if (strstr(ds_identity, "ietf-datastores:operational")) {
 				req_out->datastore = RC_DS_OPERATIONAL;
-			} else if (strstr(ds_identity, "intended")) {
+			} else if (strstr(ds_identity, "ietf-datastores:intended")) {
 				req_out->datastore = RC_DS_INTENDED;
 			} else {
 				req_out->datastore = RC_DS_UNKNOWN;
 			}
 			rest_path = "";
 		}
+		RC_TRACE("nmda %d | %s", req_out->datastore, rest_path);
 	} else if (strcmp(path, "/restconf/operations") == 0 ||
 	           strncmp(path, "/restconf/operations/", 21) == 0) {
 		req_out->res_type = RC_RES_OPERATIONS;

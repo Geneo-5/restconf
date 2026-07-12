@@ -482,7 +482,8 @@ def server_process(sysrepo_plugin_process):
     # Démarrage du serveur avec JWT insecure pour les tests
     proc = subprocess.Popen(
         [
-            #"gdb", "-ex", "run", "-ex", "bt", "--args", 
+            #"gdb", "-ex", "run", "-ex", "bt", "--args",
+            #"strace",
             server_bin,
             "-a", BIND_ADDR,
             "-p", str(PORT),

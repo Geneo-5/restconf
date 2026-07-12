@@ -94,11 +94,59 @@ int codec_serialize_data_wd(
 	return 0;
 }
 
+/**
+ * @brief Return a malloc'd copy of @p xpath with its last top-level
+ * path segment stripped off, i.e. the XPath of the immediate parent
+ * of the resource @p xpath designates.
+ *
+ * Bracket depth is tracked so list/leaf-list predicates such as
+ * "[name='eth0']" (which never themselves contain a path separator
+ * in the XPath syntax produced by router.c) do not confuse the
+ * scan; kept generic regardless.
+ *
+ * @param[in] xpath Absolute XPath (as built by router.c), e.g.
+ *            "/restconf-test:system/config" or
+ *            "/restconf-test:interfaces/interface[name='eth0']".
+ *
+ * @return Malloc'd parent XPath (caller frees), or NULL if
+ *         @p xpath is NULL/empty or already designates a top-level
+ *         resource (single path segment).
+ */
+static char *codec_xpath_parent(const char *xpath)
+{
+	if (!xpath || xpath[0] != '/') return NULL;
+
+	int depth = 0;
+	const char *last_slash = NULL;
+
+	for (const char *p = xpath; *p; p++) {
+		if (*p == '[') {
+			depth++;
+		} else if (*p == ']') {
+			if (depth > 0) depth--;
+		} else if (*p == '/' && depth == 0) {
+			last_slash = p;
+		}
+	}
+
+	/* No top-level '/' other than the leading one: single segment,
+	 * i.e. the resource is already top-level (e.g. "/oven:oven"). */
+	if (!last_slash || last_slash == xpath) return NULL;
+
+	size_t len = (size_t)(last_slash - xpath);
+	char *out = malloc(len + 1);
+	if (!out) return NULL;
+	memcpy(out, xpath, len);
+	out[len] = '\0';
+	return out;
+}
+
 int codec_parse_data(
 	sr_session_ctx_t *session,
 	const char *payload,
 	size_t len,
 	media_type_t type,
+	const char *xpath,
 	struct lyd_node **tree)
 {
 	if (!session || !payload || !tree) return -1;
@@ -128,7 +176,8 @@ int codec_parse_data(
 	uint32_t parse_opts = LYD_PARSE_STRICT | LYD_PARSE_OPAQ | LYD_PARSE_ONLY;
 	uint32_t validate_opts = 0;
 
-	/* lyd_parse_data_mem expects a NUL-terminated string */
+	/* lyd_parse_data (via ly_in) expects a NUL-terminated string,
+	 * like the old lyd_parse_data_mem() call it replaces. */
 	char *null_term = malloc(len + 1);
 	if (!null_term) {
 		sr_release_context(
@@ -138,9 +187,65 @@ int codec_parse_data(
 	memcpy(null_term, payload, len);
 	null_term[len] = '\0';
 
-	LY_ERR ly_rc = lyd_parse_data_mem(
-	        ly_ctx, null_term, ly_fmt,
-	        parse_opts, validate_opts, tree);
+	/*
+	 * RFC 8040 §4.5 : le corps encode la ressource CIBLE elle-même
+	 * ("module:target-name": {...}). Si cette ressource est
+	 * imbriquée (pas un nœud top-level du module), ce nom n'existe
+	 * comme nœud de schéma qu'en tant qu'enfant de son parent réel :
+	 * on construit donc d'abord un squelette vide de ses ancêtres
+	 * via lyd_new_path(), pour ensuite parser le corps comme
+	 * sous-arbre rattaché sous cet ancêtre (cf. codec_parse_data()
+	 * dans codec.h pour le détail du problème corrigé ici).
+	 */
+	struct lyd_node *parent_node = NULL;
+	char *parent_path = xpath ? codec_xpath_parent(xpath) : NULL;
+
+	if (parent_path) {
+		LY_ERR anc_rc = lyd_new_path(
+			NULL, ly_ctx, parent_path, NULL, 0, &parent_node);
+
+		if (anc_rc != LY_SUCCESS || !parent_node) {
+			RC_ERROR("codec_parse_data: failed to build ancestor "
+			         "skeleton for '%s' (rc=%d)",
+			         parent_path, anc_rc);
+			free(parent_path);
+			free(null_term);
+			sr_release_context(
+				sr_session_get_connection(session));
+			return -1;
+		}
+
+		/* lyd_new_path() only guarantees returning "a" node of the
+		 * newly created chain, not necessarily the deepest one when
+		 * @p parent_path spans multiple levels; re-resolve the exact
+		 * ancestor node deterministically instead of relying on it. */
+		struct lyd_node *resolved = NULL;
+		if (lyd_find_path(parent_node, parent_path, 0, &resolved) ==
+		    LY_SUCCESS && resolved) {
+			parent_node = resolved;
+		}
+		free(parent_path);
+	}
+
+	struct ly_in *in = NULL;
+	if (ly_in_new_memory(null_term, &in) != LY_SUCCESS || !in) {
+		if (parent_node) {
+			struct lyd_node *root = parent_node;
+			while (lyd_parent(root)) root = lyd_parent(root);
+			lyd_free_all(root);
+		}
+		free(null_term);
+		sr_release_context(
+			sr_session_get_connection(session));
+		return -1;
+	}
+
+	struct lyd_node *parsed = NULL;
+	LY_ERR ly_rc = lyd_parse_data(
+	        ly_ctx, parent_node, in, ly_fmt,
+	        parse_opts, validate_opts, &parsed);
+
+	ly_in_free(in, 0);
 
 	/* Note: avec LYD_PARSE_ONLY, la validation est différée à
 	 * sr_apply_changes() qui utilise les flags appropriés pour
@@ -160,10 +265,29 @@ int codec_parse_data(
 			RC_ERROR("codec_parse_data: libyang error "
 			         "(no details available)");
 		}
+		if (parent_node) {
+			struct lyd_node *root = parent_node;
+			while (lyd_parent(root)) root = lyd_parent(root);
+			lyd_free_all(root);
+		} else if (parsed) {
+			lyd_free_all(parsed);
+		}
 		free(null_term);
 		sr_release_context(
 			sr_session_get_connection(session));
 		return -1;
+	}
+
+	if (parent_node) {
+		/* Return the root of the (ancestor skeleton + parsed
+		 * subtree) tree as a single unit for the caller to walk
+		 * (plugin_set_leaves_recursive() safely skips non-leaf
+		 * ancestor containers) and free via lyd_free_all(). */
+		struct lyd_node *root = parent_node;
+		while (lyd_parent(root)) root = lyd_parent(root);
+		*tree = root;
+	} else {
+		*tree = parsed;
 	}
 
 	free(null_term);

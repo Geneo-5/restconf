@@ -140,7 +140,7 @@ renuméroter en éditant ce fichier.
 | 8.2 | Tests Root Discovery | RFC 8040 Sec 3.1 | `test_basic.py::TestRootDiscovery` : `/.well-known/host-meta` (XRD XML) et `.json` | `[x]` |
 | 8.3 | Tests API Resource | RFC 8040 Sec 3.2 | `test_basic.py::TestAPIResource` : `GET /restconf` en JSON et XML | `[x]` |
 | 8.4 | Tests méthodes HTTP | RFC 8040 Sec 3.4 | HEAD, OPTIONS, DELETE sur `/restconf` (405) | `[x]` |
-| 8.5 | Tests gestion erreurs | RFC 8040 Sec 7 | 9/12 tests passent. 3 échecs : crash serveur sur `DELETE /restconf` et `GET /restconf/data/%%%invalid` (`ConnectionRefusedError`), et `GET /restconf/data/unknown-module:unknown-node` sans réponse (`status_code=None`). Validation percent-encoding présente dans `router.c` mais crashes persistent | `[~]` |
+| 8.5 | Tests gestion erreurs | RFC 8040 Sec 7 | Revue de code (session du 2026-07-11, sans exécution — cf. note ci-dessous) : les 3 scénarios précédemment en échec semblent déjà couverts par le code actuel. `DELETE /restconf` → `RC_RES_API` ne route que GET/HEAD/OPTIONS, tout le reste tombe dans la branche `405` de `main.c`. `GET /restconf/data/%%%invalid` → `validate_percent_encoding()` dans `router.c` détecte `%%%` (hex invalide) et fait échouer `router_parse_request()`, ce qui déclenche le `400 invalid-value` dans `on_restconf_request()`. `GET /restconf/data/unknown-module:unknown-node` → la validation du module dans `plugin_handle_get()` (`ly_ctx_get_module_implemented()`) renvoie `SR_ERR_NOT_FOUND` → `404`. **À confirmer par une exécution réelle de `./scripts/build_test.sh` / `pytest`**, non effectuée dans cette session (pas d'accès shell à la machine de l'utilisateur depuis cet environnement) | `[~]` |
 | 8.6 | Tests CRUD data | RFC 8040 Sec 4 | GET/POST/PUT/PATCH/DELETE sur `/restconf/data/...` | `[ ]` |
 | 8.7 | Tests NMDA | RFC 8527 | GET sur `/restconf/ds/<datastore>/...` | `[ ]` |
 | 8.8 | Tests RPC/Action | RFC 8040 Sec 3.6 | POST sur `/restconf/operations/...` | `[ ]` |
@@ -184,21 +184,12 @@ dans les colonnes "Détails Techniques" ci-dessus et dans `git log`) :
 
 ## 🎯 Prochaines Étapes (par priorité)
 
-> **Note**: Voir `SESSION_2026-07-11.md` pour le détail des correctifs appliqués lors de la dernière session.
-
-0. **Exécuter `./scripts/build_test.sh` pour valider les correctifs**
-   Les correctifs suivants ont été appliqués et doivent être testés :
-   - Support `application/yang-patch+json` (RFC 8072)
-   - Code 415 au lieu de 400 pour Content-Type inconnu
-   - Tolérance Accept pour streams SSE
-   - Vérifications d'allocation mémoire
-   - Gestion explicite de `SR_ERR_UNSUPPORTED`
-   - **NOUVEAU (6.1)** : câblage `sr_notif_subscribe()` → SSE. Vérifier en
-     priorité que `sysrepo_plugin.c` compile (signatures `sr_notif_subscribe()`
-     / `sr_event_notif_cb` non vérifiées par un build réel dans cette
-     session), puis tester `GET /restconf/streams/NETCONF` en parallèle d'une
-     notification `restconf-test:system-startup`/`event-notification` émise
-     côté sysrepo (`sysrepo-cli` ou script de test).
+0. ***URGENT: Fixer ouverture et fermeture de session sysrepo a chaque requette. Le
+   programme essaye d'utiliser une seule session sysrepo par datastore. Il faut
+   que les sessions ouvertes par le plugin pour répondre au yang restconf ne
+   soit pas utilisé par les streams h2c. Cela permet aussi de forcer que chaque
+   streams h2c set le nom d'utilisateur défini dans le JWT (Sans JWT la request
+   doit toujours envoyer 401 Unauthorized)
 
 1. **Corriger les HTTP 400 sur PUT**
    Problème identifié : le body contient le wrapper `module:container` alors que l'URI cible déjà la ressource.
@@ -211,21 +202,17 @@ dans les colonnes "Détails Techniques" ci-dessus et dans `git log`) :
    (actuellement les `sse_stream_t*` créés dans `main.c` ne sont pas
    conservés après `sse_stream_create()`).
 
-3. **Debugger les HTTP 501 sur le module oven**
-   `sr_edit_batch()` retourne `SR_ERR_UNSUPPORTED` pour PATCH/DELETE.
-   Vérifier la configuration du module oven et son plugin sysrepo.
-
-4. **3.10 — Contexte libyang à distance en mode Externe**
+3. **3.10 — Contexte libyang à distance en mode Externe**
    Exposer `ly_ctx` via IPC, ou maintenir un contexte local synchronisé
    côté gateway, pour débloquer la résolution des clés de liste.
 
-5. **6.5 — Replay des notifications** (`start-time`/`stop-time`),
+4. **6.5 — Replay des notifications** (`start-time`/`stop-time`),
    dépend de 6.1.
 
-6. **7.3 — Limitation de ressources** (`WINDOW_UPDATE` nghttp2,
+5. **7.3 — Limitation de ressources** (`WINDOW_UPDATE` nghttp2,
    timeouts `libevent`).
 
-7. **7.4, 8.6–8.9 — Tests** : conformité RFC 8040/8527, CRUD/NMDA/RPC,
+6. **7.4, 8.6–8.9 — Tests** : conformité RFC 8040/8527, CRUD/NMDA/RPC,
    intégration `ctest`.
 
 ---
