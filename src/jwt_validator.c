@@ -115,7 +115,7 @@ static int base64url_decode(
 	return 0;
 }
 
-jwt_ctx_t *jwt_validator_init(const char *key_description)
+jwt_ctx_t *jwt_validator_init(const char *key_description UNUSED)
 {
 	jwt_ctx_t *ctx = calloc(1, sizeof(jwt_ctx_t));
 	if (!ctx) return NULL;

@@ -166,6 +166,7 @@ RUN echo "🔨 Compilation du projet RESTCONF..." && \
           -DBUILD_EXTERNAL_PLUGIN=${BUILD_EXTERNAL_PLUGIN} \
           -DBUILD_TEST_PLUGIN=${BUILD_TEST_PLUGIN} \
           -DLOG_LEVEL=${LOG_LEVEL} \
+          -DCMAKE_C_FLAGS="${CFLAGS} -Werror" \
           .. && \
     make -j$(nproc) && \
     make install && \

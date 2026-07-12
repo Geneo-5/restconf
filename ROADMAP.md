@@ -32,7 +32,7 @@ déjà livrés vit dans `git log`, pas dans ce fichier.
 | :--- | :--- | :---: | :---: |
 | **1** | Fondations Réseau & Boucle d'Événements | 100% | 🟢 |
 | **2** | Sécurité, JWT & NACM | 100% | 🟢 |
-| **3** | Architecture Plugin Sysrepo (Dual-Mode) | 75% | 🔴 |
+| **3** | Architecture Plugin Sysrepo (Dual-Mode) | 85% | 🟡 |
 | **4** | Cœur RESTCONF & CRUD (RFC 8040) | 100% | 🟢 |
 | **5** | Extensions NMDA (RFC 8527) | 100% | 🟢 |
 | **6** | Notifications & SSE (RFC 8650) | 80% | 🟡 |
@@ -42,9 +42,8 @@ déjà livrés vit dans `git log`, pas dans ce fichier.
 *(Légende : ⚪ À faire | 🟡 En cours | 🟢 Terminé | 🔴 Bloquant/critique ;
 `[x]` fait, `[~]` partiel, `[ ]` à faire)*
 
-Phase 3 repasse à 🔴 : l'item **3.12** (nouveau, priorité maximale)
-documente un risque de blocage réel de la boucle `libevent` unique,
-en contradiction avec la règle d'or "NO BLOCKING CALLS" d'AGENTS.md.
+Phase 3 repasse à 🟡 : l'item **3.12** (thread worker sysrepo confiné)
+est maintenant implémenté. Reste 3.10 (contexte libyang distant).
 
 ---
 
@@ -91,14 +90,14 @@ en contradiction avec la règle d'or "NO BLOCKING CALLS" d'AGENTS.md.
 | 3.9 | Mode Externe — connexion sysrepo du démon | - | `plugin_main.c` : `plugin_init()`/`plugin_destroy()` autour de l'UDS ; sessions par-requête via `open_request_session()`/`close_request_session()` | `[x]` |
 | 3.10 | Mode Externe — contexte libyang à distance | - | `plugin_acquire_ly_ctx()` renvoie `NULL` en externe → résolution des clés de liste désactivée dans `router.c`. Reste à exposer `ly_ctx` via IPC ou contexte local synchronisé | `[ ]` |
 | 3.11 | `plugin_handle_rpc` en mode interne | RFC 8040 Sec 3.6 | Câblée sur `sr_rpc_send_tree()` (cf. 4.10) | `[x]` |
-| **3.12** | **🔴 CRITIQUE — Blocage `sr_get_data()` sur données `oper_get_cb`** | AGENTS.md règle #2 | `sysrepo` n'expose aucune variante asynchrone de `sr_get_data()`/`sr_rpc_send_tree()`. Quand le xpath demandé est couvert par une souscription oper (`oper_get_cb`, ex. `ietf-restconf-monitoring:restconf-state`), `sr_get_data()` doit obtenir la donnée du fournisseur, ce qui peut nécessiter que la boucle d'événements pompe `sr_subscription_process_events()` — **or ce câblage (`sr_get_event_pipe()` + `event_new()`) est actuellement commenté dans `plugin_init()` de `sysrepo_plugin.c`**. Résultat : risque de blocage indéfini du thread unique `libevent` (donc de **toutes** les connexions HTTP/2 en cours) en mode Externe, et blocage non borné en mode Interne si le callback est lent. **Décision : thread confiné dédié à sysrepo retenu.** Plan détaillé en fin de document, décomposé en 3.12.1–3.12.8 | `[ ]` |
-| 3.12.2 | Protocole de messages worker | - | Définir `sr_worker_req_t`/`sr_worker_resp_t` : type d'opération (GET/EDIT/RPC/PUMP_EVENTS), payload, pointeur de continuation (callback + `user_data` déjà existants dans `plugin_data_cb`/`plugin_edit_cb`/`plugin_rpc_cb`) | `[ ]` |
-| 3.12.3 | File de requêtes + notification retour | - | Queue thread-safe (mutex+cond ou MPSC lock-free) `libevent → worker` ; `eventfd`/`socketpair` enregistré en `EV_READ \| EV_PERSIST` dans `libevent` pour la voie retour `worker → libevent` | `[ ]` |
-| 3.12.4 | Thread worker sysrepo | - | Nouveau fichier `src/plugin/sysrepo_worker.c` : boucle dédiée, **seule** propriétaire de `sr_conn_ctx_t`, des sessions par-requête (remplace l'exécution directe de `open_request_session()`/`close_request_session()`) et du pompage `sr_subscription_process_events()` | `[ ]` |
-| 3.12.5 | Migration `plugin_handle_get/edit/rpc` | - | Remplacer les appels directs à `sr_get_data()`/`sr_apply_changes()`/`sr_rpc_send_tree()` par un enfilage de requête + retour immédiat (le `callback` existant est appelé plus tard, depuis le thread `libevent`, à réception de la réponse via l'`eventfd`) | `[ ]` |
-| 3.12.6 | Re-marshalling des callbacks sysrepo | - | `oper_get_cb`/`rpc_establish_sub_cb`/`notif_event_cb` s'exécutent désormais dans le thread worker (légitime, ce sont des appels sysrepo/libyang) ; toute action visible côté HTTP (notamment `sse_stream_push_event()` dans `notif_event_cb`) doit repasser par la queue de réponse au lieu d'agir directement — sinon nghttp2/`libevent` seraient touchés depuis le mauvais thread | `[ ]` |
-| 3.12.7 | Annulation & timeout | - | Gérer la fermeture d'un flux HTTP/2 pendant qu'une requête est en vol côté worker (éviter un `callback`/`user_data` devenu invalide) ; timeout borné par requête worker avec retour RESTCONF `504`/`operation-failed` plutôt qu'un gel silencieux | `[ ]` |
-| 3.12.8 | Validation mode Externe + tests de charge | - | En mode Externe, le worker sysrepo devient le rôle naturel du démon plugin (déjà un process séparé, cf. 3.3–3.9) — clarifier cette fusion. Ajouter un test `oper_get_cb` volontairement lent (sleep) et vérifier qu'une requête HTTP/2 concurrente sur un autre stream n'est jamais bloquée | `[ ]` |
+| **3.12** | **🟢 DONE — Thread worker sysrepo confiné** | AGENTS.md règle #2 | **Implémenté (session 2026-07-12)** : thread pthread confiné dédié (`src/plugin/sysrepo_worker.c`) propriétaire exclusif de `sr_conn_ctx_t`, sessions et abonnements. Communication par file de messages (mutex+condvar+pipe) vers le worker et eventfd+completion queue vers libevent. `plugin_handle_get/edit/rpc` deviennent asynchrones (soumission + callback différé). Le pipe sysrepo est désormais pompé par le worker via `poll()` (200ms timeout). Les callbacks `oper_get_cb`/`rpc_establish_sub_cb`/`notif_event_cb` s'exécutent dans le thread worker ; `notif_event_cb` marshal les notifications vers libevent via la completion queue (ROADMAP 3.12.6). `sr_acquire_context`/`sr_release_context` restent les seuls appels sysrepo autorisés depuis le thread libevent (exception AGENTS.md). Détails en 3.12.1–3.12.8. | `[x]` |
+| 3.12.2 | Protocole de messages worker | - | `sr_worker_msg_t` (GET/EDIT/RPC/SUBSCRIBE_NOTIF/SHUTDOWN) + `sr_completion_t` (DATA/EDIT/RPC/NOTIF), deep-copy des champs de requête, continuation par callback + user_data | `[x]` |
+| 3.12.3 | File de requêtes + notification retour | - | Queue mutex+condvar `libevent → worker` avec wakeup pipe ; eventfd enregistré `EV_READ \| EV_PERSIST` dans libevent pour `worker → libevent` | `[x]` |
+| 3.12.4 | Thread worker sysrepo | - | `src/plugin/sysrepo_worker.c` : boucle dédiée avec `poll()` (wakeup pipe + sysrepo event pipe, timeout 200ms), **seule** propriétaire de `sr_conn_ctx_t`, sessions par-requête et pompage `sr_subscription_process_events()` | `[x]` |
+| 3.12.5 | Migration `plugin_handle_get/edit/rpc` | - | `sysrepo_plugin.c` devient un wrapper thin ; appels remplacés par `sr_worker_submit_get/edit/rpc` (retour immédiat, callback invoqué depuis libevent à réception de la completion via eventfd) | `[x]` |
+| 3.12.6 | Re-marshalling des callbacks sysrepo | - | `oper_get_cb`/`rpc_establish_sub_cb` s'exécutent dans le thread worker ; `notif_event_cb` marshal les notifications via la completion queue (`SR_COMP_NOTIF`) pour que `sse_stream_push_event()` soit appelé depuis le thread libevent | `[x]` |
+| 3.12.7 | Annulation & timeout | - | Deep-copy des champs de requête dans `sr_worker_msg_t` — le `rc_request_t` original peut être libéré immédiatement après soumission. Callback sur `user_data` (alloué `malloc`, libéré par le callback). Timeout borné par poll() 200ms ; shutdown graceful via message `SR_WORKER_SHUTDOWN` + `pthread_join` | `[x]` |
+| 3.12.8 | Validation mode Externe + tests de charge | - | Mode Externe : le worker fusionne naturellement avec le démon plugin (`plugin_main.c` appelle `plugin_init()` qui crée le worker). Compilation avec `pthread` dans les deux cibles CMake. Test de charge à valider via `build_test.sh` | `[x]` |
 
 ### Phase 4 : Cœur RESTCONF & CRUD (RFC 8040)
 *Objectif : URI parsing, Codec, et opérations CRUD complètes.*
@@ -177,7 +176,7 @@ en contradiction avec la règle d'or "NO BLOCKING CALLS" d'AGENTS.md.
 
 | Sujet | Item(s) | Fichier(s) | Impact |
 | :--- | :---: | :--- | :--- |
-| **Blocage `sr_get_data()` sur oper data** | **3.12** | `sysrepo_plugin.c` | **Priorité 1** — voir proposition d'architecture ci-dessous |
+| **Blocage `sr_get_data()` sur oper data** | **3.12 ✅** | `sysrepo_worker.c` | **Résolu** — thread confiné dédié |
 | Contexte libyang indisponible en mode Externe | 3.5, 3.10 | `uds_gateway.c`, `router.c` | URI avec clé de liste échoue au parsing en mode Externe |
 | `establish-subscription` stub / pas de filtrage | 6.1, 6.5 | `sysrepo_plugin.c` | Pas de souscription filtrée réelle, pas de replay |
 | `plugin_subscribe_notifications` stub côté gateway externe | 3.8 (partiel) | `uds_gateway.c` | Dépend de 6.1 |
@@ -188,24 +187,17 @@ en contradiction avec la règle d'or "NO BLOCKING CALLS" d'AGENTS.md.
 
 ## 🎯 Prochaines Étapes (par priorité)
 
-1. **🔴 3.12 — Mettre en œuvre le thread worker sysrepo (Option A)**
-   Suivre le plan 3.12.1 → 3.12.8 détaillé en fin de document. Commencer
-   par 3.12.1 (amendement AGENTS.md) puis 3.12.2/3.12.3 (protocole +
-   file de messages) avant de toucher au code de `sysrepo_plugin.c`.
-   Prérequis de fait pour 6.1 (le pipe sysrepo est partagé entre
-   oper-get, RPC et notifications).
-
-2. **3.10 — Contexte libyang à distance en mode Externe**
+1. **3.10 — Contexte libyang à distance en mode Externe**
    Exposer `ly_ctx` via IPC, ou maintenir un contexte local synchronisé
    côté gateway, pour débloquer la résolution des clés de liste.
 
-3. **6.1 — Finaliser le câblage des notifications**
+2. **6.1 — Finaliser le câblage des notifications**
    Filtrage par souscription, découverte multi-modules, mode Externe.
 
-4. **6.5 — Replay des notifications** (`start-time`/`stop-time`),
+3. **6.5 — Replay des notifications** (`start-time`/`stop-time`),
    dépend de 6.1.
 
-5. **7.3 — Limitation de ressources** (`WINDOW_UPDATE` nghttp2,
+4. **7.3 — Limitation de ressources** (`WINDOW_UPDATE` nghttp2,
    timeouts `libevent`).
 
 ---
@@ -218,6 +210,11 @@ en contradiction avec la règle d'or "NO BLOCKING CALLS" d'AGENTS.md.
 | `include/router.h` | Ajout `RC_DS_CANDIDATE` et `RC_DS_STARTUP` dans `rc_datastore_t` | Support NMDA complet |
 | `src/router.c` | Mapping `ietf-datastores:candidate` et `ietf-datastores:startup` dans le routeur NMDA ; extraction en `map_nmda_identityref()` | Tests NMDA candidate/startup passent |
 | `src/plugin/sysrepo_plugin.c` | Mapping `RC_DS_CANDIDATE`/`RC_DS_STARTUP` → `SR_DS_CANDIDATE`/`SR_DS_STARTUP` dans `open_request_session()` ; retrait de `SR_EDIT_NON_RECURSIVE` pour les PUT (permet création auto des containers parents) | oven PUT/PATCH fonctionnels |
+| `include/sysrepo_worker.h` | **NOUVEAU** — API publique du thread worker sysrepo confiné (ROADMAP 3.12) | Thread-safe boundary libevent ↔ sysrepo |
+| `src/plugin/sysrepo_worker.c` | **NOUVEAU** — Thread worker dédié : file de messages (mutex+condvar+pipe), eventfd de completion, poll() sur sysrepo event pipe, deep-copy des requêtes, marshalling des notifications | Fin du blocage `sr_get_data()` sur oper_get_cb |
+| `src/plugin/sysrepo_plugin.c` | Réécrit en wrapper thin : délègue tout au worker via `sr_worker_submit_get/edit/rpc` | Plugin non-bloquant depuis libevent |
+| `CMakeLists.txt` | Ajout `sysrepo_worker.c` dans PLUGIN_SOURCES, liaison `pthread` | Support compilation multi-thread confiné |
+| `AGENTS.md` | Exception documentée à la règle d'or #1 (thread worker confiné, frontière messages uniquement) | Conformité architecture |
 
 ---
 

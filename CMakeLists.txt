@@ -42,10 +42,10 @@ set(PLUGIN_UDS_PATH "/var/run/restconf-plugin.sock" CACHE STRING
 # ==============================================================================
 find_package(PkgConfig REQUIRED)
 find_package(OpenSSL REQUIRED)
-# NOTE: pas de find_package(Threads) : le projet est strictement
-# mono-thread (voir CLAUDE.md, règle d'or n°1). Aucun symbole pthread
-# n'est utilisé dans le code ; ne pas relier Threads::Threads pour ne
-# pas laisser croire qu'un usage de threads serait toléré.
+# ROADMAP.md item 3.12 : the sysrepo worker thread is a documented
+# exception to the single-thread rule (AGENTS.md rule #1).  It is
+# the sole owner of sr_conn_ctx_t and confined behind a strict
+# message-passing boundary.  No other pthread usage is permitted.
 
 # Récupération des bibliothèques via pkg-config
 pkg_check_modules(DEPS REQUIRED IMPORTED_TARGET 
@@ -71,6 +71,7 @@ set(CORE_SOURCES
 
 set(PLUGIN_SOURCES
 	src/plugin/sysrepo_plugin.c
+	src/plugin/sysrepo_worker.c
 )
 
 set(IPC_COMMON_SOURCES
@@ -89,6 +90,7 @@ target_include_directories(restconf-server PRIVATE
 target_link_libraries(restconf-server PRIVATE
 	PkgConfig::DEPS
 	OpenSSL::Crypto
+	pthread
 )
 
 target_compile_options(restconf-server PRIVATE
@@ -147,6 +149,7 @@ if(BUILD_EXTERNAL_PLUGIN)
 	target_link_libraries(restconf-plugin PRIVATE
 		PkgConfig::DEPS
 		OpenSSL::Crypto
+		pthread
 	)
 	
 	target_compile_options(restconf-plugin PRIVATE
