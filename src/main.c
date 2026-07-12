@@ -658,7 +658,26 @@ static void on_restconf_request(
 		 * savoir que la ressource repond en "text/event-stream".
 		 * Rejeter sur la base du seul header Accept produisait un
 		 * 406 systematique qui empechait toute verification
-		 * fonctionnelle du flux SSE (cf. Dette Technique). */
+		 * fonctionnelle du flux SSE (cf. Dette Technique).
+		 *
+		 * ROADMAP.md item "0" (URGENT) : contrairement aux autres
+		 * ressources RESTCONF (ou l'authentification reste pour
+		 * l'instant optionnelle, cf. etape 4 plus haut), un flux
+		 * SSE h2c DOIT toujours porter l'identite NACM du JWT du
+		 * client qui l'ouvre : les notifications diffusees sur ce
+		 * flux ne doivent jamais dependre d'une session sysrepo
+		 * anonyme ou partagee. Une requete sans JWT valide sur un
+		 * event stream echoue donc systematiquement en 401, avant
+		 * meme de tenter d'ouvrir le flux. */
+		if (!req.username) {
+			send_error_response(
+				session, stream_id,
+				req.accept_type, 401,
+				"access-denied",
+				"JWT required to open an event stream");
+			router_free_request(&req);
+			return;
+		}
 		if (strcmp(method, "GET") == 0) {
 			/* RFC 8040 Sec 6.3 : aucune ressource de flux
 			 * concrete n'existe a la racine ("/restconf/stream"

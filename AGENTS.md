@@ -87,14 +87,3 @@ To run build and test, run :
 - `sysrepo` file descriptors (obtained via `sr_get_event_fd()`) are registered in `libevent` using `event_new(..., EV_READ)`.
 - When `sysrepo` has data/notifications, the FD triggers a `libevent` callback, which calls `sr_subscription_process_events()` **inside the main thread**.
 
-## 💻 Coding Guidelines & Patterns
-
-### 1. Sysrepo Integration (Async & FD Mapping)
-Always prefer asynchronous sysrepo APIs to prevent blocking the event loop during IPC.
-```c
-/* GOOD: Asynchronous data retrieval */
-sr_get_data_async(session, xpath, 0, 0, 0, my_data_cb, req_ctx);
-
-/* BAD: Synchronous blocking call in the main loop */
-sr_get_data(session, xpath, 0, 0, 0, &data); 
-```

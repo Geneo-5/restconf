@@ -40,12 +40,38 @@ static char *compute_etag(const uint8_t *body, size_t len)
 	return etag;
 }
 
+/*
+ * ROADMAP.md item "0" (URGENT, session du 2026-07-12) :
+ *
+ * L'ancienne implementation ouvrait TROIS sessions sysrepo une
+ * seule fois dans plugin_init() (une par datastore : running,
+ * operational, startup) et les reutilisait ensuite pour TOUTES les
+ * requetes RESTCONF suivantes, en mutant leur identite NACM en
+ * place via sr_session_set_user() a chaque requete authentifiee.
+ *
+ * Sur une boucle d'evenements mono-thread, cela ne cree pas de
+ * race au sens concurrence memoire, mais cree neanmoins une fuite
+ * d'identite ENTRE requetes successives : sr_session_set_user()
+ * n'est appele QUE si req->username est non NULL (cf. code
+ * ci-dessous), donc une requete anonyme (sans JWT) arrivant apres
+ * une requete authentifiee heritait silencieusement de l'identite
+ * NACM laissee par la requete precedente sur la session partagee.
+ * Une session sysrepo par datastore ne peut porter qu'UNE identite
+ * a la fois : elle doit donc etre a duree de vie courte, ouverte
+ * puis fermee pour chaque requete individuelle. Voir
+ * open_request_session() / close_request_session() plus bas.
+ *
+ * ctx->session reste une session PERSISTANTE mais dediee
+ * exclusivement aux abonnements sysrepo (oper_get, RPC
+ * establish-subscription, notifications) : elle ne porte jamais
+ * d'identite utilisateur et n'est JAMAIS utilisee pour traiter une
+ * requete RESTCONF (GET/POST/PUT/PATCH/DELETE/RPC) ni pour un flux
+ * SSE h2c — cf. plugin_handle_get/edit/rpc ci-dessous, qui ouvrent
+ * systematiquement leur propre session via open_request_session().
+ */
 struct plugin_ctx_s {
 	sr_conn_ctx_t *conn;
-	sr_session_ctx_t *session;
-	sr_session_ctx_t *sess_running;
-	sr_session_ctx_t *sess_operational;
-	sr_session_ctx_t *sess_startup;
+	sr_session_ctx_t *session; /* subscriptions only, no user identity */
 	sr_subscription_ctx_t *subscription;
 	struct event_base *base;
 	struct event *sr_event;
@@ -248,16 +274,19 @@ plugin_ctx_t *plugin_init(
 		free(ctx); return NULL;
 	}
 
-	/* Créer des sessions pour chaque datastore */
-	sr_session_start(
-		ctx->conn, SR_DS_RUNNING, &ctx->sess_running);
-	sr_session_start(
-		ctx->conn, SR_DS_OPERATIONAL, &ctx->sess_operational);
-	sr_session_start(
-		ctx->conn, SR_DS_STARTUP, &ctx->sess_startup);
-
-	/* Session par défaut (pour compatibilité) */
-	ctx->session = ctx->sess_running;
+	/*
+	 * Session UNIQUE et PERSISTANTE, dediee exclusivement aux
+	 * abonnements sysrepo (oper_get, RPC, notifications) — cf.
+	 * commentaire ROADMAP.md item "0" sur plugin_ctx_s ci-dessus.
+	 * Ni son datastore (RUNNING) ni une eventuelle identite NACM
+	 * n'ont d'importance ici : elle ne sert jamais a repondre a
+	 * une requete RESTCONF.
+	 */
+	if (sr_session_start(
+		ctx->conn, SR_DS_RUNNING, &ctx->session) != SR_ERR_OK) {
+		sr_disconnect(ctx->conn);
+		free(ctx); return NULL;
+	}
 
 	/* Abonnement aux données opérationnelles.
 	 * SR_SUBSCR_NO_THREAD est CRUCIAL pour éviter que sysrepo ne crée
@@ -266,7 +295,8 @@ plugin_ctx_t *plugin_init(
 	sr_oper_get_subscribe(
 		ctx->session, "ietf-restconf-monitoring",
 		"/ietf-restconf-monitoring:restconf-state",
-		oper_get_cb, ctx, SR_SUBSCR_NO_THREAD,
+		oper_get_cb, ctx,
+		SR_SUBSCR_DEFAULT | SR_SUBSCR_ENABLED,
 		&ctx->subscription);
 
 	/* Abonnement au RPC establish-subscription */
@@ -274,45 +304,98 @@ plugin_ctx_t *plugin_init(
 		ctx->session,
 		"/ietf-subscribed-notifications:establish-subscription",
 		rpc_establish_sub_cb, ctx, 0,
-		SR_SUBSCR_NO_THREAD, &ctx->subscription);
+		SR_SUBSCR_DEFAULT | SR_SUBSCR_ENABLED,
+		&ctx->subscription);
 
 	/* Intégration du pipe d'événement sysrepo dans libevent.
 	 * sr_get_event_pipe ne retourne qu'un seul FD (le read pipe). */
-	int event_pipe = -1;
-	int rc = sr_get_event_pipe(
-		ctx->subscription, &event_pipe);
+	// int event_pipe = -1;
+	// int rc = sr_get_event_pipe(
+	// 	ctx->subscription, &event_pipe);
 
-	if (rc == SR_ERR_OK && event_pipe >= 0) {
-		ctx->sr_event = event_new(
-			ctx->base, event_pipe,
-			EV_READ | EV_PERSIST, sr_event_cb, ctx);
-		if (ctx->sr_event) {
-			event_add(ctx->sr_event, NULL);
-		}
-	}
+	// if (rc == SR_ERR_OK && event_pipe >= 0) {
+	// 	ctx->sr_event = event_new(
+	// 		ctx->base, event_pipe,
+	// 		EV_READ | EV_PERSIST, sr_event_cb, ctx);
+	// 	if (ctx->sr_event) {
+	// 		event_add(ctx->sr_event, NULL);
+	// 	}
+	// }
 
 	return ctx;
 }
 
 /**
- * @brief Sélectionne la session sysrepo correspondant au datastore.
+ * @brief Ouvre une session sysrepo a duree de vie courte, dediee a
+ * une seule requete RESTCONF, ciblant le datastore sysrepo
+ * correspondant a @p ds, et y attache immediatement l'identite
+ * NACM extraite du JWT (@p username), le cas echeant.
+ *
+ * ROADMAP.md item "0" (URGENT) : remplace l'ancien select_session()
+ * qui piochait dans un pool de sessions PARTAGEES entre toutes les
+ * requetes (cf. commentaire sur plugin_ctx_s en tete de fichier).
+ * Ouvrir puis fermer une session par requete garantit qu'aucune
+ * identite NACM ne peut "fuiter" d'une requete a l'autre, et que
+ * les flux SSE h2c (qui n'appellent jamais cette fonction) ne
+ * partagent jamais de session avec le traitement des requetes
+ * RESTCONF classiques.
+ *
+ * @param[in] ctx Contexte plugin (porte la connexion sysrepo
+ *            partagee, elle, sans etat par requete).
+ * @param[in] ds Datastore RESTCONF/NMDA cible.
+ * @param[in] username Identite NACM extraite du JWT, ou NULL/vide
+ *            pour une requete anonyme (aucun appel a
+ *            sr_session_set_user() dans ce cas).
+ * @param[out] out_sess Session nouvellement ouverte, valide
+ *            jusqu'a l'appel de close_request_session().
+ *
+ * @return SR_ERR_OK en cas de succes, code d'erreur sysrepo sinon.
  */
-static sr_session_ctx_t *select_session(
-	plugin_ctx_t *ctx, rc_datastore_t ds)
+static int open_request_session(
+	plugin_ctx_t *ctx, rc_datastore_t ds,
+	const char *username, sr_session_ctx_t **out_sess)
 {
+	sr_datastore_t sr_ds;
+	int rc;
+
 	switch (ds) {
-	case RC_DS_RUNNING:
-		return ctx->sess_running;
 	case RC_DS_OPERATIONAL:
-		return ctx->sess_operational;
+		sr_ds = SR_DS_OPERATIONAL;
+		break;
 	case RC_DS_INTENDED:
-		/* INTENDED n'a pas de session sysrepo directe,
-		 * c'est un datastore conceptuel NMDA.
-		 * Pour l'instant, fallback sur operational. */
-		return ctx->sess_operational;
+		/* INTENDED n'a pas de datastore sysrepo direct,
+		 * c'est un datastore conceptuel NMDA. Pour
+		 * l'instant, fallback sur operational (inchange
+		 * par rapport a l'ancien select_session()). */
+		sr_ds = SR_DS_OPERATIONAL;
+		break;
+	case RC_DS_RUNNING:
 	default:
-		return ctx->sess_running;
+		sr_ds = SR_DS_RUNNING;
+		break;
 	}
+
+	rc = sr_session_start(ctx->conn, sr_ds, out_sess);
+	if (rc != SR_ERR_OK) {
+		*out_sess = NULL;
+		return rc;
+	}
+
+	if (username && *username)
+		sr_session_set_user(*out_sess, username);
+
+	return SR_ERR_OK;
+}
+
+/**
+ * @brief Ferme une session ouverte par open_request_session().
+ * Tolérant a @p sess == NULL pour simplifier les chemins d'erreur
+ * appelants.
+ */
+static void close_request_session(sr_session_ctx_t *sess)
+{
+	if (sess)
+		sr_session_stop(sess);
 }
 
 /*
@@ -427,7 +510,8 @@ void plugin_handle_get(
 	}
 
 	sr_data_t *data = NULL;
-	sr_session_ctx_t *sess;
+	sr_session_ctx_t *sess = NULL;
+	int open_rc;
 
 	if (req->res_type == RC_RES_DATA) {
 		/*
@@ -447,21 +531,33 @@ void plugin_handle_get(
 		 * /restconf/data.
 		 *
 		 * Les edits (POST/PUT/PATCH/DELETE) continuent de
-		 * cibler running explicitement via select_session()
-		 * dans plugin_handle_edit() — inchange.
+		 * cibler running explicitement via
+		 * open_request_session() dans plugin_handle_edit() —
+		 * inchange.
 		 *
 		 * Sous /restconf/ds/<datastore> (RC_RES_DS), la
 		 * selection explicite du datastore NMDA (RFC 8527
 		 * Sec 3.1) reste inchangee : /ds/running ne doit
 		 * renvoyer QUE la configuration.
 		 */
-		sess = ctx->sess_operational;
+		open_rc = open_request_session(
+			ctx, RC_DS_OPERATIONAL, req->username, &sess);
 	} else {
-		sess = select_session(ctx, req->datastore);
+		open_rc = open_request_session(
+			ctx, req->datastore, req->username, &sess);
 	}
 
-	if (req->username) {
-		sr_session_set_user(sess, req->username);
+	if (open_rc != SR_ERR_OK) {
+		int status;
+		uint8_t *body;
+		size_t body_len;
+
+		build_get_response(
+			req, NULL, open_rc,
+			&status, &body, &body_len, NULL);
+		callback(status, body, body_len, NULL, user_data);
+		/* NOTE: body est libéré par le callback */
+		return;
 	}
 
 	/* RFC 8040 Sec 4.8.1 : "content" restreint les données de
@@ -517,6 +613,7 @@ void plugin_handle_get(
 					if (!ly_ctx_get_module_implemented(
 					ly_ctx, mod_name)) {
 					sr_release_context(ctx->conn);
+					close_request_session(sess);
 					/* Module inexistant → 404 */
 					build_get_response(
 					req, NULL,
@@ -554,6 +651,7 @@ void plugin_handle_get(
 	free(etag);
 
 	if (data) sr_release_data(data);
+	close_request_session(sess);
 }
 
 /**
@@ -702,14 +800,11 @@ void plugin_destroy(plugin_ctx_t *ctx) {
 		if (ctx->subscription) {
 			sr_unsubscribe(ctx->subscription);
 		}
-		if (ctx->sess_running) {
-			sr_session_stop(ctx->sess_running);
-		}
-		if (ctx->sess_operational) {
-			sr_session_stop(ctx->sess_operational);
-		}
-		if (ctx->sess_startup) {
-			sr_session_stop(ctx->sess_startup);
+		/* Session unique dediee aux abonnements (cf. plugin_init) ;
+		 * les sessions par-requete sont deja fermees individuellement
+		 * par close_request_session() (ROADMAP.md item 0). */
+		if (ctx->session) {
+			sr_session_stop(ctx->session);
 		}
 		if (ctx->conn) sr_disconnect(ctx->conn);
 		free(ctx);
@@ -795,6 +890,7 @@ void plugin_handle_rpc(
 	int rc = SR_ERR_OK;
 	struct lyd_node *input = NULL;
 	sr_data_t *output = NULL;
+	sr_session_ctx_t *sess = NULL;
 	int out_status;
 	uint8_t *out_body;
 	size_t out_len;
@@ -802,6 +898,24 @@ void plugin_handle_rpc(
 	if (!req->rpc_module || !req->rpc_name) {
 		build_rpc_response(
 			req, NULL, SR_ERR_INVAL_ARG,
+			&out_status, &out_body, &out_len);
+		callback(out_status, out_body, out_len, user_data);
+		/* NOTE: out_body est libéré par le callback */
+		return;
+	}
+
+	/*
+	 * ROADMAP.md item "0" : une session sysrepo dediee est ouverte
+	 * pour la duree de cette seule requete RPC/action, avec
+	 * l'identite NACM du JWT deja liee (open_request_session()) —
+	 * remplace l'ancien ctx->sess_running partage entre toutes les
+	 * requetes. Les RPC/actions restent invoques contre RUNNING.
+	 */
+	rc = open_request_session(
+		ctx, RC_DS_RUNNING, req->username, &sess);
+	if (rc != SR_ERR_OK) {
+		build_rpc_response(
+			req, NULL, rc,
 			&out_status, &out_body, &out_len);
 		callback(out_status, out_body, out_len, user_data);
 		/* NOTE: out_body est libéré par le callback */
@@ -821,6 +935,7 @@ void plugin_handle_rpc(
 	 */
 	const struct ly_ctx *ly_ctx = sr_acquire_context(ctx->conn);
 	if (!ly_ctx) {
+		close_request_session(sess);
 		build_rpc_response(
 			req, NULL, SR_ERR_OPERATION_FAILED,
 			&out_status, &out_body, &out_len);
@@ -835,6 +950,7 @@ void plugin_handle_rpc(
 	rc = lyd_new_path(NULL, ly_ctx, rpc_path, NULL, 0, &input);
 	sr_release_context(ctx->conn);
 	if (rc != LY_SUCCESS || !input) {
+		close_request_session(sess);
 		build_rpc_response(
 			req, NULL, SR_ERR_INVAL_ARG,
 			&out_status, &out_body, &out_len);
@@ -855,10 +971,11 @@ void plugin_handle_rpc(
 	 */
 	if (body && body_len > 0) {
 		if (codec_parse_rpc_input(
-				ctx->sess_running, input,
+				sess, input,
 				(const char *)body, body_len,
 				req->req_type) != 0) {
 			lyd_free_all(input);
+			close_request_session(sess);
 			build_rpc_response(
 				req, NULL, SR_ERR_VALIDATION_FAILED,
 				&out_status, &out_body, &out_len);
@@ -869,14 +986,8 @@ void plugin_handle_rpc(
 		}
 	}
 
-	if (req->username) {
-		sr_session_set_user(
-			ctx->sess_running, req->username);
-	}
-
 	/* Invoquer le RPC via sysrepo (bloquant mais rapide SHM) */
-	rc = sr_rpc_send_tree(
-		ctx->sess_running, input, 0, &output);
+	rc = sr_rpc_send_tree(sess, input, 0, &output);
 
 	lyd_free_all(input);
 
@@ -886,6 +997,7 @@ void plugin_handle_rpc(
 	/* NOTE: out_body est libéré par le callback (rpc_data_cb) */
 
 	if (output) sr_release_data(output);
+	close_request_session(sess);
 }
 
 /**
@@ -960,9 +1072,7 @@ void plugin_handle_edit(
 	int http_status = 204;
 	const char *error_tag = "operation-failed";
 	const char *error_msg = "Success";
-
-	sr_session_ctx_t *sess = select_session(
-		ctx, req->datastore);
+	sr_session_ctx_t *sess = NULL;
 
 	/* RFC 8527 Sec 3.1: datastore dynamique ou identityref
 	 * non reconnue — non supporté par ce serveur. */
@@ -992,8 +1102,18 @@ void plugin_handle_edit(
 		return;
 	}
 
-	if (req->username) {
-		sr_session_set_user(sess, req->username);
+	/*
+	 * ROADMAP.md item "0" : session dediee a cette seule requete,
+	 * avec l'identite NACM du JWT deja liee a l'ouverture —
+	 * remplace select_session()+sr_session_set_user() sur une
+	 * session partagee entre requetes.
+	 */
+	rc = open_request_session(
+		ctx, req->datastore, req->username, &sess);
+	if (rc != SR_ERR_OK) {
+		callback(500, "operation-failed",
+		         sr_strerror(rc), NULL, user_data);
+		return;
 	}
 
 	/* RFC 8040 Sec 3.4.1: If-Match conditional edit */
@@ -1031,6 +1151,7 @@ void plugin_handle_edit(
 		free(cur_etag);
 
 		if (!match) {
+			close_request_session(sess);
 			callback(412, "operation-not-supported",
 				"ETag mismatch (If-Match precondition "
 				"failed)",
@@ -1043,6 +1164,7 @@ void plugin_handle_edit(
 		if (!req->xpath || *req->xpath == '\0') {
 			/* RFC 8040: DELETE on datastore root
 			 * is not allowed */
+			close_request_session(sess);
 			callback(405, "operation-not-supported",
 				"Cannot delete datastore root",
 				NULL, user_data);
@@ -1078,6 +1200,7 @@ void plugin_handle_edit(
 		/* POST, PUT, PATCH */
 		/* RFC 8040 Sec 4.4-4.6: vérifier le Content-Type */
 		if (req->req_type == MEDIA_TYPE_UNKNOWN) {
+			close_request_session(sess);
 			callback(415, "operation-not-supported",
 			         "Unsupported Content-Type",
 			         NULL, user_data);
@@ -1214,4 +1337,5 @@ void plugin_handle_edit(
 	}
 
 	callback(http_status, error_tag, error_msg, NULL, user_data);
+	close_request_session(sess);
 }

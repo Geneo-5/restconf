@@ -23,6 +23,7 @@ import pytest
 # Configuration par défaut
 # ---------------------------------------------------------------------------
 DEFAULT_SERVER_BIN = "/usr/local/bin/restconf-server"
+DEFAULT_EXPLUG_BIN = "/usr/local/bin/restconf-plugin"
 DEFAULT_PLUGIN_BIN = "/usr/bin/sysrepo-plugind"
 DEFAULT_BIND_ADDR = "127.0.0.1"
 DEFAULT_PORT = 8080
@@ -31,9 +32,9 @@ DEFAULT_TIMEOUT = 5
 # Variables d'environnement pour override
 SERVER_BIN = os.environ.get("RESTCONF_SERVER_BIN", DEFAULT_SERVER_BIN)
 PLUGIN_BIN = os.environ.get("SYSREPO_PLUGIND_BIN", DEFAULT_PLUGIN_BIN)
+EXPLUG_MOD = os.environ.get('BUILD_EXTERNAL_PLUGIN', 'OFF')
 BIND_ADDR = os.environ.get("RESTCONF_BIND_ADDR", DEFAULT_BIND_ADDR)
 PORT = int(os.environ.get("RESTCONF_PORT", DEFAULT_PORT))
-
 
 # ---------------------------------------------------------------------------
 # Client h2c (HTTP/2 Cleartext Prior Knowledge)
@@ -333,7 +334,9 @@ def sysrepo_plugin_process():
     
     # Démarrer sysrepo-plugind en arrière-plan
     proc = subprocess.Popen(
-        [plugin_bin, "--debug", "--fatal-plugin-fail"],
+        [plugin_bin, "--debug", "--fatal-plugin-fail",
+        # "-v5"
+         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
@@ -342,7 +345,7 @@ def sysrepo_plugin_process():
     yield proc
     
     # Arrêt de sysrepo-plugind
-    time.sleep(0.5)
+    time.sleep(0.1)
     proc.send_signal(signal.SIGTERM)
     print(proc.stdout.read().decode(errors='backslashreplace'))
     try:
@@ -465,9 +468,42 @@ def require_oven_module(func):
         return func(*args, **kwargs)
     return wrapper
 
+@pytest.fixture(scope="session")
+def server_extern_process(sysrepo_plugin_process):
+    """
+    Démarre le serveur extern RESTCONF pour la session de test.
+    Le serveur est arrêté à la fin de la session.
+    
+    Requiert que sysrepo-plugind soit démarré au préalable.
+    """
+    if (EXPLUG_MOD in ["off", "OFF"]):
+        yield None
+        return
+
+    proc = subprocess.Popen(
+        [
+            #"gdb", "-ex", "run", "-ex", "bt", "--args",
+            #"strace",
+            "/usr/local/bin/restconf-plugin",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    
+    yield proc
+
+    # Arrêt du serveur
+    time.sleep(0.1)
+    proc.send_signal(signal.SIGTERM)
+    print(proc.stdout.read().decode(errors='backslashreplace'))
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
 
 @pytest.fixture(scope="session")
-def server_process(sysrepo_plugin_process):
+def server_process(server_extern_process):
     """
     Démarre le serveur RESTCONF pour la session de test.
     Le serveur est arrêté à la fin de la session.
@@ -519,14 +555,15 @@ def server_process(sysrepo_plugin_process):
         pytest.fail(
             f"Le serveur n'a pas démarré dans les "
             f"{DEFAULT_TIMEOUT}s\n"
-            f"stdout: {stdout}"
+            f"stdout:\n{stdout}"
         )
 
     yield proc
 
     # Arrêt du serveur
-    time.sleep(1)
+    time.sleep(0.1)
     proc.send_signal(signal.SIGTERM)
+    print("#" * 40)
     print(proc.stdout.read().decode(errors='backslashreplace'))
     try:
         proc.wait(timeout=5)

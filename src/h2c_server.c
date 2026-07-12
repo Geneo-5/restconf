@@ -235,6 +235,8 @@ static void accept_cb(
 	h2c_server_t *server = (h2c_server_t *)ctx;
 	struct event_base *base = evconnlistener_get_base(listener);
 
+	RC_TRACE("Accept new connection");
+
 	h2c_session_t *h2_session = calloc(1, sizeof(h2c_session_t));
 	h2_session->server = server;
 	h2_session->bev = bufferevent_socket_new(

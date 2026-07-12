@@ -91,11 +91,16 @@ int main(int argc, char **argv)
 
 	/* Connexion sysrepo : ce daemon reutilise plugin_init() de
 	 * sysrepo_plugin.c (mode interne), qui fait sr_connect(),
-	 * ouvre les sessions running/operational/startup, souscrit
-	 * aux donnees operationnelles ietf-restconf-monitoring et au
-	 * RPC establish-subscription, et cable le pipe d'evenements
-	 * sysrepo dans libevent. Le second parametre (use_external)
-	 * n'a pas d'effet dans cette implementation. */
+	 * ouvre une session persistante dediee aux abonnements
+	 * (ietf-restconf-monitoring, RPC establish-subscription,
+	 * notifications restconf-test — cf. ROADMAP.md item "0"),
+	 * et cable le pipe d'evenements sysrepo dans libevent. Les
+	 * requetes RESTCONF individuelles (GET/POST/PUT/PATCH/
+	 * DELETE/RPC) ouvrent chacune leur propre session sysrepo a
+	 * courte duree de vie via plugin_handle_get/edit/rpc (voir
+	 * open_request_session() dans sysrepo_plugin.c). Le second
+	 * parametre (use_external) n'a pas d'effet dans cette
+	 * implementation. */
 	plugin_ctx_t *sr_ctx = plugin_init(base, false, NULL);
 	if (!sr_ctx) {
 		RC_FATAL("Failed to connect to sysrepo");

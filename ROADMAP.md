@@ -71,7 +71,7 @@ renuméroter en éditant ce fichier.
 | 3.6 | Callbacks Oper Data | YANG `rcmon` | `sr_oper_get_subscribe` (NO_THREAD) ; `oper_get_cb` génère dynamiquement capabilities et streams (cf. 7.1) | `[x]` |
 | 3.7 | Callbacks RPC | YANG `rsn` | `sr_rpc_subscribe_tree` (NO_THREAD) ; `rpc_establish_sub_cb` génère un ID de souscription mais ne pousse aucune notification réelle (cf. 6.1) | `[~]` |
 | 3.8 | Mode Externe — dispatch IPC réel | - | `plugin_data_cb`/`plugin_rpc_cb` transport-agnostiques (statut HTTP + corps déjà sérialisé) ; `uds_gateway.c` sérialise GET/EDIT/RPC vers l'UDS, `uds_plugin.c` désérialise et réutilise `plugin_handle_get/edit/rpc`. Corrélation par `msg_id`, framing par longueur, `fail_all_pending` sur déconnexion. `plugin_subscribe_notifications` reste un stub (dépend de 6.1) | `[x]` |
-| 3.9 | Mode Externe — connexion sysrepo du démon | - | `plugin_main.c` appelle `plugin_init()` (`sr_connect()`, sessions running/operational/startup, abonnements) avant d'ouvrir l'UDS ; `plugin_destroy()` au shutdown | `[x]` |
+| 3.9 | Mode Externe — connexion sysrepo du démon | - | `plugin_main.c` appelle `plugin_init()` (`sr_connect()`, session persistante dédiée aux abonnements, abonnements) avant d'ouvrir l'UDS ; `plugin_destroy()` au shutdown. Les sessions par-requête sont ouvertes/fermées individuellement par `open_request_session()`/`close_request_session()` (cf. item "0") | `[x]` |
 | 3.10 | Mode Externe — contexte libyang à distance | - | `plugin_acquire_ly_ctx()` renvoie toujours `NULL` en mode externe → résolution des clés de liste désactivée dans `router.c` pour toute URI keyée. Reste à exposer `ly_ctx` via IPC, ou maintenir un contexte local synchronisé côté gateway | `[ ]` |
 | 3.11 | `plugin_handle_rpc` en mode interne | RFC 8040 Sec 3.6 | Ajoutée à `sysrepo_plugin.c`, câblée sur `sr_rpc_send_tree()` (cf. 4.10) | `[x]` |
 
@@ -95,14 +95,14 @@ renuméroter en éditant ce fichier.
 | 4.13 | Query: fields | RFC 8040 Sec 4.8.3 | `codec_filter_fields()` filtre les nœuds de premier niveau selon `;`-séparés (basique — sous-chemins et parenthèses partiellement supportés, niveau racine uniquement) | `[x]` |
 | 4.14 | ETag / Last-Modified | RFC 8040 Sec 3.4.1 | Collision prevention, `If-Match` — ETag calculé par FNV-1a sur le corps sérialisé, validation `If-Match` (y compris wildcard `*`) avant edit, retourne 412 Precondition Failed en cas de mismatch. Fonctionne en mode Interne et Externe (IPC) | `[x]` |
 | 4.15 | Parsing Query String | RFC 8040 Sec 3.5.1 | `:path` HTTP/2 séparé en `path`/`query` dans `router_parse_request` ; extraction de `content`, `depth`, `fields`, `with-defaults`, `with-origin` | `[x]` |
-| 4.16 | Sélection du datastore cible | RFC 8040 Sec 1.4, 3.4 | `/restconf/data` cible `SR_DS_RUNNING` par défaut ; sessions sysrepo pour running/operational/startup ; `select_session()` route vers la bonne session | `[x]` |
+| 4.16 | Sélection du datastore cible | RFC 8040 Sec 1.4, 3.4 | `/restconf/data` cible `SR_DS_RUNNING` par défaut ; `open_request_session()` (cf. item "0") ouvre une session sysrepo dédiée à chaque requête pour le datastore approprié (running/operational) | `[x]` |
 
 ### Phase 5 : Extensions NMDA (RFC 8527)
 *Objectif : Support des nouveaux datastores et métadonnées opérationnelles.*
 
 | ID | Tâche | Référence | Détails Techniques | Statut |
 | :--- | :--- | :--- | :--- | :---: |
-| 5.1 | Routage `/ds/<datastore>` | RFC 8527 Sec 3.1 | `router.c` extrait l'`identityref` et mappe vers `RC_DS_RUNNING`/`RC_DS_OPERATIONAL`/`RC_DS_INTENDED` ; `sysrepo_plugin.c` sélectionne la session correspondante | `[x]` |
+| 5.1 | Routage `/ds/<datastore>` | RFC 8527 Sec 3.1 | `router.c` extrait l'`identityref` et mappe vers `RC_DS_RUNNING`/`RC_DS_OPERATIONAL`/`RC_DS_INTENDED` ; `sysrepo_plugin.c` (`open_request_session()`, cf. item "0") ouvre une session dédiée par requête pour le datastore correspondant | `[x]` |
 | 5.2 | Query: with-origin | RFC 8527 Sec 3.2.2 | Flag `SR_OPER_WITH_ORIGIN` passé à `sr_get_data()` quand `req->with_origin` est vrai et le datastore est `operational` | `[x]` |
 | 5.3 | with-defaults sur Oper | RFC 8527 Sec 3.2.1 | `codec_serialize_data_wd()` mappe `report-all`/`report-all-tagged`/`trim`/`explicit` vers les flags libyang `LYD_PRINT_WD_*` | `[x]` |
 | 5.4 | YANG Library 2019+ | RFC 8527 Sec 2 | `main.c` (`get_yang_library_revision()`) lit la révision réelle du module `ietf-yang-library` via `plugin_acquire_ly_ctx()` / `ly_ctx_get_module_implemented()` pour peupler `yang-library-version` (RFC 8040 §3.3.3), au lieu d'une chaîne littérale figée. Fallback sur `"2019-01-04"` si le contexte libyang est indisponible (mode Externe, cf. 3.10) ou si le module est introuvable. `GET /restconf/data/ietf-yang-library:yang-library` fonctionnait déjà nativement via `plugin_handle_get()`, sysrepo peuplant en interne les données opérationnelles de ce module | `[x]` |
@@ -184,13 +184,6 @@ dans les colonnes "Détails Techniques" ci-dessus et dans `git log`) :
 
 ## 🎯 Prochaines Étapes (par priorité)
 
-0. ***URGENT: Fixer ouverture et fermeture de session sysrepo a chaque requette. Le
-   programme essaye d'utiliser une seule session sysrepo par datastore. Il faut
-   que les sessions ouvertes par le plugin pour répondre au yang restconf ne
-   soit pas utilisé par les streams h2c. Cela permet aussi de forcer que chaque
-   streams h2c set le nom d'utilisateur défini dans le JWT (Sans JWT la request
-   doit toujours envoyer 401 Unauthorized)
-
 1. **Corriger les HTTP 400 sur PUT**
    Problème identifié : le body contient le wrapper `module:container` alors que l'URI cible déjà la ressource.
    Soit les tests envoient le mauvais format, soit le serveur doit accepter les deux formats.
@@ -211,9 +204,6 @@ dans les colonnes "Détails Techniques" ci-dessus et dans `git log`) :
 
 5. **7.3 — Limitation de ressources** (`WINDOW_UPDATE` nghttp2,
    timeouts `libevent`).
-
-6. **7.4, 8.6–8.9 — Tests** : conformité RFC 8040/8527, CRUD/NMDA/RPC,
-   intégration `ctest`.
 
 ---
 
