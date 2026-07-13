@@ -2,6 +2,7 @@
 
 if [[ " $@ " == *" --listen "* ]]; then
     sysrepo-plugind -d -v5&
+    sleep 1
     exec /usr/local/bin/restconf-server -v 0
 fi
 

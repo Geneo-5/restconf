@@ -95,6 +95,7 @@ if(BUILD_TEST_PLUGIN)
     add_custom_target(test-install
         # Copier le module YANG
         COMMAND sysrepoctl -i "${CMAKE_SOURCE_DIR}/doc/test/modules/restconf-test.yang"
+                --init-data "${CMAKE_SOURCE_DIR}/doc/test/modules/restconf-test.json"
         
         # Charger le plugin dans sysrepo
         COMMAND  sysrepo-plugind -P "$<TARGET_FILE:${PLUGIN_NAME}>"

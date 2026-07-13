@@ -570,6 +570,81 @@ static void on_restconf_request(
 	/* 6. Routage vers le plugin sysrepo (Data / Operations) */
 	if (req.res_type == RC_RES_DATA ||
 	    req.res_type == RC_RES_DS) {
+		/* RFC 8527 Sec 3.1: GET/POST/PUT/PATCH/DELETE on
+		 * /restconf/ds/<unknown-datastore> must return 404.
+		 * MUST be checked BEFORE the "list datastores" case
+		 * below, because both have RC_DS_UNKNOWN + empty xpath. */
+		if (req.res_type == RC_RES_DS &&
+		    req.ds_specified &&
+		    req.datastore == RC_DS_UNKNOWN) {
+			send_error_response(
+				session, stream_id,
+				req.accept_type, 404,
+				"invalid-value",
+				"Unknown or unsupported datastore");
+			router_free_request(&req);
+			return;
+		}
+		/* RFC 8527 Sec 3: GET /restconf/ds (without datastore)
+		 * returns the list of available datastores. */
+		if (req.res_type == RC_RES_DS &&
+		    !req.ds_specified &&
+		    (!req.xpath || *req.xpath == '\0') &&
+		    req.datastore == RC_DS_UNKNOWN &&
+		    strcmp(method, "GET") == 0) {
+			const char *ds_ctype =
+				(req.accept_type == MEDIA_TYPE_XML) ?
+				"application/yang-data+xml" :
+				"application/yang-data+json";
+			const char *ds_body;
+			if (req.accept_type == MEDIA_TYPE_XML) {
+				ds_body =
+					"<datastores xmlns=\""
+					"urn:ietf:params:xml:ns:yang"
+					":ietf-restconf\">"
+					"<datastore>"
+					"<name>"
+					"ietf-datastores:running"
+					"</name>"
+					"</datastore>"
+					"<datastore>"
+					"<name>"
+					"ietf-datastores:candidate"
+					"</name>"
+					"</datastore>"
+					"<datastore>"
+					"<name>"
+					"ietf-datastores:startup"
+					"</name>"
+					"</datastore>"
+					"<datastore>"
+					"<name>"
+					"ietf-datastores:operational"
+					"</name>"
+					"</datastore>"
+					"</datastores>";
+			} else {
+				ds_body =
+					"{\"ietf-restconf:datastores\":{"
+					"\"datastore\":["
+					"{\"name\":"
+					"\"ietf-datastores:running\"},"
+					"{\"name\":"
+					"\"ietf-datastores:candidate\"},"
+					"{\"name\":"
+					"\"ietf-datastores:startup\"},"
+					"{\"name\":"
+					"\"ietf-datastores:operational\"}"
+					"]}}";
+			}
+			h2c_send_response(
+				session, stream_id, 200,
+				ds_ctype, NULL,
+				(const uint8_t *)ds_body,
+				strlen(ds_body));
+			router_free_request(&req);
+			return;
+		}
 		if (strcmp(method, "OPTIONS") == 0) {
 			/* RFC 8040 Sec 4.1: OPTIONS sur data */
 			h2c_send_response_ex(
@@ -835,6 +910,91 @@ static void on_restconf_request(
 				405, "operation-not-supported",
 				"Only GET allowed on event streams");
 		}
+	} else if (req.res_type == RC_RES_COMMIT) {
+		/* RFC 8527 Sec 5.2: commit candidate to running
+		 * POST /restconf/commit
+		 *
+		 * Delegue au worker sysrepo via un EDIT special
+		 * (method="COMMIT") qui declenche sr_copy_config
+		 * de candidate vers running. */
+		if (strcmp(method, "POST") != 0) {
+			send_error_response(
+				session, stream_id, req.accept_type,
+				405, "operation-not-supported",
+				"Only POST allowed on /restconf/commit");
+			router_free_request(&req);
+			return;
+		}
+
+		edit_req_ctx_t *ctx = malloc(
+			sizeof(edit_req_ctx_t));
+		if (!ctx) {
+			send_error_response(
+				session, stream_id,
+				req.accept_type, 500,
+				"operation-failed",
+				"Memory allocation failed");
+			router_free_request(&req);
+			return;
+		}
+		ctx->session = session;
+		ctx->stream_id = stream_id;
+		ctx->accept_type = req.accept_type;
+		ctx->location = NULL;
+
+		/* Override method to signal commit to worker */
+		req.method = "COMMIT";
+		req.datastore = RC_DS_CANDIDATE;
+
+		plugin_handle_edit(
+			app->plugin_ctx, &req,
+			NULL, 0,
+			edit_data_cb, ctx);
+		router_free_request(&req);
+		return;
+	} else if (req.res_type == RC_RES_DISCARD) {
+		/* RFC 8527 Sec 5.3: discard candidate changes
+		 * POST /restconf/discard-changes
+		 *
+		 * Delegue au worker sysrepo via un EDIT special
+		 * (method="DISCARD") qui declenche sr_copy_config
+		 * de running vers candidate. */
+		if (strcmp(method, "POST") != 0) {
+			send_error_response(
+				session, stream_id, req.accept_type,
+				405, "operation-not-supported",
+				"Only POST allowed on "
+				"/restconf/discard-changes");
+			router_free_request(&req);
+			return;
+		}
+
+		edit_req_ctx_t *ctx = malloc(
+			sizeof(edit_req_ctx_t));
+		if (!ctx) {
+			send_error_response(
+				session, stream_id,
+				req.accept_type, 500,
+				"operation-failed",
+				"Memory allocation failed");
+			router_free_request(&req);
+			return;
+		}
+		ctx->session = session;
+		ctx->stream_id = stream_id;
+		ctx->accept_type = req.accept_type;
+		ctx->location = NULL;
+
+		/* Override method to signal discard to worker */
+		req.method = "DISCARD";
+		req.datastore = RC_DS_CANDIDATE;
+
+		plugin_handle_edit(
+			app->plugin_ctx, &req,
+			NULL, 0,
+			edit_data_cb, ctx);
+		router_free_request(&req);
+		return;
 	} else {
 		send_error_response(
 			session, stream_id, req.accept_type,

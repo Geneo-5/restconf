@@ -106,7 +106,7 @@ module restconf-test {
         // Mandatory leaf (TC-3-039, TC-7-014) - mandatory commenté pour installation sysrepo
         leaf device-id {
             type device-name;
-            // mandatory true;
+            mandatory true;
             description "MANDATORY: Device identifier must be present";
         }
 

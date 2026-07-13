@@ -400,6 +400,16 @@ int router_parse_request(
 		req_out->res_type = RC_RES_API;
 		return 0;
 	}
+	/* RFC 8527 Sec 5.2: commit candidate datastore to running */
+	if (strcmp(path, "/restconf/commit") == 0) {
+		req_out->res_type = RC_RES_COMMIT;
+		return 0;
+	}
+	/* RFC 8527 Sec 5.3: discard candidate datastore changes */
+	if (strcmp(path, "/restconf/discard-changes") == 0) {
+		req_out->res_type = RC_RES_DISCARD;
+		return 0;
+	}
 
 	const char *rest_path = NULL;
 	if (strcmp(path, "/restconf/data") == 0 ||
@@ -412,9 +422,11 @@ int router_parse_request(
 		/* RFC 8527: /restconf/ds without datastore */
 		req_out->res_type = RC_RES_DS;
 		req_out->datastore = RC_DS_UNKNOWN;
+		req_out->ds_specified = false;
 		rest_path = "";
 	} else if (strncmp(path, "/restconf/ds/", 13) == 0) {
 		req_out->res_type = RC_RES_DS;
+		req_out->ds_specified = true;
 		const char *ds_start = path + 13;
 		const char *ds_end = strchr(ds_start, '/');
 		if (ds_end) {

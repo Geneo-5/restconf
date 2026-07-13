@@ -15,6 +15,10 @@ typedef enum {
 	RC_RES_DS,
 	RC_RES_OPERATIONS,
 	RC_RES_EVENT_STREAM,
+	/* RFC 8527 Sec 5.2: commit candidate to running */
+	RC_RES_COMMIT,
+	/* RFC 8527 Sec 5.3: discard candidate changes */
+	RC_RES_DISCARD,
 	RC_RES_UNKNOWN
 } rc_resource_type_t;
 
@@ -31,6 +35,12 @@ typedef struct {
 	const char *method;
 	rc_resource_type_t res_type;
 	rc_datastore_t datastore;
+	/* true if a datastore identity was parsed from the URI
+	 * (e.g. /restconf/ds/ietf-datastores:running), false if
+	 * no datastore was specified (e.g. /restconf/ds). Used
+	 * to distinguish "unknown datastore" (404) from "list
+	 * datastores" (200). */
+	bool ds_specified;
 	char *xpath;
 	char *rpc_module;
 	char *rpc_name;

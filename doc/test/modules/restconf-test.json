@@ -1,0 +1,5 @@
+{
+    "restconf-test:basic-data" : {
+        "device-id" : "Test"
+    }
+}

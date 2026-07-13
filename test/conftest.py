@@ -335,7 +335,7 @@ def sysrepo_plugin_process():
     # Démarrer sysrepo-plugind en arrière-plan
     proc = subprocess.Popen(
         [plugin_bin, "--debug", "--fatal-plugin-fail",
-        # "-v5"
+         "-v3"
          ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

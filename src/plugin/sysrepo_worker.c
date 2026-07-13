@@ -400,7 +400,7 @@ static void process_get(
 	c->data.cb = msg->cb.data_cb;
 	c->data.user_data = msg->user_data;
 
-	/* Unknown datastore -> 400 */
+	/* Unknown datastore -> 404 (RFC 8527 Sec 3.1) */
 	if (msg->datastore == RC_DS_UNKNOWN) {
 		const char *tag = "invalid-value";
 		const char *m = "Unknown or unsupported "
@@ -409,7 +409,7 @@ static void process_get(
 			msg->accept_type, tag, m,
 			(char **)&c->data.body,
 			&c->data.body_len);
-		c->data.status = 400;
+		c->data.status = 404;
 		enqueue_completion(w, c);
 		return;
 	}
@@ -436,9 +436,14 @@ static void process_get(
 		return;
 	}
 
-	/* Build sr_get_data options */
+	/* Build sr_get_data options.
+	 * NOTE: SR_OPER_NO_STATE and SR_OPER_NO_CONFIG are only
+	 * meaningful for the operational datastore (RFC 8527 Sec 3.2).
+	 * Applying them to running/candidate/startup would cause
+	 * sr_get_data() to return SR_ERR_INVAL_ARG. */
 	sr_get_oper_flag_t opts = 0;
-	if (msg->content_filter) {
+	if (msg->content_filter &&
+	    sess_ds == RC_DS_OPERATIONAL) {
 		if (strcmp(msg->content_filter,
 		           "config") == 0)
 			opts |= SR_OPER_NO_STATE;
@@ -599,7 +604,7 @@ static void process_edit(
 	c->edit.user_data = msg->user_data;
 
 	if (msg->datastore == RC_DS_UNKNOWN) {
-		c->edit.status = 400;
+		c->edit.status = 404;
 		c->edit.error_tag = safe_strdup(
 			"invalid-value");
 		c->edit.error_msg = safe_strdup(
@@ -680,6 +685,75 @@ static void process_edit(
 	const char *error_tag = "operation-failed";
 	const char *error_msg = "Success";
 
+	/* RFC 8040 Sec 4.4: POST on an existing resource must return
+	 * 409 Conflict. Check existence before proceeding. */
+	if (strcmp(msg->method, "POST") == 0 && msg->xpath) {
+		sr_data_t *existing = NULL;
+		int chk_rc = sr_get_data(
+			sess, msg->xpath, 0, 0, 0, &existing);
+		if (chk_rc == SR_ERR_OK && existing &&
+		    existing->tree) {
+			sr_release_data(existing);
+			worker_close_session(sess);
+			c->edit.status = 409;
+			c->edit.error_tag = safe_strdup(
+				"data-exists");
+			c->edit.error_msg = safe_strdup(
+				"Resource already exists");
+			enqueue_completion(w, c);
+			return;
+		}
+		if (existing) sr_release_data(existing);
+	}
+
+	/* RFC 8527 Sec 5.2-5.3: NMDA commit/discard operations.
+	 * These are signaled by main.c via a special method value
+	 * ("COMMIT" or "DISCARD") on the edit request. */
+	if (msg->method &&
+	    strcmp(msg->method, "COMMIT") == 0) {
+		/* Commit: copy candidate datastore to running */
+		rc = sr_copy_config(
+			sess, NULL,
+			SR_DS_CANDIDATE, SR_DS_RUNNING);
+		if (rc == SR_ERR_OK) {
+			http_status = 204;
+			error_tag = "operation-failed";
+			error_msg = "Commit successful";
+		} else {
+			http_status = 500;
+			error_tag = "operation-failed";
+			error_msg = sr_strerror(rc);
+		}
+		c->edit.status = http_status;
+		c->edit.error_tag = safe_strdup(error_tag);
+		c->edit.error_msg = safe_strdup(error_msg);
+		worker_close_session(sess);
+		enqueue_completion(w, c);
+		return;
+	}
+	if (msg->method &&
+	    strcmp(msg->method, "DISCARD") == 0) {
+		/* Discard: copy running datastore to candidate */
+		rc = sr_copy_config(
+			sess, NULL,
+			SR_DS_RUNNING, SR_DS_CANDIDATE);
+		if (rc == SR_ERR_OK) {
+			http_status = 204;
+			error_tag = "operation-failed";
+			error_msg = "Discard successful";
+		} else {
+			http_status = 500;
+			error_tag = "operation-failed";
+			error_msg = sr_strerror(rc);
+		}
+		c->edit.status = http_status;
+		c->edit.error_tag = safe_strdup(error_tag);
+		c->edit.error_msg = safe_strdup(error_msg);
+		worker_close_session(sess);
+		enqueue_completion(w, c);
+		return;
+	}
+
 	if (strcmp(msg->method, "DELETE") == 0) {
 		if (!msg->xpath || *msg->xpath == '\0') {
 			worker_close_session(sess);
@@ -710,12 +784,81 @@ static void process_edit(
 		}
 
 		struct lyd_node *data = NULL;
-		rc = codec_parse_data(
-			sess,
-			(const char *)msg->body,
-			msg->body_len,
-			msg->req_type,
-			msg->xpath, &data);
+
+		/* RFC 8040 Sec 4.4 (POST): the body contains children
+		 * of the target resource, not the resource itself.
+		 * We need to parse the body with the target xpath as
+		 * the parent node, so that libyang can resolve child
+		 * names like "interface" under "interfaces". */
+		if (strcmp(msg->method, "POST") == 0 &&
+		    msg->xpath) {
+			const struct ly_ctx *ly_ctx2 =
+				sr_acquire_context(w->conn);
+			if (ly_ctx2) {
+				struct lyd_node *post_parent = NULL;
+				lyd_new_path(NULL, ly_ctx2,
+				             msg->xpath, NULL, 0,
+				             &post_parent);
+				if (post_parent) {
+					/* Resolve to exact target node */
+					struct lyd_node *resolved =
+						NULL;
+					if (lyd_find_path(post_parent,
+					    msg->xpath, 0,
+					    &resolved) ==
+					    LY_SUCCESS && resolved)
+						post_parent = resolved;
+
+					char *nt = malloc(
+						msg->body_len + 1);
+					if (nt) {
+						memcpy(nt, msg->body,
+						       msg->body_len);
+						nt[msg->body_len] = '\0';
+
+						struct ly_in *in2 = NULL;
+						LYD_FORMAT fmt2 =
+							(msg->req_type == MEDIA_TYPE_XML) ?
+							LYD_XML : LYD_JSON;
+
+						if (ly_in_new_memory(nt, &in2) == LY_SUCCESS && in2) {
+							struct lyd_node *parsed2 = NULL;
+							LY_ERR ly_rc2 = lyd_parse_data(
+								ly_ctx2, post_parent,
+								in2, fmt2,
+								LYD_PARSE_STRICT | LYD_PARSE_OPAQ | LYD_PARSE_ONLY,
+								0, &parsed2);
+							if (ly_rc2 == LY_SUCCESS) {
+								/* Walk from root */
+								struct lyd_node *root = post_parent;
+								while (lyd_parent(root))
+									root = lyd_parent(root);
+								data = root;
+								rc = 0;
+							}
+						}
+						if (in2) ly_in_free(in2, 0);
+						if (!data) {
+							struct lyd_node *root = post_parent;
+							while (lyd_parent(root))
+								root = lyd_parent(root);
+							lyd_free_all(root);
+						}
+						free(nt);
+					}
+				}
+				sr_release_context(w->conn);
+			}
+		}
+
+		if (!data) {
+			rc = codec_parse_data(
+				sess,
+				(const char *)msg->body,
+				msg->body_len,
+				msg->req_type,
+				msg->xpath, &data);
+		}
 
 		if (rc == 0 && data) {
 			const char *default_op = "merge";
@@ -836,18 +979,43 @@ static void process_rpc(
 		return;
 	}
 
+	/* Check if the RPC schema exists before trying to create it.
+	 * RFC 8040 Sec 3.6: unknown RPC should return 404. */
 	char rpc_path[512];
 	snprintf(rpc_path, sizeof(rpc_path),
 	         "/%s:%s", msg->rpc_module,
 	         msg->rpc_name);
 
+	const struct lysc_node *rpc_schema = lys_find_path(
+		ly_ctx, NULL, rpc_path, 0);
+	if (!rpc_schema || !(rpc_schema->nodetype & (LYS_RPC | LYS_ACTION))) {
+		sr_release_context(w->conn);
+		worker_close_session(sess);
+		codec_serialize_errors(
+			msg->accept_type,
+			"invalid-value",
+			"RPC or action not found",
+			(char **)&c->rpc.body,
+			&c->rpc.body_len);
+		c->rpc.status = 404;
+		enqueue_completion(w, c);
+		return;
+	}
+
+	RC_DEBUG("process_rpc: creating RPC node at path: %s", rpc_path);
+
 	struct lyd_node *input = NULL;
-	rc = lyd_new_path(
+	LY_ERR ly_rc = lyd_new_path(
 		NULL, ly_ctx, rpc_path,
 		NULL, 0, &input);
+
+	if (ly_rc != LY_SUCCESS || !input) {
+		RC_ERROR("process_rpc: lyd_new_path failed for %s: %d", rpc_path, ly_rc);
+	}
+
 	sr_release_context(w->conn);
 
-	if (rc != LY_SUCCESS || !input) {
+	if (ly_rc != LY_SUCCESS || !input) {
 		worker_close_session(sess);
 		codec_serialize_errors(
 			msg->accept_type,
@@ -882,6 +1050,12 @@ static void process_rpc(
 
 	sr_data_t *output = NULL;
 	rc = sr_rpc_send_tree(sess, input, 0, &output);
+
+	if (rc != SR_ERR_OK) {
+		RC_ERROR("process_rpc: sr_rpc_send_tree failed for %s:%s: %s (rc=%d)",
+		         msg->rpc_module, msg->rpc_name, sr_strerror(rc), rc);
+	}
+
 	lyd_free_all(input);
 
 	int status = 200;
