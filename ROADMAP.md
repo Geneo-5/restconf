@@ -110,7 +110,7 @@ souscription, dépend de 6.1).
 | 4.2 | Percent-Encoding | RFC 8040 Sec 3.5.3 | Décodage des clés de listes (`%2C`, etc.) | `[x]` |
 | 4.3 | Codec JSON/XML | RFC 8040 Sec 3.2, 5.2 | `lyd_print_mem()`/`lyd_parse_data_mem()` | `[x]` |
 | 4.4 | Erreurs RESTCONF | RFC 8040 Sec 7.1 | `codec_serialize_errors()` JSON/XML (`yang-errors`) | `[x]` |
-| 4.5 | Méthodes GET / HEAD | RFC 8040 Sec 4.2, 4.3 | `sr_get_data()` — synchrone ; **dépend désormais de 3.12** | `[~]` |
+| 4.5 | Méthodes GET / HEAD | RFC 8040 Sec 4.2, 4.3 | `sr_get_data()` — asynchrone via le worker (3.12). **Bug corrigé (session 2026-07-13)** : `process_get()` renvoyait `204 No Content` au lieu de `404 Not Found` quand la ressource cible n'a aucune donnée (ex. leaf jamais positionnée) — 204 n'appartient pas au vocabulaire RESTCONF des réponses GET (réservé aux edits sans corps) | `[x]` |
 | 4.6 | Méthodes POST / PUT | RFC 8040 Sec 4.4, 4.5 | `sr_edit_batch()` (merge/replace), `204`, `Location` sur `201` | `[x]` |
 | 4.7 | Méthode PATCH | RFC 8040 Sec 4.6 | `sr_edit_batch` (merge), Plain Patch | `[x]` |
 | 4.8 | Méthode DELETE | RFC 8040 Sec 4.7 | `sr_delete_item()` | `[x]` |
@@ -247,6 +247,14 @@ souscription, dépend de 6.1).
 | `include/h2c_server.h` | **ROADMAP 7.3** — Nouvelle fonction `h2c_server_set_idle_timeout()` | API de configuration du timeout d'inactivité par connexion |
 | `src/h2c_server.c` | **ROADMAP 7.3** — **Bug corrigé** : `nghttp2_option` construite puis jamais transmise (`nghttp2_session_server_new()` 3-arguments l'ignorait silencieusement) → bascule sur `nghttp2_session_server_new2()`. Ajout de SETTINGS explicites (`MAX_CONCURRENT_STREAMS`=100, `INITIAL_WINDOW_SIZE`=1 MiB) et d'une fenêtre de niveau connexion (4 MiB, `nghttp2_session_set_local_window_size()`). `on_data_chunk_recv_callback()` cappe désormais l'accumulation du corps de requête à `H2C_MAX_REQUEST_BODY_SIZE` (16 MiB) ; `on_frame_recv_callback()` rejette en 413 avant d'appeler `req_cb()` si dépassé (fusion des deux branches HEADERS/DATA dupliquées au passage). `bev_event_cb()` gère désormais `BEV_EVENT_TIMEOUT` ; `accept_cb()` applique `bufferevent_set_timeouts()` (lecture seule) si `h2c_server_set_idle_timeout()` a été appelé | Un seul corps de requête démesuré ne peut plus épuiser la mémoire du process (mono-thread, AGENTS.md règle #2) ; connexions inactives fermées proprement |
 | `src/main.c` | **ROADMAP 7.3** — Nouvelle option CLI `-t <sec>` (défaut 300, 0=désactivé), appel à `h2c_server_set_idle_timeout()` juste après la création du serveur | Timeout d'inactivité configurable en exploitation |
+
+---
+
+## ✅ Corrections récentes (session 2026-07-13)
+
+| Fichier | Correction | Impact |
+| :--- | :--- | :--- |
+| `src/plugin/sysrepo_worker.c` | **Bug corrigé**, rapporté par `test_crud.py::test_003_get_leaf` — `process_get()` renvoyait `204 No Content` au lieu de `404 Not Found` (RFC 8040 Sec 4.3) quand `sr_get_data()` réussit mais ne trouve aucune donnée pour le xpath demandé (ex. leaf jamais positionnée). 204 n'appartient pas au vocabulaire des réponses GET de la RFC (réservé aux edits reussis sans corps : PUT sur ressource existante, PATCH, DELETE) ; vérifié que l'autre occurrence de `status = 204` dans le fichier (`process_rpc()`, sortie RPC vide) est en revanche correcte au regard de RFC 8040 Sec 3.6.2 et n'a pas été touchée | `GET` sur une ressource inexistante renvoie désormais `404` comme attendu par la suite de tests |
 
 ---
 

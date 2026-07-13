@@ -557,7 +557,22 @@ static void process_get(
 				&body, &body_len);
 		}
 	} else {
-		status = 204;
+		/*
+		 * BUG CORRIGE (rapporte par test_crud.py::test_003_get_leaf) :
+		 * RFC 8040 Sec 4.3 impose un 404 Not Found quand la ressource
+		 * cible d'un GET n'existe pas. `sr_get_data()` renvoie ici un
+		 * SUCCES avec un arbre absent/vide quand le xpath demande ne
+		 * correspond a aucune donnee presente (ex: une leaf jamais
+		 * positionnee) -- ce n'est PAS une erreur sysrepo, mais cote
+		 * RESTCONF cela reste neanmoins un 404 classique. 204 No
+		 * Content n'appartient pas au vocabulaire des reponses GET de
+		 * la RFC (reserve aux edits reussis sans corps : PUT sur une
+		 * ressource existante, PATCH, DELETE).
+		 */
+		status = 404;
+		codec_serialize_errors(
+			msg->accept_type, "invalid-value",
+			"Resource not found", &body, &body_len);
 	}
 
 	c->data.status = status;
