@@ -185,3 +185,49 @@ install(TARGETS restconf-server DESTINATION bin)
 if(BUILD_EXTERNAL_PLUGIN)
 	install(TARGETS restconf-plugin DESTINATION bin)
 endif()
+
+# ==============================================================================
+# Intégration CTest (ROADMAP.md item 8.9)
+# ==============================================================================
+# La suite de conformité RFC 8040/8527/8650 vit dans test/*.py (pytest +
+# client h2c maison, cf. test/conftest.py). Chaque test y démarre lui-même
+# le binaire restconf-server (et sysrepo-plugind le cas échéant) via
+# subprocess : aucune orchestration Docker n'est requise pour lancer
+# pytest, seulement un environnement sysrepo avec le module
+# doc/test/modules/restconf-test.yang déjà installé (cf. test-install,
+# target définie dans test/CMakeLists.txt, et docker/entrypoint.sh qui
+# invoque exactement la même commande pytest en conteneur).
+#
+# BUILD_CTEST_INTEGRATION est désactivé par défaut : l'activer suppose que
+# l'environnement d'exécution (hôte ou conteneur) a déjà sysrepo/le module
+# de test installés ; sinon la commande pytest échouera au démarrage du
+# premier test (fixture server_process).
+option(BUILD_CTEST_INTEGRATION
+	"Register the pytest RESTCONF conformance suite as a CTest test (requires sysrepo + restconf-test.yang already installed, see test-install target)" OFF)
+
+if(BUILD_CTEST_INTEGRATION)
+	enable_testing()
+
+	find_program(PYTEST_EXECUTABLE NAMES pytest pytest3)
+	if(NOT PYTEST_EXECUTABLE)
+		message(WARNING "BUILD_CTEST_INTEGRATION=ON mais 'pytest' est introuvable dans PATH ; ctest échouera.")
+		set(PYTEST_EXECUTABLE pytest)
+	endif()
+
+	add_test(
+		NAME restconf_pytest_suite
+		COMMAND ${PYTEST_EXECUTABLE} test/ --show-capture no
+		WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+	)
+
+	# La suite complète (145 tests, incluant démarrage/arrêt répétés du
+	# serveur h2c et abonnements SSE) prend largement plus que le budget
+	# ctest par défaut (1500s) ; borne large mais finie pour détecter un
+	# vrai blocage (ex. régression de type 3.12 sur sr_get_data()).
+	set_tests_properties(restconf_pytest_suite PROPERTIES
+		TIMEOUT 900
+		ENVIRONMENT "RESTCONF_SERVER_BIN=$<TARGET_FILE:restconf-server>"
+	)
+
+	message(STATUS "🧪 CTest: restconf_pytest_suite enregistré (ctest --output-on-failure)")
+endif()
