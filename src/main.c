@@ -854,6 +854,7 @@ static void print_usage(const char *prog) {
 	fprintf(stderr, "  -d          Run as daemon (background)\n");
 	fprintf(stderr, "  -s          Use syslog instead of stdout\n");
 	fprintf(stderr, "  -v <level>  Runtime log level (0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR, 5=FATAL)\n");
+	fprintf(stderr, "  -t <sec>    Idle read timeout per connection, 0=disabled (default: 300)\n");
 	fprintf(stderr, "  -h          Show this help\n");
 #ifdef USE_EXTERNAL_PLUGIN
 	fprintf(stderr, "\n");
@@ -874,9 +875,14 @@ int main(int argc, char **argv) {
 #endif
 	rc_log_target_t log_target = RC_LOG_TARGET_STDOUT;
 	int runtime_log_level = RC_COMPILE_TIME_LOG_LEVEL;
+	/* ROADMAP.md item 7.3 : timeout de lecture par defaut assez
+	 * genereux pour ne jamais fermer un flux SSE legitime dont le
+	 * client ne renvoie rien apres la requete initiale (cf.
+	 * h2c_server_set_idle_timeout()). */
+	int idle_timeout_sec = 300;
 
 	int opt;
-	while ((opt = getopt(argc, argv, "a:p:u:k:sdv:h")) != -1) {
+	while ((opt = getopt(argc, argv, "a:p:u:k:sdv:t:h")) != -1) {
 		switch (opt) {
 			case 'a':
 				bind_addr = optarg;
@@ -898,6 +904,9 @@ int main(int argc, char **argv) {
 				break;
 			case 'v':
 				runtime_log_level = atoi(optarg);
+				break;
+			case 't':
+				idle_timeout_sec = atoi(optarg);
 				break;
 			case 'h':
 				print_usage(argv[0]);
@@ -958,6 +967,17 @@ int main(int argc, char **argv) {
 
 	/* Initialiser le plugin avec l'event base du serveur */
 	struct event_base *base = h2c_server_get_event_base(server);
+
+	/* ROADMAP.md item 7.3 : timeout de lecture par connexion
+	 * (protection contre les connexions inactives/en attente qui
+	 * consommeraient des ressources indefiniment, cf.
+	 * h2c_server.h). N'affecte pas les flux SSE legitimes tant que
+	 * la valeur par defaut (300s) ou celle choisie via -t reste
+	 * assez large. */
+	h2c_server_set_idle_timeout(server, idle_timeout_sec);
+	RC_DEBUG("Idle read timeout: %d s%s", idle_timeout_sec,
+		idle_timeout_sec == 0 ? " (disabled)" : "");
+
 	app.event_base = base;
 	app.plugin_ctx = plugin_init(
 		base, use_external, PLUGIN_UDS_PATH);
@@ -971,9 +991,9 @@ int main(int argc, char **argv) {
 	/* RFC 8040 Sec 6.4 (ROADMAP.md item 6.1) : brancher la
 	 * diffusion des notifications sysrepo vers les flux SSE
 	 * actifs (cf. on_notification_cb() / sse_registry_*
-	 * ci-dessus). Sans effet en mode Externe pour l'instant
-	 * (plugin_subscribe_notifications reste un stub cote
-	 * uds_gateway.c, cf. ROADMAP.md item 3.8). */
+	 * ci-dessus). Fonctionnel dans les deux modes (interne et
+	 * Externe, cf. 3.8/6.1 : IPC_MSG_NOTIF_PUSH cable dans les
+	 * deux sens). */
 	plugin_subscribe_notifications(
 		app.plugin_ctx, on_notification_cb, &app);
 

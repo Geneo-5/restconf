@@ -32,6 +32,23 @@ h2c_server_t *h2c_server_init_uds(
 void h2c_server_run(h2c_server_t *server);
 void h2c_server_destroy(h2c_server_t *server);
 
+/**
+ * @brief Configure un timeout d'inactivite en lecture applique a
+ * chaque connexion acceptee APRES cet appel (RFC 8040 Sec 12,
+ * ROADMAP.md item 7.3). 0 (defaut) desactive le timeout.
+ *
+ * @note Timeout de LECTURE uniquement : ferme une connexion dont
+ * le CLIENT n'envoie plus aucun octet pendant la duree indiquee.
+ * Ne s'applique volontairement pas en ecriture, pour ne pas casser
+ * les flux SSE longue duree ou seul le serveur emet (le ping
+ * keep-alive de l'item 6.4 est une ecriture, elle ne reinitialise
+ * donc pas ce timer) -- choisir une valeur assez genereuse pour ne
+ * pas fermer un flux SSE legitime dont le client ne renvoie jamais
+ * rien apres la requete initiale.
+ */
+void h2c_server_set_idle_timeout(
+	h2c_server_t *server, int timeout_sec);
+
 int h2c_send_response(
 	h2c_session_t *session, int32_t stream_id,
 	int status_code, const char *content_type,

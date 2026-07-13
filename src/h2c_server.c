@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/time.h>
 #include <arpa/inet.h>
 #include <sys/un.h>
 #include <event2/event.h>
@@ -13,6 +14,32 @@
 #include <nghttp2/nghttp2.h>
 #include "h2c_server.h"
 #include "logger.h"
+
+/*
+ * ROADMAP.md item 7.3 - Limitation de ressources (RFC 8040 Sec 12).
+ *
+ * Valeurs par defaut, non configurables pour l'instant (limite
+ * connue, cf. dette technique ROADMAP.md) :
+ *   - H2C_MAX_REQUEST_BODY_SIZE : borne la memoire accumulee pour
+ *     le corps d'une requete HTTP/2 (avant ce correctif,
+ *     on_data_chunk_recv_callback() reallouait sans aucune limite,
+ *     un seul corps demesure pouvait epuiser la memoire du process
+ *     -- affectant TOUTES les connexions, le process etant
+ *     mono-thread, cf. AGENTS.md regle #2).
+ *   - H2C_MAX_CONCURRENT_STREAMS : nombre max de flux HTTP/2
+ *     simultanes par connexion (SETTINGS_MAX_CONCURRENT_STREAMS),
+ *     protege contre l'epuisement de memoire par multiplexage
+ *     abusif d'un seul client.
+ *   - H2C_INITIAL_WINDOW_SIZE / H2C_CONNECTION_WINDOW_SIZE :
+ *     fenetres de flux HTTP/2 (SETTINGS_INITIAL_WINDOW_SIZE par
+ *     flux + WINDOW_UPDATE de niveau connexion), evitent de laisser
+ *     un client mettre des quantites illimitees de donnees "en
+ *     vol" avant d'attendre un accuse de reception.
+ */
+#define H2C_MAX_REQUEST_BODY_SIZE (16 * 1024 * 1024) /* 16 MiB */
+#define H2C_MAX_CONCURRENT_STREAMS 100
+#define H2C_INITIAL_WINDOW_SIZE (1 * 1024 * 1024) /* 1 MiB */
+#define H2C_CONNECTION_WINDOW_SIZE (4 * 1024 * 1024) /* 4 MiB */
 
 #define MAKE_NV(NAME, VALUE, VALUELEN) \
 	((nghttp2_nv){(uint8_t *)(NAME), (uint8_t *)(VALUE), \
@@ -32,6 +59,13 @@ struct h2c_session_s {
 	uint8_t *body;
 	size_t body_len;
 	size_t body_cap;
+	/* ROADMAP.md item 7.3 : vrai si le corps de la requete en
+	 * cours a depasse H2C_MAX_REQUEST_BODY_SIZE (cf.
+	 * on_data_chunk_recv_callback()) ; verifie par
+	 * on_frame_recv_callback() pour rejeter en 413 avant d'appeler
+	 * req_cb(), plutot que de transmettre un corps tronque a
+	 * l'application. */
+	bool body_oversized;
 	int32_t current_stream_id;
 };
 
@@ -40,6 +74,11 @@ struct h2c_server_s {
 	struct evconnlistener *listener;
 	h2c_request_cb req_cb;
 	void *user_data;
+	/* ROADMAP.md item 7.3 : timeout de lecture applique (via
+	 * bufferevent_set_timeouts()) a chaque connexion acceptee
+	 * apres l'appel a h2c_server_set_idle_timeout(). 0 = desactive
+	 * (comportement precedent, valeur par defaut). */
+	int idle_timeout_sec;
 };
 
 typedef struct {
@@ -158,6 +197,25 @@ static int on_data_chunk_recv_callback(
 	void *user_data)
 {
 	h2c_session_t *h2_session = (h2c_session_t *)user_data;
+
+	/* ROADMAP.md item 7.3 : ne jamais accumuler plus de
+	 * H2C_MAX_REQUEST_BODY_SIZE en memoire ; l'exces est
+	 * silencieusement abandonne (le flux de controle HTTP/2 n'est
+	 * pas affecte, nghttp2 considere les octets consommes des que
+	 * ce callback retourne 0, qu'on les copie ou non). La requete
+	 * sera rejetee en 413 par on_frame_recv_callback() ci-dessous
+	 * une fois body_oversized positionne : le contenu partiel
+	 * accumule n'est de toute facon jamais transmis a
+	 * l'application. */
+	if (h2_session->body_len >= H2C_MAX_REQUEST_BODY_SIZE) {
+		h2_session->body_oversized = true;
+		return 0;
+	}
+	if (h2_session->body_len + len > H2C_MAX_REQUEST_BODY_SIZE) {
+		h2_session->body_oversized = true;
+		len = H2C_MAX_REQUEST_BODY_SIZE - h2_session->body_len;
+	}
+
 	if (h2_session->body_len + len + 1 > h2_session->body_cap) {
 		h2_session->body_cap = (h2_session->body_len + len) * 2 + 1;
 		h2_session->body = realloc(
@@ -174,25 +232,41 @@ static int on_frame_recv_callback(
 	const nghttp2_frame *frame, void *user_data)
 {
 	h2c_session_t *h2_session = (h2c_session_t *)user_data;
-	if (frame->hd.type == NGHTTP2_HEADERS &&
-	    (frame->hd.flags & NGHTTP2_FLAG_END_STREAM)) {
-		h2_session->server->req_cb(
+	bool end_stream =
+		(frame->hd.type == NGHTTP2_HEADERS ||
+		 frame->hd.type == NGHTTP2_DATA) &&
+		(frame->hd.flags & NGHTTP2_FLAG_END_STREAM);
+
+	if (!end_stream) return 0;
+
+	if (h2_session->body_oversized) {
+		/* ROADMAP.md item 7.3 : rejet direct au niveau
+		 * transport, sans passer par le routeur RESTCONF
+		 * (h2c_server.c reste volontairement agnostique du
+		 * format d'erreur yang-errors, cf. codec.c) -- un 413
+		 * generique suffit ici, c'est une coupure de protection
+		 * ressources, pas une erreur applicative normale. */
+		static const char msg[] =
+			"Request body exceeds server limit";
+		RC_WARN("h2c: request body exceeded %d bytes, "
+			"rejecting with 413",
+			H2C_MAX_REQUEST_BODY_SIZE);
+		h2c_send_response_ex(
 			h2_session, frame->hd.stream_id,
-			h2_session->method, h2_session->path,
-			(const char *)h2_session->body,
-			h2_session->body_len,
-			h2_session->server->user_data);
+			413, "text/plain", NULL, NULL, NULL,
+			(const uint8_t *)msg, sizeof(msg) - 1);
 		h2_session->body_len = 0;
-	} else if (frame->hd.type == NGHTTP2_DATA &&
-	           (frame->hd.flags & NGHTTP2_FLAG_END_STREAM)) {
-		h2_session->server->req_cb(
-			h2_session, frame->hd.stream_id,
-			h2_session->method, h2_session->path,
-			(const char *)h2_session->body,
-			h2_session->body_len,
-			h2_session->server->user_data);
-		h2_session->body_len = 0;
+		h2_session->body_oversized = false;
+		return 0;
 	}
+
+	h2_session->server->req_cb(
+		h2_session, frame->hd.stream_id,
+		h2_session->method, h2_session->path,
+		(const char *)h2_session->body,
+		h2_session->body_len,
+		h2_session->server->user_data);
+	h2_session->body_len = 0;
 	return 0;
 }
 
@@ -215,8 +289,17 @@ static void bev_read_cb(struct bufferevent *bev, void *ctx) {
 static void bev_event_cb(
 	struct bufferevent *bev, short events, void *ctx)
 {
-	if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+	/* ROADMAP.md item 7.3 : BEV_EVENT_TIMEOUT survient quand le
+	 * timeout de lecture configure par h2c_server_set_idle_timeout()
+	 * (bufferevent_set_timeouts(), cf. accept_cb ci-dessous)
+	 * expire faute d'octets recus du client -- meme traitement de
+	 * nettoyage que EOF/ERROR. */
+	if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR |
+	              BEV_EVENT_TIMEOUT)) {
 		h2c_session_t *h2_session = (h2c_session_t *)ctx;
+		if (events & BEV_EVENT_TIMEOUT)
+			RC_DEBUG("h2c: closing idle connection "
+				"(read timeout)");
 		nghttp2_session_terminate_session(
 			h2_session->ng_session, NGHTTP2_NO_ERROR);
 		nghttp2_session_del(h2_session->ng_session);
@@ -253,22 +336,53 @@ static void accept_cb(
 	nghttp2_session_callbacks_set_on_frame_recv_callback(
 		callbacks, on_frame_recv_callback);
 
+	/*
+	 * ROADMAP.md item 7.3 - Limitation de ressources.
+	 *
+	 * BUG CORRIGE : `opts` etait auparavant construit puis
+	 * immediatement detruit sans jamais etre transmis a
+	 * nghttp2_session_server_new() (variante a 3 arguments, qui
+	 * ignore silencieusement toute option) -- `opts` n'avait donc
+	 * strictement aucun effet. On utilise desormais la variante
+	 * *_new2() qui applique reellement les options, et on annonce
+	 * des limites SETTINGS explicites plutot que les valeurs par
+	 * defaut de nghttp2 (cf. constantes H2C_* en tete de fichier).
+	 */
 	nghttp2_option *opts;
 	nghttp2_option_new(&opts);
 	nghttp2_option_set_no_auto_window_update(opts, 0);
 
-	nghttp2_session_server_new(
-		&h2_session->ng_session, callbacks, h2_session);
+	nghttp2_session_server_new2(
+		&h2_session->ng_session, callbacks, h2_session, opts);
 	nghttp2_session_callbacks_del(callbacks);
 	nghttp2_option_del(opts);
 
+	nghttp2_settings_entry settings[] = {
+		{NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS,
+		 H2C_MAX_CONCURRENT_STREAMS},
+		{NGHTTP2_SETTINGS_INITIAL_WINDOW_SIZE,
+		 H2C_INITIAL_WINDOW_SIZE},
+	};
 	nghttp2_submit_settings(
-		h2_session->ng_session, NGHTTP2_FLAG_NONE, NULL, 0);
+		h2_session->ng_session, NGHTTP2_FLAG_NONE,
+		settings, sizeof(settings) / sizeof(settings[0]));
+	/* Fenetre de flux-controle au niveau connexion (au-dela de la
+	 * fenetre par-flux ci-dessus) : declenche un WINDOW_UPDATE de
+	 * niveau connexion vers le client. */
+	nghttp2_session_set_local_window_size(
+		h2_session->ng_session, NGHTTP2_FLAG_NONE, 0,
+		H2C_CONNECTION_WINDOW_SIZE);
 	nghttp2_session_send(h2_session->ng_session);
 
 	bufferevent_setcb(
 		h2_session->bev, bev_read_cb, NULL,
 		bev_event_cb, h2_session);
+	/* ROADMAP.md item 7.3 : timeout de lecture (cf.
+	 * h2c_server_set_idle_timeout()). 0 = desactive (defaut). */
+	if (server->idle_timeout_sec > 0) {
+		struct timeval tv = { server->idle_timeout_sec, 0 };
+		bufferevent_set_timeouts(h2_session->bev, &tv, NULL);
+	}
 	bufferevent_enable(h2_session->bev, EV_READ | EV_WRITE);
 }
 
@@ -327,6 +441,18 @@ void h2c_server_destroy(h2c_server_t *server) {
 	if (server->base)
 		event_base_free(server->base);
 	free(server);
+}
+
+void h2c_server_set_idle_timeout(
+	h2c_server_t *server, int timeout_sec)
+{
+	if (!server) return;
+	/* ROADMAP.md item 7.3 : n'affecte que les connexions acceptees
+	 * APRES cet appel (cf. accept_cb(), qui lit
+	 * server->idle_timeout_sec a chaque connexion) ; appeler ceci
+	 * juste apres h2c_server_init()/h2c_server_init_uds() et avant
+	 * h2c_server_run() couvre donc toutes les connexions. */
+	server->idle_timeout_sec = timeout_sec;
 }
 
 int h2c_send_response_with_headers(

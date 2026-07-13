@@ -43,6 +43,11 @@ while [ $# -gt 0 ]; do
             LOG_LEVEL=0
             shift
             ;;
+        --verbose=*)
+            PYTEST_OPT="-vv"
+            LOG_LEVEL=${1#*=}
+            shift
+            ;;
         --listen=*)
             PORT="-it -p ${1#*=}:8080"
             PYTEST_OPT="--listen"
@@ -52,18 +57,19 @@ while [ $# -gt 0 ]; do
             echo "Usage: $0 [options] [PYTEST_OPTION]"
             echo ""
             echo "Options:"
-            echo "  --no-cache    Ne pas utiliser le cache Docker"
-            echo "  --tag=NAME    Nom du tag Docker (default: restconfd:test-plugin)"
-            echo "  --jwt-on      Compiler AVEC JWT insecure (default)"
-            echo "  --jwt-off     Compiler SANS JWT insecure"
-            echo "  --plugin-on   Compiler AVEC plugin externe"
-            echo "  --plugin-off  Compiler SANS plugin externe (default)"
+            echo "  --no-cache     Ne pas utiliser le cache Docker"
+            echo "  --tag=NAME     Nom du tag Docker (default: restconfd:test-plugin)"
+            echo "  --jwt-on       Compiler AVEC JWT insecure (default)"
+            echo "  --jwt-off      Compiler SANS JWT insecure"
+            echo "  --plugin-on    Compiler AVEC plugin externe"
+            echo "  --plugin-off   Compiler SANS plugin externe (default)"
+            echo "  --verbose[=LV] set verbose mode (0=TRACE 5=EMERGENCY)"
             echo ""
             echo "PYTEST_OPTION:  Forward to pythtest"
             echo ""
             echo "Exemples:"
-            echo "  $0                              # Build avec cache, JWT ON, plugin OFF"
-            echo "  $0 --no-cache --jwt-off         # Build sans cache, JWT OFF"
+            echo "  $0                               # Build avec cache, JWT ON, plugin OFF"
+            echo "  $0 --no-cache --jwt-off          # Build sans cache, JWT OFF"
             echo "  $0 --no-cache --plugin-on        # Build sans cache, plugin ON"
             echo "  $0 --jwt-off --plugin-on         # Build avec cache, JWT OFF, plugin ON"
             exit 1

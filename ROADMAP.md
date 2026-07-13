@@ -35,8 +35,8 @@ déjà livrés vit dans `git log`, pas dans ce fichier.
 | **3** | Architecture Plugin Sysrepo (Dual-Mode) | 92% | 🟡 |
 | **4** | Cœur RESTCONF & CRUD (RFC 8040) | 100% | 🟢 |
 | **5** | Extensions NMDA (RFC 8527) | 100% | 🟢 |
-| **6** | Notifications & SSE (RFC 8650) | 88% | 🟡 |
-| **7** | Monitoring & Modules YANG Conceptuels | 50% | 🟡 |
+| **6** | Notifications & SSE (RFC 8650) | 95% | 🟡 |
+| **7** | Monitoring & Modules YANG Conceptuels | 65% | 🟡 |
 | **8** | Tests h2c & Intégration CTest | 85% | 🟡 |
 
 *(Légende : ⚪ À faire | 🟡 En cours | 🟢 Terminé | 🔴 Bloquant/critique ;
@@ -143,7 +143,7 @@ souscription, dépend de 6.1).
 | 6.2 | Ouverture Stream SSE | RFC 8040 Sec 6.3 | `nghttp2_submit_response()` + data provider SSE | `[x]` |
 | 6.3 | Push Asynchrone | RFC 8040 Sec 6.4 | File d'attente + `NGHTTP2_ERR_DEFERRED` + `nghttp2_session_resume_data()` | `[x]` |
 | 6.4 | Keep-Alive SSE | RFC 8040 Sec 6.4 | Timer `libevent` `EV_PERSIST` (30s) → `: ping\n\n` | `[x]` |
-| 6.5 | Replay | RFC 8040 Sec 4.8.7 | `start-time`/`stop-time` — dépend de 6.1 | `[ ]` |
+| 6.5 | 🟢 Replay | RFC 8040 Sec 4.8.7 | `start-time`/`stop-time` parsés en RFC 3339 (`parse_rfc3339()`, `router.c`) et exposes dans `rc_request_t`. `plugin_open_replay_subscription()` (mode interne, `sysrepo_plugin.c`) ouvre une souscription sysrepo **dediee** au client (independante de la souscription partagee 6.1) avec `start_time`/`stop_time`, qui rejoue d'abord les notifications stockees puis continue en live ; poussee exclusive vers ce seul flux SSE (`on_replay_notification_cb()`, `main.c`), le broadcast partage l'ignore pour eviter les doublons. **Limites** : necessite que sysrepo ait le replay actif pour le module (`sysrepoctl -e <module> -r`, non verifie automatiquement) ; feuille `replay-support` toujours annoncee à `false` (cf. 7.2, prudence volontaire) ; **mode Externe non supporte** (`plugin_open_replay_subscription()` renvoie `NULL` dans `uds_gateway.c`, fallback live-only sans erreur bloquante) | `[x]` |
 
 ### Phase 7 : Monitoring & Modules YANG Conceptuels
 *Objectif : Peuplement des modules `ietf-restconf` et `ietf-restconf-monitoring`.*
@@ -152,7 +152,7 @@ souscription, dépend de 6.1).
 | :--- | :--- | :--- | :--- | :---: |
 | 7.1 | Peuplement `rcmon` (Capabilities) | YANG `rcmon` | `oper_get_cb` génère les capacités dynamiquement | `[x]` |
 | 7.2 | Peuplement `rcmon` (Streams) | YANG `rcmon` | `oper_get_cb` génère la liste des streams (NETCONF) | `[x]` |
-| 7.3 | Limitation Ressources | RFC 8040 Sec 12 | `WINDOW_UPDATE` nghttp2, timeouts `libevent` | `[ ]` |
+| 7.3 | 🟢 Limitation Ressources | RFC 8040 Sec 12 | **SETTINGS nghttp2 explicites** : `nghttp2_session_server_new2()` (la variante 3-arguments precedente ignorait silencieusement les `nghttp2_option` construites -- bug corrige) + `NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS` (100) + `NGHTTP2_SETTINGS_INITIAL_WINDOW_SIZE` (1 MiB) + `nghttp2_session_set_local_window_size()` niveau connexion (4 MiB, declenche un `WINDOW_UPDATE`). **Cap du corps de requete** : `H2C_MAX_REQUEST_BODY_SIZE` (16 MiB) dans `on_data_chunk_recv_callback()`/`on_frame_recv_callback()` (`h2c_server.c`), rejet `413` avant meme d'appeler `req_cb()`. **Timeout d'inactivite** : `h2c_server_set_idle_timeout()` (nouvelle API), `bufferevent_set_timeouts()` en LECTURE seule (ne casse pas les flux SSE ou seul le serveur ecrit), option CLI `-t <sec>` (defaut 300s, 0=desactive) | `[x]` |
 | 7.4 | Tests Conformité | - | Validation RFC 8040/8527 avec `nghttp` | `[ ]` |
 | 7.5 | Module de Test RESTCONF | - | `models/yang/restconf-test.yang` : structures pour les tests de conformité. **Tous les tests de qualification doivent vérifier son chargement avant exécution** | `[x]` |
 | 7.6 | Audit Mono-Thread | - | Zéro `pthread` confirmé, mais `sr_get_data()`/`sr_apply_changes()` restent synchrones. Jugement révisé : **non acceptable dans le cas des données `oper_get_cb`**, cf. 3.12 — reste acceptable pour un accès SHM pur sans callback distant | `[~]` |
@@ -180,28 +180,40 @@ souscription, dépend de 6.1).
 | :--- | :---: | :--- | :--- |
 | **Blocage `sr_get_data()` sur oper data** | **3.12 ✅** | `sysrepo_worker.c` | **Résolu** — thread confiné dédié |
 | **Contexte libyang indisponible en mode Externe** | **3.5, 3.10 ✅** | `uds_gateway.c` | **Résolu** — contexte local chargé depuis le dépôt YANG de sysrepo au démarrage (limite : pas de hot-reload, cf. 3.10) |
-| `establish-subscription` : pas de filtrage par souscription individuelle / receiver | 6.1, 6.5 | `sysrepo_plugin.c`, `main.c` | Un seul flux conceptuel `NETCONF` diffuse tout ; pas de `xpath-filter` par souscription, pas de replay |
+| `establish-subscription` : pas de filtrage par souscription individuelle / receiver | 6.1 | `sysrepo_plugin.c`, `main.c` | Un seul flux conceptuel `NETCONF` diffuse tout (hors clients avec `start-time`, qui ont leur propre souscription dediee, cf. 6.5) ; pas de `xpath-filter` par souscription |
+| ~~Pas de replay des notifications~~ | **6.5 ✅** | `router.c`, `sysrepo_plugin.c`, `main.c` | **Résolu en mode Interne** (souscription sysrepo dédiée par client avec `start-time`/`stop-time`) ; **mode Externe non supporté** (fallback live-only, cf. `uds_gateway.c`) |
 | ~~`plugin_subscribe_notifications` stub côté gateway externe~~ | **3.8, 6.1 ✅** | `uds_gateway.c`, `uds_plugin.c` | **Résolu** — `IPC_MSG_NOTIF_PUSH` câblé dans les deux sens |
-| Pas de limitation de ressources | 7.3 | `h2c_server.c` | Pas de `WINDOW_UPDATE` nghttp2 ni de timeouts explicites |
+| ~~Pas de limitation de ressources~~ | **7.3 ✅** | `h2c_server.c` | **Résolu** — SETTINGS nghttp2 (max streams, fenêtres) réellement appliquées (bug de configuration corrigé), cap du corps de requête (16 MiB → 413), timeout de lecture par connexion configurable (`-t`, 300s par défaut). **Limite** : valeurs non configurables sauf le timeout ; pas de limite explicite par IP/utilisateur (cf. 7.3.1) |
 | Couverture de tests incomplète | 7.4, 8.6–8.9 | `test/` | Pas de tests CRUD/NMDA/RPC, pas d'intégration `ctest` |
 
 ---
 
 ## 🎯 Prochaines Étapes (par priorité)
 
-1. **6.5 — Replay des notifications** (`start-time`/`stop-time`).
-   Peut maintenant s'appuyer sur la découverte multi-modules de 6.1.
+1. **7.4/8.6–8.9 — Couverture de tests** : tests CRUD/NMDA/RPC
+   automatisés et intégration `ctest`, seul chantier de la Phase 8
+   encore ouvert.
 
-2. **7.3 — Limitation de ressources** (`WINDOW_UPDATE` nghttp2,
-   timeouts `libevent`).
-
-3. **6.1 (suivi, non bloquant)** — Filtrage par souscription
+2. **6.1 (suivi, non bloquant)** — Filtrage par souscription
    individuelle (`xpath-filter` RFC 8650) et corrélation d'un
    identifiant de souscription à un flux SSE HTTP/2 précis (notion
    de "receiver"). Actuellement, un seul flux conceptuel `NETCONF`
-   diffuse toutes les notifications à tous les clients connectés.
+   diffuse toutes les notifications à tous les clients connectés
+   (hors clients avec `start-time`, cf. 6.5).
 
-4. **3.10.1 (suivi, non bloquant)** — Envisager un rafraîchissement
+3. **6.5.1 (suivi, non bloquant)** — Support du replay en mode
+   Externe (nouveau message IPC dédié + routage par flux plutôt que
+   simple broadcast) ; vérification automatique du replay-support
+   sysrepo par module avant d'annoncer `replay-support: true` dans
+   `restconf-state/streams`.
+
+4. **7.3.1 (suivi, non bloquant)** — Rendre configurables
+   `H2C_MAX_REQUEST_BODY_SIZE`/`H2C_MAX_CONCURRENT_STREAMS`/fenêtres
+   (actuellement des `#define` figés à la compilation) ; envisager
+   une limite par IP/utilisateur si l'usage en exploitation le
+   justifie.
+
+5. **3.10.1 (suivi, non bloquant)** — Envisager un rafraîchissement
    à chaud du contexte libyang local du gateway (mode Externe) si le
    redémarrage sur (dés)installation de module s'avère gênant en
    exploitation.
@@ -226,6 +238,15 @@ souscription, dépend de 6.1).
 | `src/plugin/sysrepo_plugin.c` | **ROADMAP 6.1** — `plugin_subscribe_notifications()` réécrite : parcourt tous les modules *implémentés* du contexte libyang partagé (`ly_ctx_get_module_iter()`) et tente `sr_notif_subscribe_tree()` sur chacun (xpath `NULL`), au lieu du seul module `restconf-test` en dur ; échecs attendus journalisés en DEBUG. `plugin_rpc_establish_sub_cb()` valide désormais le `stream` demandé contre le seul flux réel `NETCONF` (`sr_session_set_error_message()` + `SR_ERR_NOT_FOUND` sinon) | Découverte multi-modules réelle ; RPC `establish-subscription` ne renvoie plus un ID silencieusement inopérant pour un flux inconnu |
 | `src/ipc/uds_plugin.c` | **ROADMAP 6.1** — Ajout du suivi des connexions gateway actives (`gw_conn_t`/`gw_conn_add`/`gw_conn_remove`) et de `daemon_notif_push_cb()` (callback `plugin_notif_cb` qui sérialise et diffuse `IPC_MSG_NOTIF_PUSH` à toutes les gateways connectées) ; `ext_plugin_init_uds()` appelle désormais `plugin_subscribe_notifications()` pour déclencher l'abonnement sysrepo côté daemon | Mode Externe reçoit enfin les notifications sysrepo (auparavant : aucun abonnement déclenché côté daemon) |
 | `src/ipc/uds_gateway.c` | **ROADMAP 6.1** — `plugin_subscribe_notifications()` n'est plus un stub : enregistre le callback applicatif (`notif_cb`/`notif_user_data` dans `plugin_ctx_s`) ; `dispatch_ipc_response()` reconnaît désormais `IPC_MSG_NOTIF_PUSH` (3 chaînes : module, xpath, payload JSON) et invoque ce callback | SSE opérationnel de bout en bout en mode Externe |
+| `include/router.h` | **ROADMAP 6.5** — Ajout `time_t start_time;`/`stop_time;` à `rc_request_t` (RFC 8040 Sec 4.8.7) | Bornes de replay exposées au reste du code |
+| `src/router.c` | **ROADMAP 6.5** — Nouvelle fonction `parse_rfc3339()` (via `strptime()`/`timegm()`) ; `parse_query_params()` reconnaît désormais `start-time`/`stop-time` | Query params RFC 8040 Sec 4.8.7 parsés pour `GET /streams/<name>` |
+| `include/plugin_api.h` | **ROADMAP 6.5** — Nouveau type opaque `plugin_replay_sub_t` et couple `plugin_open_replay_subscription()`/`plugin_close_replay_subscription()` | API de souscription avec replay, symétrique interne/externe |
+| `src/plugin/sysrepo_plugin.c` | **ROADMAP 6.5** — Implémentation réelle : `struct plugin_replay_sub_s` (souscription sysrepo dédiée + pipe libevent propre), `plugin_replay_notif_cb()`/`plugin_replay_event_cb()`, `plugin_open_replay_subscription()` (même découverte multi-modules que 6.1 mais souscription **non fusionnée** dans `ctx->sub`), `plugin_close_replay_subscription()` | Replay+live fonctionnel en mode Interne, un abonnement sysrepo par client demandant `start-time` |
+| `src/ipc/uds_gateway.c` | **ROADMAP 6.5** — `plugin_open_replay_subscription()`/`plugin_close_replay_subscription()` : stubs documentes qui renvoient toujours `NULL` (replay non supporté en mode Externe) | Mode Externe retombe proprement sur un flux live-only, sans erreur bloquante |
+| `src/main.c` | **ROADMAP 6.5** — `sse_registry_entry_t` gagne `replay_handle`/`app` (back-pointer) ; `sse_registry_add()` retourne désormais l'entrée créée ; nouvelle `sse_registry_remove_entry()` ; nouveau callback `on_replay_notification_cb()` (poussee exclusive, pas de broadcast) ; `on_notification_cb()` saute les entrées liées à une souscription de replay (évite le doublon) ; le handler `RC_RES_EVENT_STREAM` ouvre une souscription dédiée via `plugin_open_replay_subscription()` quand `req.start_time > 0` | `GET /streams/NETCONF?start-time=...&stop-time=...` fonctionnel de bout en bout (mode Interne) |
+| `include/h2c_server.h` | **ROADMAP 7.3** — Nouvelle fonction `h2c_server_set_idle_timeout()` | API de configuration du timeout d'inactivité par connexion |
+| `src/h2c_server.c` | **ROADMAP 7.3** — **Bug corrigé** : `nghttp2_option` construite puis jamais transmise (`nghttp2_session_server_new()` 3-arguments l'ignorait silencieusement) → bascule sur `nghttp2_session_server_new2()`. Ajout de SETTINGS explicites (`MAX_CONCURRENT_STREAMS`=100, `INITIAL_WINDOW_SIZE`=1 MiB) et d'une fenêtre de niveau connexion (4 MiB, `nghttp2_session_set_local_window_size()`). `on_data_chunk_recv_callback()` cappe désormais l'accumulation du corps de requête à `H2C_MAX_REQUEST_BODY_SIZE` (16 MiB) ; `on_frame_recv_callback()` rejette en 413 avant d'appeler `req_cb()` si dépassé (fusion des deux branches HEADERS/DATA dupliquées au passage). `bev_event_cb()` gère désormais `BEV_EVENT_TIMEOUT` ; `accept_cb()` applique `bufferevent_set_timeouts()` (lecture seule) si `h2c_server_set_idle_timeout()` a été appelé | Un seul corps de requête démesuré ne peut plus épuiser la mémoire du process (mono-thread, AGENTS.md règle #2) ; connexions inactives fermées proprement |
+| `src/main.c` | **ROADMAP 7.3** — Nouvelle option CLI `-t <sec>` (défaut 300, 0=désactivé), appel à `h2c_server_set_idle_timeout()` juste après la création du serveur | Timeout d'inactivité configurable en exploitation |
 
 ---
 
