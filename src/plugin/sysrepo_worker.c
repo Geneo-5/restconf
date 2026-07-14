@@ -344,47 +344,6 @@ static void worker_close_session(sr_session_ctx_t *sess)
 }
 
 /* ====================================================================
- * Recursive leaf setter
- * ==================================================================== */
-
-static int worker_set_leaves_recursive(
-	sr_session_ctx_t *sess,
-	struct lyd_node *node,
-	const char *default_op UNUSED,
-	int *set_count)
-{
-	if (!node || !node->schema) return SR_ERR_OK;
-
-	if (node->schema->nodetype == LYS_LEAF ||
-	    node->schema->nodetype == LYS_LEAFLIST) {
-		const char *value = lyd_get_value(node);
-		char *leaf_xpath = lyd_path(
-			node, LYD_PATH_STD, NULL, 0);
-
-		if (leaf_xpath) {
-			uint32_t opts = SR_EDIT_ISOLATE;
-			int set_rc = sr_set_item_str(
-				sess, leaf_xpath,
-				value, NULL, opts);
-			free(leaf_xpath);
-			if (set_rc != SR_ERR_OK)
-				return set_rc;
-			(*set_count)++;
-		}
-	}
-
-	struct lyd_node *child = lyd_child(node);
-	while (child) {
-		int rc = worker_set_leaves_recursive(
-			sess, child, default_op,
-			set_count);
-		if (rc != SR_ERR_OK) return rc;
-		child = child->next;
-	}
-	return SR_ERR_OK;
-}
-
-/* ====================================================================
  * Process individual message types
  * ==================================================================== */
 
@@ -685,27 +644,6 @@ static void process_edit(
 	const char *error_tag = "operation-failed";
 	const char *error_msg = "Success";
 
-	/* RFC 8040 Sec 4.4: POST on an existing resource must return
-	 * 409 Conflict. Check existence before proceeding. */
-	if (strcmp(msg->method, "POST") == 0 && msg->xpath) {
-		sr_data_t *existing = NULL;
-		int chk_rc = sr_get_data(
-			sess, msg->xpath, 0, 0, 0, &existing);
-		if (chk_rc == SR_ERR_OK && existing &&
-		    existing->tree) {
-			sr_release_data(existing);
-			worker_close_session(sess);
-			c->edit.status = 409;
-			c->edit.error_tag = safe_strdup(
-				"data-exists");
-			c->edit.error_msg = safe_strdup(
-				"Resource already exists");
-			enqueue_completion(w, c);
-			return;
-		}
-		if (existing) sr_release_data(existing);
-	}
-
 	/* RFC 8527 Sec 5.2-5.3: NMDA commit/discard operations.
 	 * These are signaled by main.c via a special method value
 	 * ("COMMIT" or "DISCARD") on the edit request. */
@@ -861,6 +799,46 @@ static void process_edit(
 		}
 
 		if (rc == 0 && data) {
+			/*
+			 * BUG CORRIGE (ROADMAP.md item 8.5,
+			 * test_errors.py::test_001_bad_request) : la
+			 * verification RFC 8040 Sec 4.4 ("POST sur
+			 * ressource existante -> 409") s'executait
+			 * auparavant AVANT tout parsing du corps de la
+			 * requete -- un JSON malforme sur une ressource
+			 * deja existante renvoyait donc a tort 409 au
+			 * lieu du 400 attendu par RFC 8040 Sec 7.1
+			 * (detection de requete malformee prioritaire).
+			 * Deplacee ici, une fois le corps parse avec
+			 * succes : les cas de JSON/XML invalide tombent
+			 * desormais dans le "else" (SR_ERR_VALIDATION_FAILED
+			 * -> 400) plus bas, avant meme d'atteindre ce
+			 * controle d'existence.
+			 */
+			if (strcmp(msg->method, "POST") == 0 &&
+			    msg->xpath) {
+				sr_data_t *existing = NULL;
+				int chk_rc = sr_get_data(
+					sess, msg->xpath, 0, 0, 0,
+					&existing);
+				if (chk_rc == SR_ERR_OK && existing &&
+				    existing->tree) {
+					sr_release_data(existing);
+					lyd_free_all(data);
+					worker_close_session(sess);
+					c->edit.status = 409;
+					c->edit.error_tag = safe_strdup(
+						"data-exists");
+					c->edit.error_msg = safe_strdup(
+						"Resource already "
+						"exists");
+					enqueue_completion(w, c);
+					return;
+				}
+				if (existing)
+					sr_release_data(existing);
+			}
+
 			const char *default_op = "merge";
 			if (strcmp(msg->method,
 			           "PUT") == 0)
@@ -871,18 +849,35 @@ static void process_edit(
 				http_status = 201;
 			}
 
-			int set_count = 0;
-			rc = worker_set_leaves_recursive(
-				sess, data,
-				default_op, &set_count);
+			/*
+			 * BUG CORRIGE (ROADMAP.md item 8.5,
+			 * test_008_put_modify_existing) : l'ancien
+			 * mecanisme (une invocation
+			 * sr_set_item_str() par feuille, avec le
+			 * flag SR_EDIT_ISOLATE) ignorait purement
+			 * et simplement default_op et, pire,
+			 * echouait en validation (400) lors du
+			 * remplacement (PUT) d'une entree de liste
+			 * deja existante -- chaque sr_set_item_str()
+			 * isole generait son propre fragment de
+			 * diff pour l'ancetre liste partage
+			 * (interface[name='eth0']), que sysrepo
+			 * pouvait alors interpreter comme plusieurs
+			 * creations concurrentes de la meme entree.
+			 *
+			 * sr_edit_batch() est l'API sysrepo
+			 * idiomatique pour appliquer un arbre
+			 * lyd_node complet en une seule operation
+			 * atomique, avec une operation par defaut
+			 * explicite : "replace" pour PUT (RFC 8040
+			 * Sec 4.5 : la ressource cible est
+			 * entierement remplacee), "merge" pour
+			 * POST/PATCH (Sec 4.4/4.6).
+			 */
+			rc = sr_edit_batch(sess, data, default_op);
+			if (rc == SR_ERR_OK)
+				rc = sr_apply_changes(sess, 0);
 
-			if (rc == SR_ERR_OK &&
-			    set_count > 0) {
-				rc = sr_apply_changes(
-					sess, 0);
-			} else if (set_count == 0) {
-				rc = SR_ERR_VALIDATION_FAILED;
-			}
 			lyd_free_all(data);
 		} else {
 			rc = SR_ERR_VALIDATION_FAILED;
@@ -901,7 +896,26 @@ static void process_edit(
 			error_tag = "data-exists";
 			http_status = 409;
 		} else if (rc == SR_ERR_VALIDATION_FAILED
-		           || rc == SR_ERR_INVAL_ARG) {
+		           || rc == SR_ERR_INVAL_ARG
+		           || rc == SR_ERR_LY) {
+			/*
+			 * BUG CORRIGE (ROADMAP.md item 8.5,
+			 * test_oven.py::test_014_temperature_range /
+			 * test_015_temperature_minimum) : sr_edit_batch()
+			 * (cf. remplacement de
+			 * worker_set_leaves_recursive() plus haut)
+			 * remonte les violations de contrainte de type
+			 * libyang (range/pattern/length, detectees au
+			 * moment ou le batch d'edition est fusionne dans
+			 * l'arbre de la session, avant meme
+			 * sr_apply_changes()) sous le code
+			 * SR_ERR_LY plutot que SR_ERR_VALIDATION_FAILED.
+			 * Sans ce cas, ces erreurs de donnees client
+			 * tombaient dans le "else" generique ci-dessous et
+			 * renvoyaient a tort un 500 Internal Server Error
+			 * au lieu du 400 Bad Request attendu par RFC 8040
+			 * Sec 7 (donnees non conformes au schema YANG).
+			 */
 			error_tag = "invalid-value";
 			http_status = 400;
 		} else if (rc == SR_ERR_LOCKED) {

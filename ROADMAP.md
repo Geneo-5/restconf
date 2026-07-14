@@ -26,13 +26,19 @@ des dernières sessions.
 | **5** | Extensions NMDA (RFC 8527) | 100% | 🟢 |
 | **6** | Notifications & SSE (RFC 8650) | 95% | 🟡 |
 | **7** | Monitoring & Modules YANG Conceptuels | 65% | 🟡 |
-| **8** | Tests h2c & Intégration CTest | 95% | 🟡 |
+| **8** | Tests h2c & Intégration CTest | 95%\* | 🟡 |
 
 *(⚪ À faire | 🟡 En cours | 🟢 Terminé | 🔴 Bloquant ; `[x]` fait,
 `[~]` partiel, `[ ]` à faire)*
 
 **État des tests (dernier run connu, 145 tests) : 143/145 (98.6%)
-attendu, à confirmer.** 2 échecs ouverts, cf. « Dette technique ».
+attendu, à confirmer.** 1 échec ouvert restant (`test_015_action_no_params`,
+bloqué par les actions YANG 1.1 commentées, cf. « Dette technique »).
+`test_008_put_modify_existing` (test_crud.py),
+`test_014_temperature_range`/`test_015_temperature_minimum`
+(test_oven.py) et `test_001_bad_request` (test_errors.py) corrigés
+cette session (cf. journal ci-dessous) — **à confirmer par
+`./scripts/build_test.sh`**.
 
 ---
 
@@ -102,7 +108,7 @@ suites CRUD (`test_crud.py`), NMDA (`test_nmda.py`), RPC
 
 | ID | Tâche | Statut | Note |
 | :--- | :--- | :---: | :--- |
-| 8.5 | Tests gestion erreurs | `[~]` | Revue de code seule (3 scénarios) ; à confirmer par exécution réelle |
+| 8.5 | Tests gestion erreurs | `[~]` | `test_008_put_modify_existing` : cause identifiée et corrigée cette session (cf. journal), à reconfirmer par exécution réelle. `test_015_action_no_params` toujours bloqué (actions YANG 1.1 commentées). Revue de code seule pour le reste ; à confirmer par exécution réelle |
 
 ---
 
@@ -110,7 +116,10 @@ suites CRUD (`test_crud.py`), NMDA (`test_nmda.py`), RPC
 
 | Sujet | Item(s) | Fichier(s) | État |
 | :--- | :---: | :--- | :--- |
-| **2 tests en échec** | 8.5 | `test/test_crud.py` | `test_008_put_modify_existing` (400 au lieu de 201/204/404) : PUT sur entrée de liste, cause non identifiée malgré relecture (`codec_parse_data()` semble structurellement identique au chemin POST déjà validé) — logger `RC_ERROR` déjà en place, lancer `build_test.sh --verbose` en priorité. `test_015_action_no_params` (415) : bloqué par les actions YANG 1.1 commentées dans `restconf-test.yang` (problème libyang 5.8.6, pas un bug serveur) |
+| **1 test en échec confirmé** | 8.5 | `test/test_crud.py` | `test_015_action_no_params` (415) : bloqué par les actions YANG 1.1 commentées dans `restconf-test.yang` (problème libyang 5.8.6, pas un bug serveur) — inchangé. |
+| **`test_008_put_modify_existing` — corrigé (à reconfirmer)** | 8.5 | `src/plugin/sysrepo_worker.c` | Cause identifiée : `process_edit()` appliquait chaque feuille individuellement via `sr_set_item_str(..., SR_EDIT_ISOLATE)` (fonction `worker_set_leaves_recursive()`, désormais supprimée) — le paramètre `default_op` ("replace" pour PUT) était calculé puis **jamais utilisé** (marqué `UNUSED`). Sur un PUT remplaçant une entrée de liste déjà existante, cette suite d'edits isolés pouvait produire plusieurs fragments de diff concurrents pour la même entrée (`interface[name='eth0']`), rejetés en validation par sysrepo (400). **Fix** : remplacement par `sr_edit_batch(sess, data, default_op)` (API sysrepo idiomate pour appliquer un arbre `lyd_node` complet en une seule opération atomique, avec l'opération par défaut correcte — "replace" pour PUT RFC 8040 §4.5, "merge" pour POST/PATCH §4.4/§4.6) suivi de `sr_apply_changes()`. Corrige potentiellement aussi la sémantique de remplacement PUT (jamais réellement honorée avant ce fix). **À confirmer par `./scripts/build_test.sh`.** |
+| **Régression `test_oven.py::test_014`/`test_015` — corrigée (même session)** | 8.5 | `src/plugin/sysrepo_worker.c` | Conséquence directe du fix `sr_edit_batch()` ci-dessus : une violation de contrainte de type libyang (range/pattern/length — ex. `oven:temperature` hors de `0..250`) est détectée par sysrepo **au moment de `sr_edit_batch()`** (fusion du batch dans l'arbre d'édition de la session) plutôt qu'à `sr_apply_changes()`, et remontée sous le code `SR_ERR_LY` (erreur libyang encapsulée) au lieu de `SR_ERR_VALIDATION_FAILED`. Le mapping erreur→HTTP de `process_edit()` ne connaissait pas `SR_ERR_LY` et retombait sur le cas générique 500. **Fix** : `SR_ERR_LY` ajouté au même groupe que `SR_ERR_VALIDATION_FAILED`/`SR_ERR_INVAL_ARG` → 400 (RFC 8040 Sec 7, données non conformes au schéma). **À confirmer par `./scripts/build_test.sh`.** |
+| **`test_001_bad_request` — corrigé (bug préexistant, sans rapport avec les fix ci-dessus)** | 8.5 | `src/plugin/sysrepo_worker.c` | `process_edit()` vérifiait "POST sur ressource existante -> 409" (RFC 8040 Sec 4.4) **avant** tout parsing du corps de la requête : un JSON malformé posté sur une ressource déjà existante (ex. `restconf-test:system`, peuplé par des tests antérieurs) renvoyait donc 409 au lieu du 400 attendu par RFC 8040 Sec 7.1 (une requête malformée doit être rejetée avant toute logique métier). **Fix** : le contrôle d'existence 409 est déplacé après le parsing réussi du corps (juste avant `sr_edit_batch()`) ; un corps malformé tombe désormais dans le chemin d'erreur de parsing standard (400) avant même d'atteindre ce contrôle. Comportement 409 pour un POST valide sur ressource existante inchangé (cf. `test_crud.py::test_012_post_existing_resource`). **À confirmer par `./scripts/build_test.sh`.** |
 | Souscription/receiver individuel | 6.1 | `sysrepo_plugin.c`, `main.c` | Un seul flux `NETCONF` diffuse tout ; pas de `xpath-filter` par souscription |
 | Replay mode Externe | 6.5.1 | `uds_gateway.c` | Stub `NULL` ; fallback live-only propre |
 | Hot-reload contexte libyang externe | 3.10.1 | `uds_gateway.c` | Contexte figé au démarrage du gateway |
@@ -121,12 +130,13 @@ suites CRUD (`test_crud.py`), NMDA (`test_nmda.py`), RPC
 
 ## 🎯 Prochaines Étapes (par priorité)
 
-1. **Diagnostiquer `test_008_put_modify_existing`** — nécessite une
-   exécution réelle de `./scripts/build_test.sh` (résultat dans build.log);
-   le log `RC_ERROR` de `codec_parse_data()` en cas d'échec libyang
-   est le point d'entrée le plus rapide.
+1. **Confirmer le fix `test_008_put_modify_existing`** — lancer
+   `./scripts/build_test.sh` pour valider que le passage à
+   `sr_edit_batch()` (cf. journal ci-dessus) fait bien passer ce test
+   à 201/204/404 comme attendu, sans régression sur `test_006`/`test_007`
+   ni les autres scénarios CRUD.
 2. **8.5** — Confirmer par exécution réelle (`ctest
-   -DBUILD_CTEST_INTEGRATION=ON`) les 3 scénarios d'erreur revus par
+   -DBUILD_CTEST_INTEGRATION=ON`) les scénarios d'erreur revus par
    lecture de code seule.
 3. **6.1 (suivi)** — `xpath-filter` RFC 8650 par souscription +
    corrélation ID↔flux SSE HTTP/2 (notion de "receiver").

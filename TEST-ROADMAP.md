@@ -14,23 +14,46 @@ Ce document liste **toutes les tâches** à implémenter pour valider la conform
 |-------|-------------|-----|-------------------|----------------|---------------|--------|
 | **1** | Infrastructure RESTCONF | RFC 8040 §2-3 | 15/15 | 15 | 0 | 🟢 **Terminé** |
 | **2** | Sécurité & JWT | RFC 8040 §4, RFC 7515-7519 | 15/15 | 15 | 0 | 🟢 **Terminé** |
-| **3** | Opérations CRUD | RFC 8040 §4.2-4.7 | 20/20 | 16 | 4 | 🟡 Partiel |
+| **3** | Opérations CRUD | RFC 8040 §4.2-4.7 | 20/20 | 20 | 0 | 🟢 **Terminé** |
 | **4** | Paramètres de Requête | RFC 8040 §4.8 | 15/15 | 15 | 0 | 🟢 **Terminé** |
-| **5** | RPC, Actions, Notifications | RFC 8040 §5-6, RFC 7950 §7.15-7.16 | 23/23 | 16 | 7 | 🟡 Partiel |
-| **6** | NMDA (Datastores) | RFC 8527 | 15/15 | 13 | 2 | 🟡 Partiel |
+| **5** | RPC, Actions, Notifications | RFC 8040 §5-6, RFC 7950 §7.15-7.16 | 23/23 | 17 | 6 | 🟡 Partiel |
+| **6** | NMDA (Datastores) | RFC 8527 | 15/15 | 15 | 0 | 🟢 **Terminé** |
 | **7** | Gestion des Erreurs | RFC 8040 §7 | 20/20 | 19 | 1 | 🟡 Partiel |
 | **8** | Sécurité Avancée | RFC 8341 | 15/15 | 15 | 0 | 🟢 **Terminé** |
-| **9** | Performance & Robustesse | RFC 8040 §8 | 12/12 | 12 | 0 | 🟢 **Terminé** |
+| **9** | Performance & Robustesse | RFC 8040 §8 | 12/12 | 10 | 2 | 🟡 Partiel |
 | **10** | Module oven (exemples) | - | 20/20 | 20 | 0 | 🟢 **Terminé** |
 
-**Total : 145/145 tests implémentés (100%)** | **133 tests passent ✅, 12 échouent ❌ (91.7%)** → **~143 attendus après corrections (98.6%)**
+**Total : 145/145 tests implémentés (100%)** | **136 tests passent ✅, 9 échouent ❌ (93.8%)**
 
-**Note sur les échecs** : Les 12 tests qui échouent se répartissent en :
-- **RPC (5 tests)** : `process_rpc()` retourne 500 Internal Server Error — `sysrepo-plugind` non lancé pendant les tests → **CORRIGÉ**
-- **CRUD (4 tests)** : POST sur liste retourne 400, PUT sur entrée de liste retourne 400, POST sur ressource existante retourne 201 au lieu de 409/405, mandatory leaf non validé → **3/4 CORRIGÉS**
-- **NMDA (1 test)** : routeur `/restconf/ds/` accepte tout chemin (200 au lieu de 404) → **CORRIGÉ**
-- **Actions (1 test)** : POST sur action retourne 415 Unsupported Media Type
-- **Conflict (1 test)** : POST sur ressource existante retourne 201 → **CORRIGÉ**
+**Exécution réelle confirmée (2026-07-14, `./scripts/build_test.sh`)** : 136 passed, 9 failed en
+89.03s. Les compteurs par phase ci-dessus recoupent le nombre de
+tests de chaque fichier (Phase 8 = inclus dans le fichier de Phase 2,
+cf. note plus bas) avec les 9 échecs listés individuellement dans
+« Note sur les échecs ».
+
+**Note sur les échecs (9 tests, run du 2026-07-14)** :
+- **RPC (6 tests, `test_rpc.py`)** : `TestRPCWithoutParams::test_002_rpc_no_params`,
+  `TestRPCWithParams::test_003_rpc_with_params`,
+  `TestRPCWithParams::test_004_rpc_mandatory_param`,
+  `TestRPCCrud::test_007_rpc_output`,
+  `TestRPCCrud::test_008_rpc_no_output` — causes **à diagnostiquer**
+  (le journal precedent de ce document affirmait ces tests
+  « CORRIGÉS » suite à un lancement de `sysrepo-plugind` ; l'exécution
+  réelle du 2026-07-14 contredit cette affirmation — à reprendre
+  depuis zéro, cf. Phase 5 ci-dessous). `TestActions::test_015_action_no_params`
+  (415) reste bloqué par les actions YANG 1.1 commentées dans
+  `restconf-test.yang` (problème libyang 5.8.6, cf. ROADMAP.md).
+- **Performance (2 tests, `test_performance.py`)** : `TestLargePayload::test_003_large_payload`,
+  `TestLargePayload::test_004_very_large_payload` — cause à
+  diagnostiquer ; possiblement lié au cap de corps de requête 16 MiB
+  (ROADMAP.md item 7.3) ou à son interaction avec le comportement 413
+  attendu.
+- **Erreurs (1 test, `test_errors.py`)** : `TestError4xxClientErrors::test_008_payload_too_large`
+  — probablement corrélé aux deux échecs de performance ci-dessus
+  (même zone : cap de taille de corps de requête / réponse 413).
+- **CRUD (0 test, `test_crud.py`)** — tous les tests passent désormais
+  (`test_008_put_modify_existing` corrigé, cf. ROADMAP.md).
+- **NMDA (0 test, `test_nmda.py`)** — tous les tests passent.
 
 ---
 
