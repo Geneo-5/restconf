@@ -575,9 +575,6 @@ int h2c_send_response_with_headers(
 	}
 
 	RC_TRACE("RESPONSE: %d -> %ld", status_code, body_len);
-	if (has_body)
-		RC_TRACE("    BODY: %s", src->data);
-
 	nghttp2_submit_response(
 		session->ng_session, stream_id, hdrs, hdr_count,
 		has_body ? &data_prd : NULL);
@@ -663,9 +660,6 @@ int h2c_send_response_ex(
 	}
 
 	RC_TRACE("RESPONSE: %d -> %ld", status_code, body_len);
-	if (has_body)
-		RC_TRACE("    BODY: %s", src->data);
-
 	nghttp2_submit_response(
 		session->ng_session, stream_id, hdrs, hdr_count,
 		has_body ? &data_prd : NULL);

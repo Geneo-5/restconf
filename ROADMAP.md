@@ -157,7 +157,15 @@ suites CRUD (`test_crud.py`), NMDA (`test_nmda.py`), RPC
 
 ## 🎯 Prochaines Étapes (par priorité)
 
-1. **8.6 (bloquant)** — Diagnostiquer le 404 systémique du mode
+0. **3 (bloquant)** - Passer restconf:capability basic-mode de
+   `report-all` à `trim`. Ajuster `codec_serialize_data_wd` et
+   le comportement des tests.
+0.1. **Utiliser libevent** pour gérer les taches dans
+     `src/plugin/sysrepo_worker.c`
+0.2. **Utiliser Bufferevents** pour géger les buffers
+0.3. **SIGTERM** gérer les signeaux et terminer (libérer la
+     mémoire correctement) a la reception d'un SIGTERM.
+1. **8.6** — Diagnostiquer le 404 systémique du mode
    Externe sur `GET ietf-yang-library:modules-state` : inspecter les
    logs de démarrage de `restconf-plugin` et de `sysrepo-plugind`
    pour le run de test concerné, vérifier `sysrepoctl -l` (module

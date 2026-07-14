@@ -524,8 +524,6 @@ static void on_restconf_request(
 	rc_request_t req = {0};
 
 	RC_TRACE("REQUEST: %s %s -> %ld", method, path, body_len);
-	if (body)
- 		RC_TRACE("   BODY: %s", body);
 
 	/* 1. Extraction des headers HTTP/2 */
 	const char *auth_header = h2c_session_get_header(
