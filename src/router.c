@@ -325,6 +325,15 @@ static int parse_query_params(
 			parse_rfc3339(val, &req->start_time);
 		} else if (strcmp(key, "stop-time") == 0) {
 			parse_rfc3339(val, &req->stop_time);
+		} else if (strcmp(key, "filter") == 0) {
+			/* RFC 8040 Sec 4.8.4, autorise sur les event
+			 * streams par Sec 6.3 (ROADMAP.md item 6.1
+			 * suivi). Valeur prise telle quelle (pas de
+			 * percent-decoding, comme content_filter/
+			 * fields_expr ci-dessus) : c'est une expression
+			 * XPath, evaluee plus tard par lyd_find_xpath()
+			 * cote main.c. */
+			req->notif_filter = strdup(val);
 		}
 
 		param = strtok_r(NULL, "&", &saveptr);
@@ -563,4 +572,5 @@ void router_free_request(rc_request_t *req) {
 	free(req->with_defaults);
 	free(req->username);
 	free(req->if_match);
+	free(req->notif_filter);
 }

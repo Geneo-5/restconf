@@ -55,7 +55,17 @@ void plugin_handle_rpc(
 
 typedef void (*plugin_notif_cb)(
 	const char *module_name, const char *xpath,
-	const char *payload, void *user_data);
+	const char *payload, const struct lyd_node *notif,
+	void *user_data);
+/* @p notif : noeud lyd_node de la notification source, pour
+ * permettre au fan-out SSE (main.c) d'evaluer un filtre XPath
+ * par-souscription (RFC 8040 Sec 4.8.4/6.3, ROADMAP.md item 6.1
+ * suivi) via lyd_find_xpath(). NULL en mode Externe (uds_gateway.c
+ * dispatch_ipc_response()) : le processus gateway ne recoit que le
+ * payload deja serialise via IPC_MSG_NOTIF_PUSH, jamais le noeud
+ * libyang source -- un filtre demande y est donc actuellement
+ * ignore (notification livree non filtree), cf. dette technique
+ * ROADMAP.md. */
 
 void plugin_subscribe_notifications(
 	plugin_ctx_t *ctx, plugin_notif_cb callback,

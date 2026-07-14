@@ -177,10 +177,17 @@ static void dispatch_ipc_response(
 		    uds_proto_get_str(
 				payload, len, &pos, &notif_payload) == 0 &&
 		    ctx->notif_cb) {
+			/* Mode Externe : aucun noeud lyd_node disponible
+			 * (cf. plugin_notif_cb dans plugin_api.h) -- un
+			 * filtre XPath par-souscription (ROADMAP.md item
+			 * 6.1 suivi) ne peut donc pas etre evalue ici et
+			 * est ignore par le fan-out SSE (main.c), qui livre
+			 * alors la notification non filtree. */
 			ctx->notif_cb(
 				module_name ? module_name : "",
 				xpath ? xpath : "",
 				notif_payload ? notif_payload : "",
+				NULL,
 				ctx->notif_user_data);
 		}
 		free(module_name);

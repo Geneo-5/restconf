@@ -26,19 +26,37 @@ des dernières sessions.
 | **5** | Extensions NMDA (RFC 8527) | 100% | 🟢 |
 | **6** | Notifications & SSE (RFC 8650) | 95% | 🟡 |
 | **7** | Monitoring & Modules YANG Conceptuels | 65% | 🟡 |
-| **8** | Tests h2c & Intégration CTest | 95%\* | 🟡 |
+| **8** | Tests h2c & Intégration CTest | 90%\* | 🔴 |
 
 *(⚪ À faire | 🟡 En cours | 🟢 Terminé | 🔴 Bloquant ; `[x]` fait,
 `[~]` partiel, `[ ]` à faire)*
 
-**État des tests (dernier run connu, 145 tests) : 143/145 (98.6%)
-attendu, à confirmer.** 1 échec ouvert restant (`test_015_action_no_params`,
-bloqué par les actions YANG 1.1 commentées, cf. « Dette technique »).
-`test_008_put_modify_existing` (test_crud.py),
-`test_014_temperature_range`/`test_015_temperature_minimum`
-(test_oven.py) et `test_001_bad_request` (test_errors.py) corrigés
-cette session (cf. journal ci-dessous) — **à confirmer par
-`./scripts/build_test.sh`**.
+**État des tests (mode Interne, run réel confirmé cette session) :
+136/145 (93.8%)** — `./scripts/build_test.sh` (mode Interne). Les 3
+correctifs de la session précédente (`test_008_put_modify_existing`,
+`test_014`/`test_015` de `test_oven.py`, `test_001_bad_request`)
+sont **confirmés passants**. 9 échecs restants, dont 1 attendu
+(`test_015_action_no_params`, cf. « Dette technique ») et 8
+nouveaux, non encore investigués : `test_008_payload_too_large`
+(`test_errors.py`), `test_003`/`test_004_*_payload` (`test_performance.py`),
+`test_002_rpc_no_params`/`test_003_rpc_with_params`/
+`test_004_rpc_mandatory_param`/`test_007_rpc_output`/
+`test_008_rpc_no_output` (`test_rpc.py`, tous `assert 500`) — cf.
+nouvelle entrée « Dette technique » ci-dessous.
+
+**Mode Externe : 114/145 échoués, bloquant.** La quasi-totalité de
+la suite échoue en cascade car `GET
+/restconf/data/ietf-yang-library:modules-state` (utilisé par le
+fixture `conftest.py::_fetch_installed_modules`, appelé par presque
+tous les tests) renvoie 404 au lieu de 200. Investigation : le code
+de traitement (`process_get()` dans `sysrepo_worker.c`) est
+identique bit-à-bit entre les deux modes (même fichier compilé dans
+les deux binaires) ; l'hypothèse la plus probable est un
+environnement/dépôt sysrepo différent entre les deux runs (module
+`ietf-yang-library` absent/désactivé, ou `SYSREPO_REPOSITORY_PATH`
+incohérent) plutôt qu'un bug de code spécifique au mode Externe —
+à confirmer côté logs du démon `restconf-plugin`. Cf. nouvelle
+entrée « Dette technique » (**bloquant**, item 8.6).
 
 ---
 
@@ -87,7 +105,7 @@ datastore (405 lecture seule, 404 identityref inconnue), `GET
 ### Phase 6 : Notifications & SSE (RFC 8650) — 🟡 95%
 | ID | Tâche | Statut | Note |
 | :--- | :--- | :---: | :--- |
-| 6.1 | `establish-subscription` + découverte multi-modules, `IPC_MSG_NOTIF_PUSH` bidirectionnel | `[~]` | Un seul flux conceptuel `NETCONF` ; pas de `xpath-filter` par souscription individuelle ni de corrélation ID↔flux SSE (cf. 6.1 suivi) |
+| 6.1 | `establish-subscription` + découverte multi-modules, `IPC_MSG_NOTIF_PUSH` bidirectionnel, filtre `?filter=` (XPath, RFC 8040 §4.8.4/6.3) | `[~]` | Un seul flux conceptuel `NETCONF` ; filtre XPath par-souscription évalué via `lyd_find_xpath()` sur le noeud de notification en mode **Interne** (cf. 6.1.1 pour la limite mode Externe) ; pas encore de corrélation ID↔flux SSE (cf. 6.1 suivi) |
 | 6.2–6.4 | Ouverture stream SSE, push async, keep-alive | `[x]` | - |
 | 6.5 | Replay (`start-time`/`stop-time`, RFC 3339) | `[x]` 🟢 | Souscription sysrepo dédiée par client en mode **Interne** ; **mode Externe non supporté** (fallback live-only, cf. 6.5.1) |
 
@@ -108,7 +126,8 @@ suites CRUD (`test_crud.py`), NMDA (`test_nmda.py`), RPC
 
 | ID | Tâche | Statut | Note |
 | :--- | :--- | :---: | :--- |
-| 8.5 | Tests gestion erreurs | `[~]` | `test_008_put_modify_existing` : cause identifiée et corrigée cette session (cf. journal), à reconfirmer par exécution réelle. `test_015_action_no_params` toujours bloqué (actions YANG 1.1 commentées). Revue de code seule pour le reste ; à confirmer par exécution réelle |
+| 8.5 | Tests gestion erreurs | `[~]` | `test_008_put_modify_existing`, `test_014`/`test_015` (`test_oven.py`), `test_001_bad_request` : **confirmés passants** par exécution réelle cette session (mode Interne, 136/145). `test_015_action_no_params` toujours bloqué (actions YANG 1.1 commentées). 8 nouveaux échecs non encore investigués (RPC 500, payload trop volumineux) — cf. items 8.5.1/8.5.2 |
+| **8.6** | **Mode Externe — suite de tests** | `[ ]` 🔴 | **Bloquant** : 114/145 échous en cascade, cf. État des tests ci-dessus et dette technique |
 
 ---
 
@@ -117,10 +136,14 @@ suites CRUD (`test_crud.py`), NMDA (`test_nmda.py`), RPC
 | Sujet | Item(s) | Fichier(s) | État |
 | :--- | :---: | :--- | :--- |
 | **1 test en échec confirmé** | 8.5 | `test/test_crud.py` | `test_015_action_no_params` (415) : bloqué par les actions YANG 1.1 commentées dans `restconf-test.yang` (problème libyang 5.8.6, pas un bug serveur) — inchangé. |
-| **`test_008_put_modify_existing` — corrigé (à reconfirmer)** | 8.5 | `src/plugin/sysrepo_worker.c` | Cause identifiée : `process_edit()` appliquait chaque feuille individuellement via `sr_set_item_str(..., SR_EDIT_ISOLATE)` (fonction `worker_set_leaves_recursive()`, désormais supprimée) — le paramètre `default_op` ("replace" pour PUT) était calculé puis **jamais utilisé** (marqué `UNUSED`). Sur un PUT remplaçant une entrée de liste déjà existante, cette suite d'edits isolés pouvait produire plusieurs fragments de diff concurrents pour la même entrée (`interface[name='eth0']`), rejetés en validation par sysrepo (400). **Fix** : remplacement par `sr_edit_batch(sess, data, default_op)` (API sysrepo idiomate pour appliquer un arbre `lyd_node` complet en une seule opération atomique, avec l'opération par défaut correcte — "replace" pour PUT RFC 8040 §4.5, "merge" pour POST/PATCH §4.4/§4.6) suivi de `sr_apply_changes()`. Corrige potentiellement aussi la sémantique de remplacement PUT (jamais réellement honorée avant ce fix). **À confirmer par `./scripts/build_test.sh`.** |
-| **Régression `test_oven.py::test_014`/`test_015` — corrigée (même session)** | 8.5 | `src/plugin/sysrepo_worker.c` | Conséquence directe du fix `sr_edit_batch()` ci-dessus : une violation de contrainte de type libyang (range/pattern/length — ex. `oven:temperature` hors de `0..250`) est détectée par sysrepo **au moment de `sr_edit_batch()`** (fusion du batch dans l'arbre d'édition de la session) plutôt qu'à `sr_apply_changes()`, et remontée sous le code `SR_ERR_LY` (erreur libyang encapsulée) au lieu de `SR_ERR_VALIDATION_FAILED`. Le mapping erreur→HTTP de `process_edit()` ne connaissait pas `SR_ERR_LY` et retombait sur le cas générique 500. **Fix** : `SR_ERR_LY` ajouté au même groupe que `SR_ERR_VALIDATION_FAILED`/`SR_ERR_INVAL_ARG` → 400 (RFC 8040 Sec 7, données non conformes au schéma). **À confirmer par `./scripts/build_test.sh`.** |
-| **`test_001_bad_request` — corrigé (bug préexistant, sans rapport avec les fix ci-dessus)** | 8.5 | `src/plugin/sysrepo_worker.c` | `process_edit()` vérifiait "POST sur ressource existante -> 409" (RFC 8040 Sec 4.4) **avant** tout parsing du corps de la requête : un JSON malformé posté sur une ressource déjà existante (ex. `restconf-test:system`, peuplé par des tests antérieurs) renvoyait donc 409 au lieu du 400 attendu par RFC 8040 Sec 7.1 (une requête malformée doit être rejetée avant toute logique métier). **Fix** : le contrôle d'existence 409 est déplacé après le parsing réussi du corps (juste avant `sr_edit_batch()`) ; un corps malformé tombe désormais dans le chemin d'erreur de parsing standard (400) avant même d'atteindre ce contrôle. Comportement 409 pour un POST valide sur ressource existante inchangé (cf. `test_crud.py::test_012_post_existing_resource`). **À confirmer par `./scripts/build_test.sh`.** |
-| Souscription/receiver individuel | 6.1 | `sysrepo_plugin.c`, `main.c` | Un seul flux `NETCONF` diffuse tout ; pas de `xpath-filter` par souscription |
+| **`test_008_put_modify_existing` — CONFIRMÉ** | 8.5 | `src/plugin/sysrepo_worker.c` | Cause identifiée : `process_edit()` appliquait chaque feuille individuellement via `sr_set_item_str(..., SR_EDIT_ISOLATE)` (fonction `worker_set_leaves_recursive()`, désormais supprimée) — le paramètre `default_op` ("replace" pour PUT) était calculé puis **jamais utilisé** (marqué `UNUSED`). Sur un PUT remplaçant une entrée de liste déjà existante, cette suite d'edits isolés pouvait produire plusieurs fragments de diff concurrents pour la même entrée (`interface[name='eth0']`), rejetés en validation par sysrepo (400). **Fix** : remplacement par `sr_edit_batch(sess, data, default_op)` (API sysrepo idiomate pour appliquer un arbre `lyd_node` complet en une seule opération atomique, avec l'opération par défaut correcte — "replace" pour PUT RFC 8040 §4.5, "merge" pour POST/PATCH §4.4/§4.6) suivi de `sr_apply_changes()`. **Confirmé passant par `./scripts/build_test.sh` (mode Interne) cette session.** |
+| **Régression `test_oven.py::test_014`/`test_015` — CONFIRMÉE** | 8.5 | `src/plugin/sysrepo_worker.c` | Conséquence directe du fix `sr_edit_batch()` ci-dessus : une violation de contrainte de type libyang (range/pattern/length — ex. `oven:temperature` hors de `0..250`) est détectée par sysrepo **au moment de `sr_edit_batch()`** plutôt qu'à `sr_apply_changes()`, et remontée sous le code `SR_ERR_LY` (erreur libyang encapsulée) au lieu de `SR_ERR_VALIDATION_FAILED`. **Fix** : `SR_ERR_LY` ajouté au même groupe que `SR_ERR_VALIDATION_FAILED`/`SR_ERR_INVAL_ARG` → 400. **Confirmé passant cette session.** |
+| **`test_001_bad_request` — CONFIRMÉ** | 8.5 | `src/plugin/sysrepo_worker.c` | `process_edit()` vérifiait "POST sur ressource existante -> 409" (RFC 8040 Sec 4.4) **avant** tout parsing du corps de la requête. **Fix** : le contrôle d'existence 409 est déplacé après le parsing réussi du corps (juste avant `sr_edit_batch()`). **Confirmé passant cette session.** |
+| **RPC : 5 tests en échec (`assert 500`)** | 8.5.1 | `src/plugin/sysrepo_worker.c` (`process_rpc`), `test/test_rpc.py` | `test_002_rpc_no_params`, `test_003_rpc_with_params`, `test_004_rpc_mandatory_param`, `test_007_rpc_output`, `test_008_rpc_no_output` échouent avec un 500 en mode Interne (confirmé par exécution réelle cette session, non causé par les changements de cette session qui n'ont touché aucun chemin RPC). Cause non encore diagnostiquée : à investiguer via les logs serveur (`-v0` ou plus verbeux) pour identifier le `sr_strerror()` exact remonté par `sr_rpc_send_tree()` — candidats probables : callback RPC côté module `restconf-test.yang` manquant/non enregistré côté sysrepo, ou régression dans `codec_parse_rpc_input()`/`lyd_new_path()` sur le chemin RPC |
+| **Payload trop volumineux : 3 tests en échec** | 8.5.2 | `src/h2c_server.c`, `test/test_errors.py`, `test/test_performance.py` | `test_008_payload_too_large` (`test_errors.py`), `test_003_large_payload`/`test_004_very_large_payload` (`test_performance.py`) échouent en mode Interne. À vérifier : cohérence entre le cap 16 MiB introduit en 7.3 (`H2C_MAX_REQUEST_BODY_SIZE`) et les tailles de payload attendues par ces tests (soit le cap est mal appliqué, soit les tests attendent une limite différente) |
+| **Mode Externe : suite de tests bloquée (114/145)** | 8.6 | `src/plugin/sysrepo_worker.c`, `src/ipc/uds_plugin.c`, environnement | `GET /restconf/data/ietf-yang-library:modules-state` renvoie 404 au lieu de 200 en mode Externe, faisant échouer en cascade la quasi-totalité de la suite via le fixture `conftest.py::_fetch_installed_modules`. Le code de traitement (`process_get()`) est partagé à l'identique entre les deux modes (même `sysrepo_worker.c` compilé dans les deux binaires), donc la cause la plus probable n'est **pas** un bug de code spécifique au mode Externe mais un environnement sysrepo différent entre les deux runs (module `ietf-yang-library` non installé/activé pour ce run, ou `SYSREPO_REPOSITORY_PATH`/socket sysrepo incohérent entre `sysrepo-plugind` et `restconf-plugin`) — à confirmer via les logs de démarrage de `restconf-plugin` (le code retourné exact de `sr_get_data()` pour ce xpath) avant toute correction de code |
+| Souscription/receiver individuel | 6.1 | `sysrepo_plugin.c`, `main.c` | Un seul flux `NETCONF` diffuse tout ; corrélation ID (retourné par `establish-subscription`) ↔ flux SSE HTTP/2 toujours absente (un client doit ouvrir lui-même `GET /streams/NETCONF`) |
+| Filtre `?filter=` non appliqué en mode Externe | 6.1.1 | `uds_plugin.c`, `uds_gateway.c` | Le noeud `lyd_node` de la notification n'existe que côté daemon (connexion sysrepo) ; le fan-out SSE (qui connaît les filtres par client) vit côté gateway, sans accès à ce noeud (seul le payload sérialisé traverse l'IPC). Un filtre demandé en mode Externe est donc actuellement ignoré (notification livrée non filtrée, pas d'erreur) ; corriger nécessiterait de propager le filtre jusqu'au daemon (nouveau champ IPC) et d'y évaluer `lyd_find_xpath()` avant sérialisation, par destinataire |
 | Replay mode Externe | 6.5.1 | `uds_gateway.c` | Stub `NULL` ; fallback live-only propre |
 | Hot-reload contexte libyang externe | 3.10.1 | `uds_gateway.c` | Contexte figé au démarrage du gateway |
 | Limites ressources non configurables | 7.3.1 | `h2c_server.c` | `H2C_MAX_REQUEST_BODY_SIZE`/`MAX_CONCURRENT_STREAMS` en `#define` ; pas de limite par IP/utilisateur |
@@ -130,21 +153,35 @@ suites CRUD (`test_crud.py`), NMDA (`test_nmda.py`), RPC
 
 ## 🎯 Prochaines Étapes (par priorité)
 
-1. **Confirmer le fix `test_008_put_modify_existing`** — lancer
-   `./scripts/build_test.sh` pour valider que le passage à
-   `sr_edit_batch()` (cf. journal ci-dessus) fait bien passer ce test
-   à 201/204/404 comme attendu, sans régression sur `test_006`/`test_007`
-   ni les autres scénarios CRUD.
-2. **8.5** — Confirmer par exécution réelle (`ctest
-   -DBUILD_CTEST_INTEGRATION=ON`) les scénarios d'erreur revus par
-   lecture de code seule.
-3. **6.1 (suivi)** — `xpath-filter` RFC 8650 par souscription +
-   corrélation ID↔flux SSE HTTP/2 (notion de "receiver").
-4. **6.5.1 (suivi)** — Replay en mode Externe (message IPC dédié) +
+1. **8.6 (bloquant)** — Diagnostiquer le 404 systémique du mode
+   Externe sur `GET ietf-yang-library:modules-state` : inspecter les
+   logs de démarrage de `restconf-plugin` et de `sysrepo-plugind`
+   pour le run de test concerné, vérifier `sysrepoctl -l` (module
+   `ietf-yang-library` installé/activé) et la cohérence de
+   `SYSREPO_REPOSITORY_PATH` entre les deux processus, avant
+   d'envisager un correctif de code.
+2. **8.5.1** — Investiguer les 5 échecs RPC (`assert 500`,
+   `test_rpc.py`) en mode Interne : ajouter du logging autour de
+   `sr_rpc_send_tree()` dans `process_rpc()` (`sysrepo_worker.c`)
+   pour capturer le code d'erreur sysrepo exact.
+3. **8.5.2** — Investiguer les 3 échecs liés aux payloads volumineux
+   (`test_errors.py::test_008_payload_too_large`,
+   `test_performance.py::test_003`/`test_004`) : vérifier la valeur
+   du cap `H2C_MAX_REQUEST_BODY_SIZE` (7.3) contre les tailles
+   attendues par ces tests.
+4. **8.5** — Confirmer par exécution réelle (`ctest
+   -DBUILD_CTEST_INTEGRATION=ON`) les scénarios d'erreur restants.
+5. **6.1 (suivi)** — Corrélation ID↔flux SSE HTTP/2 (notion de
+   "receiver" RFC 8650) : le filtre XPath par-souscription
+   (`?filter=`) est désormais implémenté en mode Interne ; reste la
+   corrélation entre l'`id` retourné par `establish-subscription` et
+   un flux SSE HTTP/2 particulier, ainsi que la propagation du
+   filtre au mode Externe (cf. 6.1.1).
+6. **6.5.1 (suivi)** — Replay en mode Externe (message IPC dédié) +
    vérification automatique du `replay-support` sysrepo par module.
-5. **7.3.1 (suivi)** — Rendre configurables les limites HTTP/2
+7. **7.3.1 (suivi)** — Rendre configurables les limites HTTP/2
    (actuellement `#define`) ; limite par IP/utilisateur si besoin.
-6. **3.10.1 (suivi)** — Hot-reload du contexte libyang local du
+8. **3.10.1 (suivi)** — Hot-reload du contexte libyang local du
    gateway externe si le redémarrage systématique s'avère gênant.
 
 ---

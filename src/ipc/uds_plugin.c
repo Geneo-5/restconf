@@ -345,10 +345,20 @@ static void gw_conn_remove(
  * sr_subscription_process_events(), cf. sysrepo_plugin.c) : les
  * ecritures bufferevent_write() ci-dessous sont donc sans risque
  * vis-a-vis de la regle d'or #1 (AGENTS.md).
+ *
+ * @note @p notif (noeud lyd_node source, cf. plugin_api.h) n'est
+ * pas exploite ici : le filtre XPath par-souscription (ROADMAP.md
+ * item 6.1 suivi) est une notion par *client SSE*, connue
+ * uniquement du fan-out cote gateway (on_notification_cb() dans
+ * main.c), jamais du daemon qui ignore combien de gateways/clients
+ * sont en aval et avec quels filtres. Le daemon se contente donc
+ * de relayer le payload deja serialise tel quel (comportement
+ * inchange) ; cf. dette technique ROADMAP.md pour le mode Externe.
  */
 static void daemon_notif_push_cb(
 	const char *module_name, const char *xpath,
-	const char *payload, void *user_data)
+	const char *payload, const struct lyd_node *notif UNUSED,
+	void *user_data)
 {
 	ext_plugin_ctx_t *pctx = (ext_plugin_ctx_t *)user_data;
 	uint8_t stackbuf[1024];

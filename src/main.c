@@ -39,6 +39,13 @@ typedef struct sse_registry_entry_s {
 	 * on_notification_cb() ci-dessous, qui saute les entrees ayant
 	 * un replay_handle non-NULL pour eviter une double livraison). */
 	plugin_replay_sub_t *replay_handle;
+	/* RFC 8040 Sec 4.8.4 / 6.3 (ROADMAP.md item 6.1 suivi) : filtre
+	 * XPath optionnel demande par ce client (GET ?filter=...), ou
+	 * NULL si aucun filtre (comportement precedent : diffusion
+	 * inconditionnelle). Evalue par notif_matches_filter() ci-
+	 * dessous, uniquement quand le noeud lyd_node source est
+	 * disponible (mode Interne). */
+	char *xpath_filter;
 	/* Back-pointer necessaire pour fermer replay_handle et
 	 * s'auto-retirer du registre depuis on_replay_notification_cb(). */
 	app_context_t *app;
@@ -56,13 +63,16 @@ struct app_context_s {
  * @brief Enregistre un flux SSE nouvellement ouvert dans le
  * registre applicatif (cf. sse_registry_entry_s ci-dessus).
  *
+ * @param filter Filtre XPath optionnel (RFC 8040 Sec 4.8.4/6.3,
+ * ROADMAP.md item 6.1 suivi), copie en interne ; NULL si absent.
+ *
  * @return L'entree creee (pour que l'appelant puisse y attacher
  * une souscription de replay, cf. ROADMAP.md item 6.5), ou NULL
  * si l'allocation a echoue.
  */
 static sse_registry_entry_t *sse_registry_add(
 	app_context_t *app, const char *stream_name,
-	sse_stream_t *stream)
+	sse_stream_t *stream, const char *filter)
 {
 	sse_registry_entry_t *entry = calloc(1, sizeof(*entry));
 	if (!entry) return NULL;
@@ -70,6 +80,8 @@ static sse_registry_entry_t *sse_registry_add(
 	entry->stream_name = strdup(
 		(stream_name && *stream_name) ? stream_name : "NETCONF");
 	entry->stream = stream;
+	entry->xpath_filter = (filter && *filter) ?
+		strdup(filter) : NULL;
 	entry->app = app;
 	entry->next = app->sse_registry;
 	app->sse_registry = entry;
@@ -115,10 +127,53 @@ static void sse_registry_clear(app_context_t *app)
 				app->plugin_ctx, entry->replay_handle);
 		sse_stream_close(entry->stream);
 		free(entry->stream_name);
+		free(entry->xpath_filter);
 		free(entry);
 		entry = next;
 	}
 	app->sse_registry = NULL;
+}
+
+/**
+ * @brief Evalue le filtre XPath d'une entree SSE (RFC 8040 Sec
+ * 4.8.4/6.3, ROADMAP.md item 6.1 suivi) contre le noeud de
+ * notification source.
+ *
+ * @param notif Noeud lyd_node de la notification, ou NULL quand
+ * indisponible (mode Externe, cf. plugin_api.h) -- dans ce cas le
+ * filtre ne peut pas etre evalue et la notification est livree
+ * non filtree (degrade proprement plutot que de la supprimer a
+ * tort), comme documente dans la dette technique ROADMAP.md.
+ *
+ * @return true si la notification doit etre livree a cette
+ * entree (pas de filtre, filtre non evaluable, ou filtre
+ * satisfait), false si un filtre est present, evaluable, et ne
+ * matche pas.
+ */
+static bool notif_matches_filter(
+	const sse_registry_entry_t *entry,
+	const struct lyd_node *notif)
+{
+	struct ly_set *set = NULL;
+	bool matched;
+
+	if (!entry->xpath_filter) return true;
+	if (!notif) return true; /* non evaluable : ne pas filtrer */
+
+	if (lyd_find_xpath(notif, entry->xpath_filter, &set)
+	    != LY_SUCCESS) {
+		/* Expression XPath invalide : comportement conservateur
+		 * identique a "non evaluable" ci-dessus, pour ne jamais
+		 * priver silencieusement un client de notifications a
+		 * cause d'une expression malformee de sa part. */
+		RC_DEBUG("SSE filter: invalid xpath-filter '%s', "
+			"delivering unfiltered", entry->xpath_filter);
+		return true;
+	}
+
+	matched = (set && set->count > 0);
+	ly_set_free(set, NULL);
+	return matched;
 }
 
 /**
@@ -131,12 +186,16 @@ static void sse_registry_clear(app_context_t *app)
  * restconf-state/streams (cf. oper_get_cb), donc toute
  * notification est diffusée à tous les flux ouverts, quel que
  * soit @p module_name / @p xpath — non utilisés pour l'instant,
- * conservés pour un filtrage par stream/module futur.
+ * conservés pour un filtrage par stream/module futur. @p notif
+ * (ROADMAP.md item 6.1 suivi) sert en revanche déjà à évaluer le
+ * filtre XPath par-souscription de chaque entrée (cf.
+ * notif_matches_filter() ci-dessus).
  */
 static void on_notification_cb(
 	const char *module_name UNUSED,
 	const char *xpath UNUSED,
-	const char *payload, void *user_data)
+	const char *payload, const struct lyd_node *notif,
+	void *user_data)
 {
 	app_context_t *app = (app_context_t *)user_data;
 	sse_registry_entry_t **cur = &app->sse_registry;
@@ -156,6 +215,11 @@ static void on_notification_cb(
 			continue;
 		}
 
+		if (!notif_matches_filter(entry, notif)) {
+			cur = &entry->next;
+			continue;
+		}
+
 		if (sse_stream_push_event(
 				entry->stream, payload) != 0) {
 			/* Push échoué : le client a probablement
@@ -163,6 +227,7 @@ static void on_notification_cb(
 			*cur = entry->next;
 			sse_stream_close(entry->stream);
 			free(entry->stream_name);
+			free(entry->xpath_filter);
 			free(entry);
 			continue;
 		}
@@ -178,16 +243,21 @@ static void on_notification_cb(
  *
  * @p user_data est l'entree sse_registry_entry_s elle-meme (voir
  * l'appel a plugin_open_replay_subscription() dans
- * on_restconf_request(), cas RC_RES_EVENT_STREAM).
+ * on_restconf_request(), cas RC_RES_EVENT_STREAM). Le filtre XPath
+ * eventuel de cette entree (ROADMAP.md item 6.1 suivi) est evalue
+ * de la meme facon que pour le broadcast partage (cf.
+ * notif_matches_filter()).
  */
 static void on_replay_notification_cb(
 	const char *module_name UNUSED,
 	const char *xpath UNUSED,
-	const char *payload, void *user_data)
+	const char *payload, const struct lyd_node *notif,
+	void *user_data)
 {
 	sse_registry_entry_t *entry = (sse_registry_entry_t *)user_data;
 
 	if (!payload || !entry) return;
+	if (!notif_matches_filter(entry, notif)) return;
 
 	if (sse_stream_push_event(entry->stream, payload) != 0) {
 		/* Client deconnecte : meme logique "best effort" que
@@ -201,6 +271,7 @@ static void on_replay_notification_cb(
 				entry->replay_handle);
 		sse_stream_close(entry->stream);
 		free(entry->stream_name);
+		free(entry->xpath_filter);
 		free(entry);
 	}
 }
@@ -875,9 +946,12 @@ static void on_restconf_request(
 			 * enregistrer le flux dans le registre
 			 * applicatif pour qu'il reçoive les
 			 * notifications sysrepo poussées par
-			 * on_notification_cb() (cf. plus haut). */
+			 * on_notification_cb() (cf. plus haut). Le
+			 * filtre XPath eventuel (?filter=..., ROADMAP.md
+			 * item 6.1 suivi) est transmis pour etre evalue
+			 * a chaque notification par notif_matches_filter(). */
 			sse_registry_entry_t *entry = sse_registry_add(
-				app, req.xpath, stream);
+				app, req.xpath, stream, req.notif_filter);
 
 			/* RFC 8040 Sec 4.8.7 (ROADMAP.md item 6.5) :
 			 * si le client a demande un replay via

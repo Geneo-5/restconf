@@ -344,6 +344,7 @@ static void plugin_notif_event_cb(
 		module_name,
 		xpath_str ? xpath_str : "",
 		payload,
+		notif,
 		ctx->notif_user_data);
 
 	free(xpath_str);
@@ -389,6 +390,7 @@ static void plugin_replay_notif_cb(
 		module_name,
 		xpath_str ? xpath_str : "",
 		payload,
+		notif,
 		r->push_user_data);
 
 	free(xpath_str);

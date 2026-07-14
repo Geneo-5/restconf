@@ -61,6 +61,14 @@ typedef struct {
 	 * un timestamp RFC 3339 par parse_rfc3339() dans router.c. */
 	time_t start_time;
 	time_t stop_time;
+	/* RFC 8040 Sec 4.8.4 / Sec 6.3 (ROADMAP.md item 6.1 suivi) :
+	 * filtre XPath optionnel pour un flux d'evenements (GET
+	 * /streams/<name>?filter=...), NULL si absent. Evalue par
+	 * lyd_find_xpath() sur le noeud de notification (cf.
+	 * on_notification_cb() dans main.c) -- uniquement disponible
+	 * en mode Interne (cf. dette technique ROADMAP.md, mode
+	 * Externe n'a pas acces au noeud lyd_node). */
+	char *notif_filter;
 } rc_request_t;
 
 /**
