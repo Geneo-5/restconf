@@ -524,6 +524,7 @@ def server_process(server_extern_process):
         [
             #"gdb", "-ex", "run", "-ex", "bt", "--args",
             #"strace",
+            "valgrind", "--leak-check=full",
             server_bin,
             "-a", BIND_ADDR,
             "-p", str(PORT),

@@ -52,6 +52,7 @@ RUN apt-get update && apt-get install -y \
     python3 \
     strace \
     gdb \
+    valgrind \
     && rm -rf /var/lib/apt/lists/*
 
 # ==============================================================================

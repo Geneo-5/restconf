@@ -88,3 +88,34 @@ To run build and test, run :
 - `sysrepo` file descriptors (obtained via `sr_get_event_fd()`) are registered in `libevent` using `event_new(..., EV_READ)`.
 - When `sysrepo` has data/notifications, the FD triggers a `libevent` callback, which calls `sr_subscription_process_events()` **inside the main thread**.
 
+## 🧪 Testing Architecture
+
+### CRITICAL: Separation of Concerns for Test Module
+
+**`test/restconf-test.c`** is the **ONLY** file that must register callbacks on nodes from the `restconf-test.yang` module. This includes:
+- RPC handlers via `sr_rpc_subscribe_tree()`
+- Change subscription handlers via `sr_module_change_subscribe()`
+- Operation data providers via `sr_oper_get_items_subscribe()`
+
+**The RESTCONF server itself (`src/plugin/sysrepo_plugin.c` and `src/plugin/sysrepo_worker.c`) must NEVER register callbacks on `restconf-test.yang` nodes.**
+
+**Rationale:**
+- `restconf-test.yang` is a test-only module designed to validate the RESTCONF server's ability to route requests to external plugins
+- The server acts as a transparent gateway: it receives RESTCONF requests and forwards them to sysrepo via `sr_rpc_send_tree()`, `sr_get_data()`, etc.
+- sysrepo routes these calls to whichever plugin has registered the appropriate callbacks
+- In production, real YANG modules would be handled by real external plugins (network device drivers, configuration managers, etc.)
+- For testing, `test/restconf-test.c` simulates these external plugins
+
+**Loading Mechanism:**
+1. Build: `make test-install` compiles `test/restconf-test.c` into `restconf-test.so`
+2. Installation: The `.so` is copied to `/usr/lib/sysrepo/plugins/`
+3. Runtime: `sysrepo-plugind` (started by `entrypoint.sh`) automatically loads all `.so` files from that directory
+4. Plugin initialization: `sr_plugin_init_cb()` in `test/restconf-test.c` registers the 6 RPC callbacks and any other handlers
+5. Test execution: When the RESTCONF server receives a request for `/restconf/operations/restconf-test:*`, sysrepo routes it to the external plugin's callback
+
+**What happens if the server registers on test nodes:**
+- Duplicate callback registration → undefined behavior
+- Violates separation of concerns (gateway vs. business logic)
+- Makes it impossible to test the real plugin-loading scenario
+- Breaks the architectural principle that the server is a pure RESTCONF gateway
+

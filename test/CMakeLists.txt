@@ -79,8 +79,6 @@ if(BUILD_TEST_PLUGIN)
     # -----------------------------------------------------------------------
     
     # Chemin d'installation par defaut
-    set(PLUGIN_INSTALL_DIR "${CMAKE_INSTALL_PREFIX}/lib/sysrepo/plugins" 
-        CACHE PATH "Directory to install the test plugin")
     set(YANG_INSTALL_DIR "${CMAKE_INSTALL_PREFIX}/share/sysrepo/yang" 
         CACHE PATH "Directory to install the YANG modules")
     
@@ -97,7 +95,7 @@ if(BUILD_TEST_PLUGIN)
         COMMAND sysrepoctl -i "${CMAKE_SOURCE_DIR}/doc/test/modules/restconf-test.yang"
                 --init-data "${CMAKE_SOURCE_DIR}/doc/test/modules/restconf-test.json"
         
-        # Charger le plugin dans sysrepo
+        # Charger le plugin dans sysrepo-plugind/plugins/ (utilise sysrepo-plugind pour utiliser le bon path) 
         COMMAND  sysrepo-plugind -P "$<TARGET_FILE:${PLUGIN_NAME}>"
         
         DEPENDS ${PLUGIN_NAME}
@@ -112,7 +110,6 @@ if(BUILD_TEST_PLUGIN)
     message(STATUS "✅ Test plugin configured successfully")
     message(STATUS "    Plugin: ${PLUGIN_NAME}")
     message(STATUS "    Module: ${MODULE_NAME}")
-    message(STATUS "    Install dir: ${PLUGIN_INSTALL_DIR}")
     message(STATUS "")
     message(STATUS "    To build and install:")
     message(STATUS "      cmake -DBUILD_TEST_PLUGIN=ON ..")

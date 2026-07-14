@@ -814,29 +814,71 @@ static void process_edit(
 			 * desormais dans le "else" (SR_ERR_VALIDATION_FAILED
 			 * -> 400) plus bas, avant meme d'atteindre ce
 			 * controle d'existence.
+			 *
+			 * BUG CORRIGE (ROADMAP.md item 8.5.2,
+			 * test_errors.py::test_008_payload_too_large,
+			 * test_performance.py::test_003/004) : le
+			 * controle d'existence 409 s'appliquait
+			 * egalement aux POST sur des conteneurs YANG
+			 * (ex: /interfaces), qui peuvent legitemment
+			 * contenir plusieurs enfants (listes). Un POST
+			 * sur un conteneur non vide renvoyait 409 au
+			 * lieu d'ajouter des enfants. Le controle est
+			 * desormais limite aux noeuds de type "liste"
+			 * (LYS_LIST) ou "leaf" (LYS_LEAF/LYS_LEAFLIST)
+			 * -- les conteneurs (LYS_CONTAINER) et autres
+			 * noeuds parent sont exemptes de ce controle.
 			 */
 			if (strcmp(msg->method, "POST") == 0 &&
 			    msg->xpath) {
-				sr_data_t *existing = NULL;
-				int chk_rc = sr_get_data(
-					sess, msg->xpath, 0, 0, 0,
-					&existing);
-				if (chk_rc == SR_ERR_OK && existing &&
-				    existing->tree) {
-					sr_release_data(existing);
-					lyd_free_all(data);
-					worker_close_session(sess);
-					c->edit.status = 409;
-					c->edit.error_tag = safe_strdup(
-						"data-exists");
-					c->edit.error_msg = safe_strdup(
-						"Resource already "
-						"exists");
-					enqueue_completion(w, c);
-					return;
+				bool check_exists = true;
+				const struct ly_ctx *ly_ctx3 =
+					sr_acquire_context(w->conn);
+				if (ly_ctx3) {
+					const struct lysc_node *sn =
+						lys_find_path(
+							ly_ctx3, NULL,
+							msg->xpath, 0);
+					/* Skip 409 check for regular
+					 * (non-presence) containers: they
+					 * can always accept new children.
+					 * Presence containers still need
+					 * the check (RFC 8040 Sec 4.4). */
+					if (sn &&
+					    sn->nodetype == LYS_CONTAINER &&
+					    !(sn->flags & LYS_PRESENCE))
+						check_exists = false;
+					sr_release_context(w->conn);
 				}
-				if (existing)
-					sr_release_data(existing);
+
+				if (check_exists) {
+					sr_data_t *existing = NULL;
+					int chk_rc = sr_get_data(
+						sess, msg->xpath,
+						0, 0, 0, &existing);
+					if (chk_rc == SR_ERR_OK &&
+					    existing &&
+					    existing->tree) {
+						sr_release_data(
+							existing);
+						lyd_free_all(data);
+						worker_close_session(
+							sess);
+						c->edit.status = 409;
+						c->edit.error_tag =
+							safe_strdup(
+							"data-exists");
+						c->edit.error_msg =
+							safe_strdup(
+							"Resource already "
+							"exists");
+						enqueue_completion(w, c);
+						return;
+					}
+					if (existing)
+						sr_release_data(
+							existing);
+				}
 			}
 
 			const char *default_op = "merge";

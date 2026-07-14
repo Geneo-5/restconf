@@ -67,6 +67,13 @@ struct h2c_session_s {
 	 * l'application. */
 	bool body_oversized;
 	int32_t current_stream_id;
+	/* Reference counting: prevents session from being freed while
+	 * async callbacks are pending. Incremented when submitting a
+	 * request to worker, decremented when callback completes.
+	 * Session is only freed when ref_count == 0 AND connection is
+	 * closed (bev_event_cb triggered). */
+	int ref_count;
+	bool connection_closed;
 };
 
 struct h2c_server_s {
@@ -286,8 +293,32 @@ static void bev_read_cb(struct bufferevent *bev, void *ctx) {
 	nghttp2_session_send(h2_session->ng_session);
 }
 
+static void h2c_session_free_safe(h2c_session_t *h2_session)
+{
+	if (!h2_session) return;
+	
+	/* Only free if no pending callbacks */
+	if (h2_session->ref_count > 0) {
+		RC_DEBUG("h2c: session marked for deferred free "
+			"(ref_count=%d)", h2_session->ref_count);
+		h2_session->connection_closed = true;
+		return;
+	}
+	
+	RC_DEBUG("h2c: freeing session (ref_count=0)");
+	if (h2_session->ng_session) {
+		nghttp2_session_terminate_session(
+			h2_session->ng_session, NGHTTP2_NO_ERROR);
+		nghttp2_session_del(h2_session->ng_session);
+	}
+	if (h2_session->bev)
+		bufferevent_free(h2_session->bev);
+	free(h2_session->body);
+	free(h2_session);
+}
+
 static void bev_event_cb(
-	struct bufferevent *bev, short events, void *ctx)
+	struct bufferevent *bev UNUSED, short events, void *ctx)
 {
 	/* ROADMAP.md item 7.3 : BEV_EVENT_TIMEOUT survient quand le
 	 * timeout de lecture configure par h2c_server_set_idle_timeout()
@@ -300,12 +331,12 @@ static void bev_event_cb(
 		if (events & BEV_EVENT_TIMEOUT)
 			RC_DEBUG("h2c: closing idle connection "
 				"(read timeout)");
-		nghttp2_session_terminate_session(
-			h2_session->ng_session, NGHTTP2_NO_ERROR);
-		nghttp2_session_del(h2_session->ng_session);
-		bufferevent_free(bev);
-		free(h2_session->body);
-		free(h2_session);
+		
+		/* Clear bev pointer to prevent further callbacks */
+		h2_session->bev = NULL;
+		
+		/* Safe free: will defer if ref_count > 0 */
+		h2c_session_free_safe(h2_session);
 	}
 }
 
@@ -810,6 +841,33 @@ nghttp2_session *h2c_session_get_nghttp2(h2c_session_t *session)
 {
 	if (!session) return NULL;
 	return session->ng_session;
+}
+
+void h2c_session_ref(h2c_session_t *session)
+{
+	if (session)
+		session->ref_count++;
+}
+
+void h2c_session_unref(h2c_session_t *session)
+{
+	if (!session) return;
+	session->ref_count--;
+	if (session->ref_count <= 0 && session->connection_closed) {
+		/* Connection was closed while callbacks were pending */
+		RC_DEBUG("h2c: deferred session free (ref_count now 0)");
+		if (session->ng_session) {
+			nghttp2_session_del(session->ng_session);
+			session->ng_session = NULL;
+		}
+		free(session->body);
+		free(session);
+	}
+}
+
+bool h2c_session_is_alive(h2c_session_t *session)
+{
+	return session && !session->connection_closed;
 }
 
 const char *h2c_session_get_content_type(

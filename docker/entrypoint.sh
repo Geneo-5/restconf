@@ -15,6 +15,10 @@ if [[ " $@ " == *" -vv "* ]]; then
     sysrepoctl -L || true
 
     echo ""
+    echo "📋 Liste des plugins chargés:"
+    find / -type d -name "sysrepo-plugind" -exec ls -l {}/plugins \;
+
+    echo ""
     echo "🏃 Exécution des tests..."
     echo ""
 fi

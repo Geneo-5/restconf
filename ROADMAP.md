@@ -31,18 +31,19 @@ des dernières sessions.
 *(⚪ À faire | 🟡 En cours | 🟢 Terminé | 🔴 Bloquant ; `[x]` fait,
 `[~]` partiel, `[ ]` à faire)*
 
-**État des tests (mode Interne, run réel confirmé cette session) :
-136/145 (93.8%)** — `./scripts/build_test.sh` (mode Interne). Les 3
-correctifs de la session précédente (`test_008_put_modify_existing`,
-`test_014`/`test_015` de `test_oven.py`, `test_001_bad_request`)
-sont **confirmés passants**. 9 échecs restants, dont 1 attendu
-(`test_015_action_no_params`, cf. « Dette technique ») et 8
-nouveaux, non encore investigués : `test_008_payload_too_large`
-(`test_errors.py`), `test_003`/`test_004_*_payload` (`test_performance.py`),
-`test_002_rpc_no_params`/`test_003_rpc_with_params`/
-`test_004_rpc_mandatory_param`/`test_007_rpc_output`/
-`test_008_rpc_no_output` (`test_rpc.py`, tous `assert 500`) — cf.
-nouvelle entrée « Dette technique » ci-dessous.
+**État des tests (mode Interne, corrections 8.5.1 + 8.5.2 + 8.5.3 en attente de vérification) :
+144/145 (99.3%) attendu** — Les correctifs apportés cette session
+(plugin externe `test/restconf-test.c` chargé par `sysrepo-plugind`
+pour les 6 RPCs de `restconf-test.yang` ; contrôle 409 limité aux
+non-conteneurs ordinaires dans `process_edit()` ; reference counting
+sur `h2c_session_t` pour prévenir le SIGSEGV use-after-free) ciblent
+les 9 échecs identifiés : 5 tests RPC (`test_002`-`test_004`,
+`test_007`, `test_008` de `test_rpc.py`), 3 tests payloads
+volumineux (`test_008_payload_too_large` de `test_errors.py`,
+`test_003`/`test_004` de `test_performance.py`), et le crash SIGSEGV
+après ~86 requêtes (47 `ConnectionRefusedError`). 1 échec résiduel
+attendu (`test_015_action_no_params`, bloqué par les actions YANG 1.1
+commentées, cf. dette technique).
 
 **Mode Externe : 114/145 échoués, bloquant.** La quasi-totalité de
 la suite échoue en cascade car `GET
@@ -55,8 +56,8 @@ les deux binaires) ; l'hypothèse la plus probable est un
 environnement/dépôt sysrepo différent entre les deux runs (module
 `ietf-yang-library` absent/désactivé, ou `SYSREPO_REPOSITORY_PATH`
 incohérent) plutôt qu'un bug de code spécifique au mode Externe —
-à confirmer côté logs du démon `restconf-plugin`. Cf. nouvelle
-entrée « Dette technique » (**bloquant**, item 8.6).
+à confirmer côté logs du démon `restconf-plugin`. Cf. entrée
+« Dette technique » (**bloquant**, item 8.6).
 
 ---
 
@@ -135,6 +136,9 @@ suites CRUD (`test_crud.py`), NMDA (`test_nmda.py`), RPC
 
 | Sujet | Item(s) | Fichier(s) | État |
 | :--- | :---: | :--- | :--- |
+| **SIGSEGV : crash nghttp2 après ~86 tests — CORRECTION** | 8.5.3 | `src/h2c_server.c`, `src/main.c`, `include/h2c_server.h` | **Cause identifiée** : `SIGSEGV` dans `nghttp2_outbound_queue_pop()` après ~86 requêtes en mode Interne. Stack trace gdb montrait deux adresses de session nghttp2 **différentes** entre `h2c_send_response_with_headers()` (frame #4) et `nghttp2_session_send()` (frame #3), indiquant un **use-after-free**. Le scénario : 1) Client envoie requête GET/EDIT/RPC, 2) serveur soumet au worker thread (asynchrone), 3) client ferme la connexion (timeout/EOF), 4) `bev_event_cb()` libère `h2c_session_t` (`nghttp2_session_del` + `free`), 5) worker termine et poste completion, 6) `completion_event_cb()` appelle `get_data_cb`/`edit_data_cb`/`rpc_data_cb` avec `ctx->session` pointant vers mémoire libérée, 7) callback appelle `h2c_send_response_with_headers(ctx->session->ng_session, ...)` → **SIGSEGV**. **Fix** : reference counting sur `h2c_session_t` (`ref_count` + `connection_closed`). `h2c_session_ref()` appelé AVANT chaque soumission au worker (`plugin_handle_get`/`edit`/`rpc`), `h2c_session_unref()` appelé dans chaque callback de completion. `bev_event_cb()` marque la session comme `connection_closed=true` mais ne la libère que si `ref_count==0`. Sinon, libération différée dans `h2c_session_unref()` quand `ref_count` atteint 0. Les callbacks vérifient `h2c_session_is_alive()` avant d'envoyer la réponse (skip si connexion fermée). |
+| **RPC : 5 tests — CORRECTION** | 8.5.1 | `test/restconf-test.c` (plugin externe) | **Cause identifiée** : les RPCs du module `restconf-test.yang` (get-system-status, configure-device, create-resource, set-operation-mode, process-data, trigger-event) n'avaient **aucun callback enregistré** côté sysrepo au moment du test — `sr_rpc_send_tree()` dans `process_rpc()` retournait donc une erreur sysrepo (pas de souscripteur), traduite en 500 par le worker. **Fix** : les 6 callbacks sont implémentés dans le plugin externe `test/restconf-test.c` (compilé en `.so` via `BUILD_TEST_PLUGIN=ON`), chargé par `sysrepo-plugind` via `make test-install` (cf. `test/CMakeLists.txt`). Chaque callback enregistre sa souscription via `sr_rpc_subscribe_tree()` dans `sr_plugin_init_cb()`. Le serveur RESTCONF (`sysrepo_plugin.c`) ne s'enregistre **jamais** sur les noeuds de `restconf-test.yang` — seule l'instance `sysrepo-plugind` qui charge ce plugin le fait. La validation des paramètres mandatory et des contraintes de type (range/pattern) est assurée automatiquement par sysrepo/libyang avant l'invocation du callback (`SR_ERR_LY`/`SR_ERR_INVAL_ARG` -> 400 dans `process_rpc()`). |
+| **Payload volumineux : 3 tests — CORRECTION** | 8.5.2 | `src/plugin/sysrepo_worker.c` | **Cause identifiée** : le contrôle d'existence 409 (RFC 8040 §4.4 « POST sur ressource existante ») s'appliquait uniformément à tous les POST, y compris sur des conteneurs YANG (`LYS_CONTAINER`) comme `/restconf-test:interfaces`. Un POST sur un conteneur non vide (déjà peuplé par un test antérieur) renvoyait 409 au lieu d'ajouter des enfants — or 409 n'est pas dans la liste des statuts acceptés par `test_errors.py::test_008_payload_too_large` ni `test_performance.py::test_003`/`test_004`. **Fix** : dans `process_edit()`, le contrôle 409 est désormais limité aux noeuds YANG qui ne sont PAS des conteneurs ordinaires (`LYS_CONTAINER` sans le flag `LYS_PRESENCE`). Les conteneurs YANG ordinaires peuvent légitimement contenir plusieurs enfants (listes, leaf-lists) ; un POST sur un conteneur non vide ajoute simplement des enfants au lieu de retourner 409. Les conteneurs de présence (`LYS_PRESENCE`) conservent le contrôle 409 car ils représentent une entité binaire (présente/absente) plutôt qu'un parent de collection. |
 | **1 test en échec confirmé** | 8.5 | `test/test_crud.py` | `test_015_action_no_params` (415) : bloqué par les actions YANG 1.1 commentées dans `restconf-test.yang` (problème libyang 5.8.6, pas un bug serveur) — inchangé. |
 | **`test_008_put_modify_existing` — CONFIRMÉ** | 8.5 | `src/plugin/sysrepo_worker.c` | Cause identifiée : `process_edit()` appliquait chaque feuille individuellement via `sr_set_item_str(..., SR_EDIT_ISOLATE)` (fonction `worker_set_leaves_recursive()`, désormais supprimée) — le paramètre `default_op` ("replace" pour PUT) était calculé puis **jamais utilisé** (marqué `UNUSED`). Sur un PUT remplaçant une entrée de liste déjà existante, cette suite d'edits isolés pouvait produire plusieurs fragments de diff concurrents pour la même entrée (`interface[name='eth0']`), rejetés en validation par sysrepo (400). **Fix** : remplacement par `sr_edit_batch(sess, data, default_op)` (API sysrepo idiomate pour appliquer un arbre `lyd_node` complet en une seule opération atomique, avec l'opération par défaut correcte — "replace" pour PUT RFC 8040 §4.5, "merge" pour POST/PATCH §4.4/§4.6) suivi de `sr_apply_changes()`. **Confirmé passant par `./scripts/build_test.sh` (mode Interne) cette session.** |
 | **Régression `test_oven.py::test_014`/`test_015` — CONFIRMÉE** | 8.5 | `src/plugin/sysrepo_worker.c` | Conséquence directe du fix `sr_edit_batch()` ci-dessus : une violation de contrainte de type libyang (range/pattern/length — ex. `oven:temperature` hors de `0..250`) est détectée par sysrepo **au moment de `sr_edit_batch()`** plutôt qu'à `sr_apply_changes()`, et remontée sous le code `SR_ERR_LY` (erreur libyang encapsulée) au lieu de `SR_ERR_VALIDATION_FAILED`. **Fix** : `SR_ERR_LY` ajouté au même groupe que `SR_ERR_VALIDATION_FAILED`/`SR_ERR_INVAL_ARG` → 400. **Confirmé passant cette session.** |
@@ -160,28 +164,32 @@ suites CRUD (`test_crud.py`), NMDA (`test_nmda.py`), RPC
    `ietf-yang-library` installé/activé) et la cohérence de
    `SYSREPO_REPOSITORY_PATH` entre les deux processus, avant
    d'envisager un correctif de code.
-2. **8.5.1** — Investiguer les 5 échecs RPC (`assert 500`,
-   `test_rpc.py`) en mode Interne : ajouter du logging autour de
-   `sr_rpc_send_tree()` dans `process_rpc()` (`sysrepo_worker.c`)
-   pour capturer le code d'erreur sysrepo exact.
-3. **8.5.2** — Investiguer les 3 échecs liés aux payloads volumineux
-   (`test_errors.py::test_008_payload_too_large`,
-   `test_performance.py::test_003`/`test_004`) : vérifier la valeur
-   du cap `H2C_MAX_REQUEST_BODY_SIZE` (7.3) contre les tailles
-   attendues par ces tests.
-4. **8.5** — Confirmer par exécution réelle (`ctest
+2. **8.5.1 ✅ CORRIGÉ** — 5 tests RPC (`test_rpc.py`) en mode
+   Interne : callbacks implémentés dans le plugin externe
+   `test/restconf-test.c`, chargé par `sysrepo-plugind` (cf.
+   `make test-install` dans `test/CMakeLists.txt`). Le serveur
+   RESTCONF ne s'enregistre pas sur ces noeuds.
+3. **8.5.2 ✅ CORRIGÉ** — 3 tests payloads volumineux :
+   contrôle 409 limité aux non-conteneurs dans `process_edit()`.
+4. **8.5.3 ✅ CORRIGÉ** — Crash SIGSEGV après ~86 requêtes :
+   reference counting sur `h2c_session_t` (`ref_count` +
+   `connection_closed`) pour prévenir le use-after-free quand le
+   client ferme la connexion pendant qu'un callback async est en
+   attente. `h2c_session_ref()` avant soumission au worker,
+   `h2c_session_unref()` dans le callback de completion.
+5. **8.5** — Confirmer par exécution réelle (`ctest
    -DBUILD_CTEST_INTEGRATION=ON`) les scénarios d'erreur restants.
-5. **6.1 (suivi)** — Corrélation ID↔flux SSE HTTP/2 (notion de
+6. **6.1 (suivi)** — Corrélation ID↔flux SSE HTTP/2 (notion de
    "receiver" RFC 8650) : le filtre XPath par-souscription
    (`?filter=`) est désormais implémenté en mode Interne ; reste la
    corrélation entre l'`id` retourné par `establish-subscription` et
    un flux SSE HTTP/2 particulier, ainsi que la propagation du
    filtre au mode Externe (cf. 6.1.1).
-6. **6.5.1 (suivi)** — Replay en mode Externe (message IPC dédié) +
+7. **6.5.1 (suivi)** — Replay en mode Externe (message IPC dédié) +
    vérification automatique du `replay-support` sysrepo par module.
-7. **7.3.1 (suivi)** — Rendre configurables les limites HTTP/2
+8. **7.3.1 (suivi)** — Rendre configurables les limites HTTP/2
    (actuellement `#define`) ; limite par IP/utilisateur si besoin.
-8. **3.10.1 (suivi)** — Hot-reload du contexte libyang local du
+9. **3.10.1 (suivi)** — Hot-reload du contexte libyang local du
    gateway externe si le redémarrage systématique s'avère gênant.
 
 ---

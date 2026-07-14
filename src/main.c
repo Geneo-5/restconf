@@ -293,6 +293,13 @@ typedef struct {
  * to sysrepo/libyang to perform that serialization itself.
  *
  * RFC 8040 Sec 3.4.1: ETag header added to GET/HEAD responses.
+ *
+ * ROADMAP item 8.5.3: Check if session is still alive before sending
+ * response. If the client closed the connection while the worker was
+ * processing the request, we must not call h2c_send_response_with_headers()
+ * as the session may have been freed. The reference counting mechanism
+ * (h2c_session_ref/unref) prevents use-after-free, but we still skip
+ * sending the response to avoid unnecessary work.
  */
 static void get_data_cb(
 	int http_status, uint8_t *body, size_t body_len,
@@ -300,6 +307,18 @@ static void get_data_cb(
 	void *user_data)
 {
 	get_req_ctx_t *ctx = (get_req_ctx_t *)user_data;
+	
+	/* ROADMAP item 8.5.3: Decrement reference count first */
+	h2c_session_unref(ctx->session);
+	
+	/* Check if session is still alive (client may have disconnected) */
+	if (!h2c_session_is_alive(ctx->session)) {
+		RC_DEBUG("get_data_cb: session closed, skipping response");
+		if (body) free(body);
+		free(ctx);
+		return;
+	}
+	
 	const char *ctype = (ctx->accept_type == MEDIA_TYPE_XML) ?
 		"application/yang-data+xml" :
 		"application/yang-data+json";
@@ -364,6 +383,17 @@ static void edit_data_cb(
 	void *user_data)
 {
 	edit_req_ctx_t *ctx = (edit_req_ctx_t *)user_data;
+	
+	/* ROADMAP item 8.5.3: Decrement reference count first */
+	h2c_session_unref(ctx->session);
+	
+	/* Check if session is still alive (client may have disconnected) */
+	if (!h2c_session_is_alive(ctx->session)) {
+		RC_DEBUG("edit_data_cb: session closed, skipping response");
+		free(ctx->location);
+		free(ctx);
+		return;
+	}
 
 	(void)etag; /* TODO: return new ETag after successful edit */
 
@@ -404,12 +434,26 @@ typedef struct {
  * NOTE: meme decouplage transport que get_data_cb() : le plugin
  * renvoie directement le corps serialise de l'output du RPC/action
  * (RFC 8040 Sec 3.6.2), pret a etre relaye au client.
+ *
+ * ROADMAP item 8.5.3: Check session validity before sending response.
  */
 static void rpc_data_cb(
 	int http_status, uint8_t *body, size_t body_len,
 	void *user_data)
 {
 	rpc_req_ctx_t *ctx = (rpc_req_ctx_t *)user_data;
+	
+	/* ROADMAP item 8.5.3: Decrement reference count first */
+	h2c_session_unref(ctx->session);
+	
+	/* Check if session is still alive (client may have disconnected) */
+	if (!h2c_session_is_alive(ctx->session)) {
+		RC_DEBUG("rpc_data_cb: session closed, skipping response");
+		if (body) free(body);
+		free(ctx);
+		return;
+	}
+	
 	const char *ctype = (ctx->accept_type == MEDIA_TYPE_XML) ?
 		"application/yang-data+xml" :
 		"application/yang-data+json";
@@ -747,6 +791,9 @@ static void on_restconf_request(
 			ctx->accept_type = req.accept_type;
 			ctx->is_head = (strcmp(method, "HEAD") == 0);
 
+			/* ROADMAP item 8.5.3: Increment ref count before async call */
+			h2c_session_ref(session);
+
 			plugin_handle_get(
 				app->plugin_ctx, &req,
 				get_data_cb, ctx);
@@ -789,6 +836,9 @@ static void on_restconf_request(
 			} else {
 				ctx->location = NULL;
 			}
+
+			/* ROADMAP item 8.5.3: Increment ref count before async call */
+			h2c_session_ref(session);
 
 			plugin_handle_edit(
 				app->plugin_ctx, &req,
@@ -870,6 +920,9 @@ static void on_restconf_request(
 			rpc_ctx->session = session;
 			rpc_ctx->stream_id = stream_id;
 			rpc_ctx->accept_type = req.accept_type;
+
+			/* ROADMAP item 8.5.3: Increment ref count before async call */
+			h2c_session_ref(session);
 
 			plugin_handle_rpc(
 				app->plugin_ctx, &req,
@@ -1020,6 +1073,9 @@ static void on_restconf_request(
 		req.method = "COMMIT";
 		req.datastore = RC_DS_CANDIDATE;
 
+		/* ROADMAP item 8.5.3: Increment ref count before async call */
+		h2c_session_ref(session);
+
 		plugin_handle_edit(
 			app->plugin_ctx, &req,
 			NULL, 0,
@@ -1062,6 +1118,9 @@ static void on_restconf_request(
 		/* Override method to signal discard to worker */
 		req.method = "DISCARD";
 		req.datastore = RC_DS_CANDIDATE;
+
+		/* ROADMAP item 8.5.3: Increment ref count before async call */
+		h2c_session_ref(session);
 
 		plugin_handle_edit(
 			app->plugin_ctx, &req,

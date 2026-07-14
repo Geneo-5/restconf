@@ -121,6 +121,22 @@ struct event_base *h2c_server_get_event_base(h2c_server_t *server);
  */
 nghttp2_session *h2c_session_get_nghttp2(h2c_session_t *session);
 
+/**
+ * @brief Reference counting pour sessions h2c.
+ * 
+ * Ces fonctions previennent le crash SIGSEGV (ROADMAP item 8.5.3)
+ * quand une connexion est fermee pendant qu'un callback async
+ * (ex: worker thread) est en attente. La session n'est liberee
+ * que quand ref_count atteint 0 ET que la connexion est fermee.
+ * 
+ * @note h2c_session_ref() doit etre appele AVANT de soumettre une
+ * requete au worker. h2c_session_unref() doit etre appele dans le
+ * callback de completion.
+ */
+void h2c_session_ref(h2c_session_t *session);
+void h2c_session_unref(h2c_session_t *session);
+bool h2c_session_is_alive(h2c_session_t *session);
+
 /* Récupère un header HTTP/2 stocké (ex: Authorization) */
 const char *h2c_session_get_header(
 	h2c_session_t *session, const char *name);
