@@ -1,3 +1,12 @@
+# Build directories (CMake out-of-source)
+build/
+build-ext/
+
+# Editor swap/backup files
+*.swp
+*.swo
+*~
+
 # Prerequisites
 *.d
 
@@ -53,3 +62,9 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+*.swp
+.codex/
+.DS_Store
+build.log
+.help/
