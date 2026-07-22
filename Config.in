@@ -1,0 +1,30 @@
+################################################################################
+# SPDX-License-Identifier: LGPL-3.0-only
+#
+# This file is part of restconf.
+# Copyright (C) 2026 Loic JOURDHEUIL SELLIN
+################################################################################
+
+config RESTCONF_ASSERT
+	bool "Assertion"
+	default n
+
+config YANG_PATH
+	string "yang modules path"
+	default "/usr/share/yang/modules"
+
+choice
+	prompt "Select restconf sysrepo mode"
+	default SYSREPO_BUILTIN
+	config SYSREPO_PLUGIND
+		bool "Sysrepo plugin for plugind"
+	config SYSREPO_DAEMON
+		bool "Autonomous daemon"
+	config SYSREPO_BUILTIN
+		bool "Builtin to restconf daemon"
+endchoice
+
+config SYSREPO_PLUGIND_PATH
+	string "Sysrepo plugind path"
+	depends on SYSREPO_PLUGIND
+	default "/lib/sysrepo-plugind/plugins/"

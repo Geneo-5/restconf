@@ -1,0 +1,3 @@
+[submodule "res/ebuild"]
+	path = res/ebuild
+	url = https://github.com/grgbr/ebuild.git
