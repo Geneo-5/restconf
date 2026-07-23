@@ -26,7 +26,7 @@ endif # ($(filter y,$(CONFIG_RESTCONF_ASSERT)),)
 
 common-ldflags        := $(common-cflags) \
                          $(EXTRA_LDFLAGS) \
-                         -Wl,-z,start-stop-visibility=hidden
+                         -pthread -Wl,-z,start-stop-visibility=hidden
 
 ifneq ($(filter y,$(CONFIG_RESTCONF_ASSERT)),)
 common-ldflags        := $(filter-out -DNDEBUG,$(common-ldflags))
