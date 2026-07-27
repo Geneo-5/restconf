@@ -35,6 +35,8 @@ RUN apt-get update && apt-get install -y \
     strace \
     gdb \
     valgrind \
+    unzip \
+    kconfig-frontends \
     && rm -rf /var/lib/apt/lists/*
 
 # ==============================================================================
@@ -42,15 +44,10 @@ RUN apt-get update && apt-get install -y \
 # ==============================================================================
 WORKDIR /tmp/deps
 
-ARG LIBYANG_SRC=https://github.com/CESNET/libyang/archive/refs/tags/v5.8.6.tar.gz
-ARG SYSREPO_SRC=https://github.com/sysrepo/sysrepo/archive/refs/tags/v5.1.0.tar.gz
-ARG LIBEVENT_SRC=https://github.com/libevent/libevent/releases/download/release-2.1.13-stable/libevent-2.1.13-stable.tar.gz
-ARG NGHTTP2_SRC=https://github.com/nghttp2/nghttp2/releases/download/v1.69.0/nghttp2-1.69.0.tar.gz
-ARG LIBJWT_SRC=https://github.com/benmcollins/libjwt/releases/download/v3.6.1/libjwt-3.6.1.tar.xz
-
 # ----------------------------------------------------------------------------
 # 1. Compilation de libyang
 # ----------------------------------------------------------------------------
+ARG LIBYANG_SRC=https://github.com/CESNET/libyang/archive/refs/tags/v5.8.6.tar.gz
 RUN echo "🔨 Compilation de libyang..." && \
     wget -qO- ${LIBYANG_SRC} | tar xz && \
     cd libyang-* && \
@@ -68,6 +65,7 @@ RUN echo "🔨 Compilation de libyang..." && \
 # ----------------------------------------------------------------------------
 # 2. Compilation de sysrepo
 # ----------------------------------------------------------------------------
+ARG SYSREPO_SRC=https://github.com/sysrepo/sysrepo/archive/refs/tags/v5.1.0.tar.gz
 RUN echo "🔨 Compilation de sysrepo..." && \
     wget -qO- ${SYSREPO_SRC} | tar xz && \
     cd sysrepo-* && \
@@ -86,6 +84,7 @@ RUN echo "🔨 Compilation de sysrepo..." && \
 # ----------------------------------------------------------------------------
 # 3. Compilation de libevent
 # ----------------------------------------------------------------------------
+ARG LIBEVENT_SRC=https://github.com/libevent/libevent/releases/download/release-2.1.13-stable/libevent-2.1.13-stable.tar.gz
 RUN echo "🔨 Compilation de libevent..." && \
     wget -qO- ${LIBEVENT_SRC} | tar xz && \
     cd libevent-* && \
@@ -101,6 +100,7 @@ RUN echo "🔨 Compilation de libevent..." && \
 # ----------------------------------------------------------------------------
 # 4. Compilation de nghttp2
 # ----------------------------------------------------------------------------
+ARG NGHTTP2_SRC=https://github.com/nghttp2/nghttp2/releases/download/v1.69.0/nghttp2-1.69.0.tar.gz
 RUN echo "🔨 Compilation de nghttp2..." && \
     wget -qO- ${NGHTTP2_SRC} | tar xz && \
     cd nghttp2-* && \
@@ -118,6 +118,7 @@ RUN echo "🔨 Compilation de nghttp2..." && \
 # ----------------------------------------------------------------------------
 # 4. Compilation de libjwt
 # ----------------------------------------------------------------------------
+ARG LIBJWT_SRC=https://github.com/benmcollins/libjwt/releases/download/v3.6.1/libjwt-3.6.1.tar.xz
 RUN echo "🔨 Compilation de libjwt..." && \
     wget -qO- ${LIBJWT_SRC} | tar xJ && \
     cd libjwt-* && \
@@ -139,9 +140,42 @@ RUN echo "🔨 Compilation de libjwt..." && \
     make install && \
     ldconfig
 
+# ----------------------------------------------------------------------------
+# 5. Install ebuild
+# ----------------------------------------------------------------------------
+ARG EBUILD_SRC=https://github.com/grgbr/ebuild/archive/refs/heads/master.zip
+RUN echo "🔨 Install eBuild..." && \
+    wget -q ${EBUILD_SRC} && unzip master && rm master.zip && \
+    cd ebuild-* && \
+    make install DATADIR=/usr/share && \
+    chmod +x /usr/share/ebuild/scripts/*
+
+# ----------------------------------------------------------------------------
+# 6. Compilation de stroll
+# ----------------------------------------------------------------------------
+ARG STROLL_SRC=https://github.com/grgbr/stroll/archive/refs/heads/master.zip
+RUN echo "🔨 Compilation de stroll..." && \
+    wget -q ${STROLL_SRC} && unzip master && rm master.zip && \
+    cd stroll-* && \
+    make defconfig && \
+    make PREFIX=/usr -j$(nproc) && \
+    make PREFIX=/usr install && \
+    ldconfig
+
+# ----------------------------------------------------------------------------
+# 7. Compilation de utils
+# ----------------------------------------------------------------------------
+ARG UTILS_SRC=https://github.com/grgbr/utils/archive/refs/heads/master.zip
+RUN echo "🔨 Compilation de utils..." && \
+    wget -q ${UTILS_SRC} && unzip master && rm master.zip && \
+    cd utils-* && \
+    make defconfig && \
+    make PREFIX=/usr -j$(nproc) && \
+    make PREFIX=/usr install && \
+    ldconfig
+
 # Nettoyage des sources compilées pour réduire la taille de l'image
 RUN rm -rf /tmp/deps
-
 
 # ==============================================================================
 # Compilation du projet RESTCONF principal

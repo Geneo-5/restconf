@@ -1,4 +1,3 @@
-
 #!/bin/sh -e
 
 # Options par défaut

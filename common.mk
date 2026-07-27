@@ -37,4 +37,4 @@ shared-common-cflags  := $(filter-out -fpie -fPIE,$(common-cflags)) -fpic
 shared-common-ldflags := $(filter-out -pie -fpie -fPIE,$(common-ldflags)) \
                          -shared -Bsymbolic -fpic
 
-common-pkgconf        := sysrepo libyang libevent
+common-pkgconf        := sysrepo libyang libstroll libutils

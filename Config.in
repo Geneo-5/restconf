@@ -28,3 +28,19 @@ config SYSREPO_PLUGIND_PATH
 	string "Sysrepo plugind path"
 	depends on SYSREPO_PLUGIND
 	default "/lib/sysrepo-plugind/plugins/"
+
+config H2C_MAX_REQUEST_BODY_SIZE
+	int "Max request body size"
+	default 16777216
+
+config H2C_MAX_CONCURRENT_STREAMS
+	int "Max concurrent streams"
+	default 100
+
+config H2C_INITIAL_WINDOW_SIZE
+	int "Intial window  size"
+	default 1048576
+
+config H2C_CONNECTION_WINDOW_SIZE
+	int "Connection window size"
+	default 4194304

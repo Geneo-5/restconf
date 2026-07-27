@@ -13,10 +13,10 @@
 
 extern int
 sr_plugin_init_cb(sr_session_ctx_t *session, void **private_data)
-	__restconf_nonull(1, 2);
+	__rest_nonull(1, 2) __export_public;
 
 extern void
 sr_plugin_cleanup_cb(sr_session_ctx_t *session, void *private_data)
-	__restconf_nonull(1, 2);
+	__rest_nonull(1, 2) __export_public;
 
 #endif /* _RESTCONF_SYSREPO_H */
