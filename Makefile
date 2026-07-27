@@ -14,8 +14,8 @@ includedir       := $(CURDIR)/include/restconf
 export VERSION EXTRA_CFLAGS EXTRA_LDFLAGS
 
 ifeq ($(strip $(EBUILDDIR)),)
-ifneq ($(realpath res/ebuild/main.mk),)
-EBUILDDIR := $(realpath res/ebuild)
+ifneq ($(realpath ebuild/main.mk),)
+EBUILDDIR := $(realpath ebuild)
 else  # ($(realpath res/ebuild/main.mk),)
 EBUILDDIR := $(realpath /usr/share/ebuild)
 endif # !($(realpath res/ebuild/main.mk),)

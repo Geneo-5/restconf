@@ -37,6 +37,7 @@ RUN apt-get update && apt-get install -y \
     valgrind \
     unzip \
     kconfig-frontends \
+    haproxy \
     && rm -rf /var/lib/apt/lists/*
 
 # ==============================================================================
@@ -176,6 +177,13 @@ RUN echo "🔨 Compilation de utils..." && \
 
 # Nettoyage des sources compilées pour réduire la taille de l'image
 RUN rm -rf /tmp/deps
+
+# ----------------------------------------------------------------------------
+# Install and check HAProxy config
+# ----------------------------------------------------------------------------
+COPY docker/haproxy.cfg /etc/haproxy/haproxy.cfg
+COPY docker/dev.pem /etc/haproxy/certs/restconf.pem
+RUN haproxy -c -V -f /etc/haproxy/haproxy.cfg
 
 # ==============================================================================
 # Compilation du projet RESTCONF principal

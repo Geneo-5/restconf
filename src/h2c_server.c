@@ -35,27 +35,106 @@ struct rest_session {
 struct rest_stream {
 	struct stroll_dlist_node  node;
 	struct rest_session      *parent;
+	int32_t                   stream_id;
 };
+
+static int
+on_header_callback(nghttp2_session     *session __unused,
+                   const nghttp2_frame *frame __unused,
+                   const uint8_t       *name __unused,
+                   size_t               namelen __unused,
+                   const uint8_t       *value __unused,
+                   size_t               valuelen __unused,
+                   uint8_t              flags __unused,
+                   void                *ctx __unused)
+{
+	printf("%s: %s\n", name, value);
+	return 0;
+}
+
+static ssize_t
+send_callback(nghttp2_session *session __unused,
+              const uint8_t   *data,
+              size_t           length,
+              int              flags __unused,
+              void            *ctx)
+{
+	struct rest_session *sess = ctx;
+
+	bufferevent_write(sess->bev, data, length);
+	return (ssize_t)length;
+}
 
 static void
 destroy_stream(struct rest_stream *stream)
 {
-	stroll_dlist_remove(&stream->node);
 	stroll_falloc_free(&stream->parent->parent->stream_alloc, stream);
+}
+
+static struct rest_stream *
+create_stream(struct rest_session *sess, int32_t stream_id)
+{
+	struct rest_stream *stream;
+
+	stream = stroll_falloc_alloc(&sess->parent->stream_alloc);
+	if (!stream)
+		return NULL;
+
+	stream->parent = sess;
+	stream->stream_id = stream_id;
+	stroll_dlist_init(&stream->node);
+	return stream;
+}
+
+static int
+on_begin_headers(nghttp2_session     *session,
+                 const nghttp2_frame *frame,
+                 void                *ctx)
+{
+	struct rest_session *sess = ctx;
+	struct rest_stream  *stream;
+
+	if (frame->hd.type != NGHTTP2_HEADERS ||
+	    frame->headers.cat != NGHTTP2_HCAT_REQUEST)
+		return 0;
+
+	stream = create_stream(sess, frame->hd.stream_id);
+	if (!stream)
+		return NGHTTP2_ERR_NOMEM;
+	nghttp2_session_set_stream_user_data(session, frame->hd.stream_id, stream);
+	stroll_dlist_nqueue_front(&sess->streams, &stream->node);
+	return 0;
+}
+
+static int
+on_stream_close(nghttp2_session *session,
+                int32_t          stream_id,
+                uint32_t         error_code __unused,
+                void            *ctx __unused)
+{
+	struct rest_stream  *stream;
+
+	stream = nghttp2_session_get_stream_user_data(session, stream_id);
+	if (!stream)
+		return 0;
+
+	stroll_dlist_remove(&stream->node);
+	destroy_stream(stream);
+	return 0;
 }
 
 static void
 destroy_session(struct rest_session *sess)
 {
 	struct rest_stream *stream;
-	struct rest_stream *tmp;
 
 	if (!sess)
 		return;
 
-	stroll_dlist_remove(&sess->node);
 	nghttp2_session_del(sess->ng_session);
-	stroll_dlist_foreach_entry_safe(&sess->streams, stream, node, tmp) {
+	while (!stroll_dlist_empty(&sess->streams)) {
+		stream = stroll_dlist_next_entry((struct rest_stream *)&sess->streams, node);
+		stroll_dlist_remove(&stream->node);
 		destroy_stream(stream);
 	}
 
@@ -84,7 +163,7 @@ bev_read(struct bufferevent *bev, void *ctx)
 
 	return;
 error:
-	destroy_session(sess);
+	bufferevent_trigger_event(bev, BEV_EVENT_ERROR | BEV_EVENT_READING, 0);
 }
 
 static void
@@ -92,8 +171,10 @@ bev_event(struct bufferevent *bev __unused, short events, void *ctx)
 {
 	struct rest_session *sess = ctx;
 
-	if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR | BEV_EVENT_TIMEOUT))
+	if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR | BEV_EVENT_TIMEOUT)) {
+		stroll_dlist_remove(&sess->node);
 		destroy_session(sess);
+	}
 
 }
 
@@ -117,12 +198,29 @@ create_session(struct rest_server *srv, evutil_socket_t fd)
 	stroll_dlist_init(&sess->node);
 	stroll_dlist_init(&sess->streams);
 	sess->fd = fd;
+	sess->ng_session = NULL;
 
+	sess->bev = bufferevent_socket_new(srv->base, fd,
+		BEV_OPT_CLOSE_ON_FREE);
+	if (!sess->bev)
+		goto error;
+
+	if (srv->idle_timeout_sec > 0) {
+		struct timeval tv = { srv->idle_timeout_sec, 0 };
+		bufferevent_set_timeouts(sess->bev, &tv, NULL);
+	}
+
+	bufferevent_setcb(sess->bev, bev_read, NULL, bev_event, sess);
+	bufferevent_enable(sess->bev, EV_READ | EV_WRITE);
 	nghttp2_session_callbacks_new(&callbacks);
-	//nghttp2_session_callbacks_set_on_begin_headers_callback(callbacks,
-	//	on_begin_headers);
-	//nghttp2_session_callbacks_set_on_stream_close_callback(callbacks,
-	//	on_stream_close);
+	nghttp2_session_callbacks_set_on_begin_headers_callback(callbacks,
+		on_begin_headers);
+	nghttp2_session_callbacks_set_on_stream_close_callback(callbacks,
+		on_stream_close);
+	nghttp2_session_callbacks_set_on_header_callback(callbacks,
+		on_header_callback);
+	nghttp2_session_callbacks_set_send_callback(
+		callbacks, send_callback);
 
 	nghttp2_option_new(&opts);
 	nghttp2_option_set_no_auto_window_update(opts, 0);
@@ -139,17 +237,6 @@ create_session(struct rest_server *srv, evutil_socket_t fd)
 	                                      0,
 	                                      CONFIG_H2C_CONNECTION_WINDOW_SIZE);
 	nghttp2_session_send(sess->ng_session);
-	sess->bev = bufferevent_socket_new(srv->base, fd, BEV_OPT_CLOSE_ON_FREE);
-	if (!sess->bev)
-		goto error;
-
-	if (srv->idle_timeout_sec > 0) {
-		struct timeval tv = { srv->idle_timeout_sec, 0 };
-		bufferevent_set_timeouts(sess->bev, &tv, NULL);
-	}
-
-	bufferevent_setcb(sess->bev, bev_read, NULL, bev_event, sess);
-	bufferevent_enable(sess->bev, EV_READ | EV_WRITE);
 	return sess;
 error:
 	stroll_falloc_free(&srv->sess_alloc, sess);
@@ -236,8 +323,16 @@ server_set_idle_timeout(struct rest_server *server, int timeout_sec)
 void
 destroy_server(struct rest_server *server)
 {
+	struct rest_session *sess;
+
 	if (!server)
 		return;
+
+	while (!stroll_dlist_empty(&server->sessions)) {
+		sess = stroll_dlist_next_entry((struct rest_session *)&server->sessions, node);
+		stroll_dlist_remove(&sess->node);
+		destroy_session(sess);
+	}
 
 	evconnlistener_free(server->listener);
 	free(server);
