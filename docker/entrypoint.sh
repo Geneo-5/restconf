@@ -15,7 +15,6 @@ fi
 
 sysrepo-plugind -d -v${SYSREPO_LOGLEVEL} &
 haproxy -d -f /etc/haproxy/haproxy.cfg &
-sleep 1
 
 if [[ " $@ " == *" --listen "* ]]; then
     exec /usr/local/sbin/restconfd -u /run/restconf.socket

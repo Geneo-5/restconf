@@ -81,6 +81,7 @@ create_signal(struct event_base  *base)
 		usig_close_fd(signal->fd);
 		goto error;
 	}
+	event_add(signal->event, NULL);
 
 	usig_delset(&blk, SIGCONT);
 	usig_delset(&blk, SIGTSTP);

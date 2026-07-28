@@ -1,10 +1,15 @@
 #!/bin/sh -e
 
-ARGS="-vvv --insecure --http2 --tlsv1.3"
-ARG_JSON="${ARGS} -H 'Accept: application/yang-data+json'"
-ARG_XML="${ARGS} -H 'Accept: application/yang-data+xml'"
-URL="https://127.0.0.1:8080"
+ARGS="-f -vvv --insecure --http2 --tlsv1.3"
 
-curl ${ARGS} ${URL}/.well-known/host-meta
-curl ${ARGS} ${URL}/.well-known/host-meta.json
-curl ${ARG_JSON} ${URL}/restconf
+#test JWT none -> name = admin
+JWT=eyJhbGciOiJub25lIn0.eyJuYW1lIjoiYWRtaW4ifQ.
+AUTH_HEADER="Authorization: Bearer ${JWT}"
+
+JSON="Accept: application/yang-data+json"
+XML="Accept: application/yang-data+xml"
+URL="https://127.0.0.1"
+
+curl $ARGS -H "$AUTH_HEADER"            ${URL}/.well-known/host-meta
+curl $ARGS -H "$AUTH_HEADER"            ${URL}/.well-known/host-meta.json
+curl $ARGS -H "$AUTH_HEADER" -H "$JSON" ${URL}/restconf

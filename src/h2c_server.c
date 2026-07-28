@@ -7,11 +7,16 @@
 
 #include "restconf/h2c.h"
 #include <stroll/falloc.h>
+#include <stroll/dlist.h>
+#include <stroll/lvstr.h>
 #include <stroll/page.h>
 #include <event2/listener.h>
 #include <event2/bufferevent.h>
-#include <event2/buffer.h>
-#include <nghttp2/nghttp2.h>
+
+#define MAKE_NV(NAME, VALUE, VALUELEN) \
+	((nghttp2_nv){(uint8_t *)(NAME), (uint8_t *)(VALUE), \
+				  sizeof(NAME) - 1, VALUELEN, \
+				  NGHTTP2_NV_FLAG_NONE})
 
 struct rest_server {
 	struct event_base        *base;
@@ -32,32 +37,289 @@ struct rest_session {
 	int                       fd;
 };
 
+enum stream_status {
+	STATUS_AUTH_UNKNOW,
+	STATUS_AUTH_VALID,
+	STATUS_AUTH_INVALID,
+	STATUS_DONE,
+};
+
 struct rest_stream {
 	struct stroll_dlist_node  node;
 	struct rest_session      *parent;
 	int32_t                   stream_id;
+	enum rest_method          method;
+	struct evbuffer          *body;
+	const struct rest_ops    *ops;
+	enum stream_status        status;
+	uint8_t                   priv[] __aligned;
 };
 
-static int
-on_header_callback(nghttp2_session     *session __unused,
-                   const nghttp2_frame *frame __unused,
-                   const uint8_t       *name __unused,
-                   size_t               namelen __unused,
-                   const uint8_t       *value __unused,
-                   size_t               valuelen __unused,
-                   uint8_t              flags __unused,
-                   void                *ctx __unused)
+static enum rest_method
+h2c_parse_method(const char *method)
 {
-	printf("%s: %s\n", name, value);
+	rest_assert(method);
+
+	switch (strlen(method)) {
+	case 3:
+		if (strcmp(method, "GET") == 0)
+			return METHOD_GET;
+
+		if (strcmp(method, "PUT") == 0)
+			return METHOD_PUT;
+
+		break;
+	case 4:
+		if (strcmp(method, "HEAD") == 0)
+			return METHOD_HEAD;
+
+		if (strcmp(method, "POST") == 0)
+			return METHOD_POST;
+
+		break;
+	case 5:
+		if (strcmp(method, "PATCH") == 0)
+			return METHOD_PATCH;
+
+		break;
+	case 6:
+		if (strcmp(method, "DELETE") == 0)
+			return METHOD_DELETE;
+
+		break;
+	case 7:
+		if (strcmp(method, "OPTIONS") == 0)
+			return METHOD_OPTIONS;
+
+		break;
+	}
+
+	return METHOD_UNKNOW;
+}
+
+#define WWW_AUTH     "WWW-Authenticate"
+#define WWW_AUTH_401 "Bearer realm=\"restconf\""
+#define WWW_AUTH_403 "Bearer realm=\"restconf\",error=\"insufficient_scope\""
+
+int
+h2c_send_error(struct rest_stream  *stream, uint16_t err)
+{
+	nghttp2_nv hdrs[2];
+	char status[6];
+	size_t nb = 0;
+	int ret;
+
+	rest_assert(err < 999);
+
+	stream->status = STATUS_DONE;
+	snprintf(status, sizeof(status), "%d", err);
+	hdrs[nb].name     = (uint8_t *)":status";
+	hdrs[nb].namelen  = 7;
+	hdrs[nb].value    = (uint8_t *)status;
+	hdrs[nb].valuelen = strlen(status);
+	hdrs[nb].flags    = NGHTTP2_NV_FLAG_NONE;
+	nb++;
+
+	switch (err) {
+	case 401:
+		hdrs[nb].name     = (uint8_t *)WWW_AUTH;
+		hdrs[nb].namelen  = sizeof(WWW_AUTH) - 1;
+		hdrs[nb].value    = (uint8_t *)WWW_AUTH_401;
+		hdrs[nb].valuelen = sizeof(WWW_AUTH_401) - 1;
+		hdrs[nb].flags    = NGHTTP2_NV_FLAG_NONE;
+		nb++;
+		break;
+	case 403:
+		hdrs[nb].name     = (uint8_t *)WWW_AUTH;
+		hdrs[nb].namelen  = sizeof(WWW_AUTH) - 1;
+		hdrs[nb].value    = (uint8_t *)WWW_AUTH_403;
+		hdrs[nb].valuelen = sizeof(WWW_AUTH_403) - 1;
+		hdrs[nb].flags    = NGHTTP2_NV_FLAG_NONE;
+		nb++;
+		break;
+	case 404:
+	case 405:
+		break;
+	default:
+		rest_assert(0);
+	}
+
+	ret = nghttp2_submit_response2(stream->parent->ng_session, stream->stream_id,
+	                               hdrs, nb, NULL);
+	return ret ? NGHTTP2_ERR_NOMEM : 0;
+}
+
+int
+h2c_send_options(struct rest_stream  *stream, char *options)
+{
+	int ret;
+	nghttp2_nv hdrs[2] = {
+		MAKE_NV(":status", "200", 3),
+		MAKE_NV("allow", NULL, 0),
+	};
+
+	rest_assert(stream);
+	rest_assert(options);
+
+	stream->status = STATUS_DONE;
+	hdrs[1].value = (uint8_t *)options;
+	hdrs[1].valuelen = strlen(options);
+
+	ret = nghttp2_submit_response2(stream->parent->ng_session, stream->stream_id,
+	                               hdrs, 2, NULL);
+	return ret ? NGHTTP2_ERR_NOMEM : 0;
+}
+
+static int
+on_frame_recv(nghttp2_session     *session,
+              const nghttp2_frame *frame,
+              void                *ctx __unused)
+{
+	struct rest_stream  *stream;
+	bool end_stream = (frame->hd.type == NGHTTP2_HEADERS ||
+	                   frame->hd.type == NGHTTP2_DATA) &&
+	                  (frame->hd.flags & NGHTTP2_FLAG_END_STREAM);
+	uint16_t err;
+
+	if (!end_stream)
+		return 0;
+
+	stream = nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
+	if (!stream || stream->status == STATUS_DONE)
+		return 0;
+
+	if (stream->ops) {
+		rest_assert(stream->ops->dispatch);
+		return stream->ops->dispatch(stream->priv, stream->body);
+	}
+
+	switch (stream->status) {
+	default:
+		rest_assert(0);
+	case STATUS_AUTH_UNKNOW:
+	case STATUS_AUTH_INVALID:
+		err = 401;
+		break;
+	case STATUS_AUTH_VALID:
+		err = 404;
+		break;
+	}
+
+	return h2c_send_error(stream, err);
+}
+
+static int
+on_data_chunk_recv(nghttp2_session *session,
+                   uint8_t          flags __unused,
+                   int32_t          stream_id,
+                   const uint8_t   *data,
+                   size_t           len,
+                   void            *ctx __unused)
+{
+	struct rest_stream  *stream;
+	int ret;
+
+	stream = nghttp2_session_get_stream_user_data(session, stream_id);
+	if (!stream || stream->status != STATUS_AUTH_VALID)
+		return 0;
+
+	ret = evbuffer_add(stream->body, data, len);
+	return ret ? NGHTTP2_ERR_NOMEM : 0;
+}
+
+static const struct rest_ops *
+search_dispatcher(CURLU *url)
+{
+	const struct rest_dispatcher * ptr;
+	const struct rest_ops *ops = NULL;
+	CURLUcode rc;
+	char *path;
+
+	rc = curl_url_get(url, CURLUPART_PATH, &path, 0);
+	if (rc)
+		return NULL;
+
+	for (ptr = &__start_rest_dispatcher; ptr < &__stop_rest_dispatcher; ++ptr) {
+		rest_assert(ptr->path);
+		rest_assert(ptr->path[0] = '/');
+
+		if (memcmp(ptr->path, path, ptr->path_len) == 0) {
+			ops = ptr->ops;
+			break;
+		}
+	}
+
+	curl_free(path);
+	return ops;
+}
+
+static int
+on_header(nghttp2_session     *session __unused,
+          const nghttp2_frame *frame,
+          nghttp2_rcbuf       *name,
+          nghttp2_rcbuf       *value,
+          uint8_t              flags __unused,
+          void                *ctx __unused)
+{
+	struct rest_stream  *stream;
+	nghttp2_vec          vname = nghttp2_rcbuf_get_buf(name);
+	nghttp2_vec          vvalue = nghttp2_rcbuf_get_buf(value);
+
+	if (frame->hd.type != NGHTTP2_HEADERS ||
+	    frame->headers.cat != NGHTTP2_HCAT_REQUEST)
+		return 0;
+
+	stream = nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
+	if (!stream || stream->status == STATUS_DONE)
+		return 0;
+
+
+	switch (vname.len) {
+	case 7:
+		if (memcmp(vname.base, ":method", 7) == 0) {
+			stream->method = h2c_parse_method((const char *)vvalue.base);
+			if (stream->method == METHOD_UNKNOW)
+				return h2c_send_error(stream, 501);
+			return 0;
+		}
+		break;
+	case 5:
+		if (memcmp(vname.base, ":path", 5) == 0) {
+			CURLUcode rc;
+			CURLU *url = curl_url();
+			unsigned int cflags = CURLU_DEFAULT_SCHEME |
+			                      CURLU_NO_AUTHORITY |
+			                      CURLU_DISALLOW_USER;
+
+			rc = curl_url_set(url, CURLUPART_URL, (const char *)vvalue.base, cflags);
+			if (rc) {
+				printf("URL error: %s -> %s\n", vvalue.base, curl_url_strerror(rc));
+				curl_url_cleanup(url);
+				return NGHTTP2_ERR_HTTP_HEADER;
+			}
+
+			stream->ops = search_dispatcher(url);
+			if (stream->ops && stream->ops->init)
+				stream->ops->init(stream->priv, stream, stream->method, url);
+
+			curl_url_cleanup(url);
+			return 0;
+		}
+		break;
+	}
+
+	if (stream->ops && stream->ops->header)
+		return stream->ops->header(stream->priv, name, value);
+
 	return 0;
 }
 
 static ssize_t
-send_callback(nghttp2_session *session __unused,
-              const uint8_t   *data,
-              size_t           length,
-              int              flags __unused,
-              void            *ctx)
+send_cb(nghttp2_session *session __unused,
+        const uint8_t   *data,
+        size_t           length,
+        int              flags __unused,
+        void            *ctx)
 {
 	struct rest_session *sess = ctx;
 
@@ -68,6 +330,10 @@ send_callback(nghttp2_session *session __unused,
 static void
 destroy_stream(struct rest_stream *stream)
 {
+	if (stream->ops && stream->ops->fini)
+		stream->ops->fini(stream->priv);
+
+	evbuffer_free(stream->body);
 	stroll_falloc_free(&stream->parent->parent->stream_alloc, stream);
 }
 
@@ -80,8 +346,17 @@ create_stream(struct rest_session *sess, int32_t stream_id)
 	if (!stream)
 		return NULL;
 
+	stream->body = evbuffer_new();
+	if (!stream->body) {
+		stroll_falloc_free(&sess->parent->stream_alloc, stream);
+		return NULL;
+	}
+
 	stream->parent = sess;
 	stream->stream_id = stream_id;
+	stream->ops = NULL;
+	stream->method = METHOD_UNKNOW;
+	stream->status = STATUS_AUTH_UNKNOW;
 	stroll_dlist_init(&stream->node);
 	return stream;
 }
@@ -217,10 +492,14 @@ create_session(struct rest_server *srv, evutil_socket_t fd)
 		on_begin_headers);
 	nghttp2_session_callbacks_set_on_stream_close_callback(callbacks,
 		on_stream_close);
-	nghttp2_session_callbacks_set_on_header_callback(callbacks,
-		on_header_callback);
+	nghttp2_session_callbacks_set_on_header_callback2(callbacks,
+		on_header);
 	nghttp2_session_callbacks_set_send_callback(
-		callbacks, send_callback);
+		callbacks, send_cb);
+	nghttp2_session_callbacks_set_on_data_chunk_recv_callback(
+		callbacks, on_data_chunk_recv);
+	nghttp2_session_callbacks_set_on_frame_recv_callback(
+		callbacks, on_frame_recv);
 
 	nghttp2_option_new(&opts);
 	nghttp2_option_set_no_auto_window_update(opts, 0);
@@ -279,6 +558,8 @@ create_server(struct event_base  *base,
 	rest_assert(sock);
 
 	struct rest_server *server;
+	size_t stream_size = sizeof(struct rest_stream);
+	const struct rest_dispatcher * ptr;
 
 	server = malloc(sizeof(*server));
 	if (!server) {
@@ -293,10 +574,16 @@ create_server(struct event_base  *base,
 	                              STROLL_FALLOC_UNBOUND_CHUNK_NR,
 	                              sizeof(struct rest_session),
 	                              stroll_page_size());
+
+	for (ptr = &__start_rest_dispatcher; ptr < &__stop_rest_dispatcher; ++ptr)
+		stream_size = stroll_max(stream_size,
+		                         sizeof(struct rest_session) + ptr->priv_len);
+
 	stroll_falloc_init_block_size(&server->stream_alloc,
 	                              STROLL_FALLOC_UNBOUND_CHUNK_NR,
-	                              sizeof(struct rest_stream),
+	                              stream_size,
 	                              stroll_page_size());
+
 	server->listener = evconnlistener_new_bind(
 		base, accept_cb, server,
 		LEV_OPT_REUSEABLE | LEV_OPT_CLOSE_ON_FREE |

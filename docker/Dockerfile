@@ -38,6 +38,7 @@ RUN apt-get update && apt-get install -y \
     unzip \
     kconfig-frontends \
     haproxy \
+    libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # ==============================================================================

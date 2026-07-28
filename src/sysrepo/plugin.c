@@ -8,8 +8,9 @@
 #include "restconf/sysrepo.h"
 
 int
-sr_plugin_init_cb(sr_session_ctx_t *session __unused, void **private_data __unused)
+sr_plugin_init_cb(sr_session_ctx_t *session __unused, void **private_data)
 {
+	*private_data = (void *)0xDEADBEEF;
 	return 0;
 }
 

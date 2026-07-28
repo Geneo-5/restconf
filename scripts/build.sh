@@ -38,7 +38,7 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         --listen)
-            PORT="-it -p 8080:443"
+            PORT="-it -p 443:443 -p 80:80"
             PYTEST_OPT="--listen"
             shift
             ;;

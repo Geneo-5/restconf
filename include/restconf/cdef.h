@@ -22,5 +22,7 @@
 #define rest_assert(_expr)
 #endif /* defined(CONFIG_RESTCONF_ASSERT) */
 
+#define __aligned __attribute__ ((aligned))
+
 #endif /* _RESTCONF_CDEF_H */
 
