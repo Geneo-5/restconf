@@ -20,14 +20,14 @@
 		"{\"rel\":\"restconf\",\"href\":\"" CONFIG_H2C_RESTCONF_ROOT "\"}" \
 	"]}";
 
-enum xdr_type {
-	XDR_XML,
-	XDR_JSON
+enum xrd_type {
+	XRD_XML,
+	XRD_JSON
 };
 
 struct well_known_ctx {
 	struct rest_stream *stream;
-	enum xdr_type       type;
+	enum xrd_type       type;
 	enum rest_method    method;
 	struct evbuffer    *output;
 };
@@ -42,7 +42,7 @@ well_known_init(void               *priv,
 	char *path;
 
 	ctx->stream = stream;
-	ctx->type = XDR_XML;
+	ctx->type = XRD_XML;
 	ctx->method = method;
 	ctx->output = NULL;
 
@@ -53,7 +53,7 @@ well_known_init(void               *priv,
 		goto end;
 
 	if (strcmp(path, "/.well-known/host-meta.json") == 0) {
-		ctx->type = XDR_JSON;
+		ctx->type = XRD_JSON;
 		goto end;
 	}
 
@@ -66,7 +66,7 @@ end:
 }
 
 static int
-well_known_check_accept(const char *accept, enum xdr_type *type)
+well_known_check_accept(const char *accept, enum xrd_type *type)
 {
 	int json = 0;
 	int xml = 0;
@@ -78,18 +78,18 @@ well_known_check_accept(const char *accept, enum xdr_type *type)
 	if (strstr(accept, "application/json"))
 		json = 1;
 
-	if (strstr(accept, "application/xdr+xml"))
+	if (strstr(accept, "application/xrd+xml"))
 		xml = 1;
 
 	if (!json && !xml)
 		return -1;
 
-	if ((*type == XDR_XML) && xml)
+	if ((*type == XRD_XML) && xml)
 		return 0;
-	else if ((*type == XDR_JSON) && json)
+	else if ((*type == XRD_JSON) && json)
 		return 0;
 
-	*type = json ? XDR_JSON : XDR_XML;
+	*type = json ? XRD_JSON : XRD_XML;
 	return 0;
 }
 
@@ -116,8 +116,8 @@ well_known_dispatch(void            *priv,
                     struct evbuffer *body __unused)
 {
 	struct well_known_ctx *ctx = priv;
-	char *out = ctx->type == XDR_XML ? XRD_ANSWER : JSON_ANSWER;
-	char *content = ctx->type == XDR_XML ? "application/xrd+xml" :
+	char *out = ctx->type == XRD_XML ? XRD_ANSWER : JSON_ANSWER;
+	char *content = ctx->type == XRD_XML ? "application/xrd+xml" :
 	                                       "application/json";
 	char length[64];
 	nghttp2_nv hdrs[3] = {
@@ -152,7 +152,8 @@ static void
 well_known_fini(void *priv) {
 	struct well_known_ctx *ctx = priv;
 
-	evbuffer_free(ctx->output);
+	if (ctx->output)
+		evbuffer_free(ctx->output);
 }
 
 static const struct rest_ops well_known_ops = {

@@ -266,7 +266,7 @@ search_dispatcher(CURLU *url)
 
 	for (ptr = &__start_rest_dispatcher; ptr < &__stop_rest_dispatcher; ++ptr) {
 		rest_assert(ptr->path);
-		rest_assert(ptr->path[0] = '/');
+		rest_assert(ptr->path[0] == '/');
 
 		if (strncmp(ptr->path, path, ptr->path_len) == 0) {
 			ops = ptr->ops;

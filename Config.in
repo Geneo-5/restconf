@@ -6,45 +6,99 @@
 ################################################################################
 
 config RESTCONF_ASSERT
-	bool "Assertion"
+	bool "Enable internal assertions"
 	default n
+	help
+	  Enable internal consistency assertions (rest_assert()) throughout the
+	  restconf codebase.
+
+	  When disabled (default), assertions are compiled out and have no
+	  runtime cost, but also no defensive checks. Meant to be enabled while
+	  developing/debugging or in CI builds, and disabled in production
+	  builds.
+
+	  Disables -DNDEBUG when enabled.
 
 config YANG_PATH
-	string "yang modules path"
+	string "Path to the YANG modules directory"
 	default "/usr/share/yang/modules"
+	help
+	  Filesystem path where the YANG modules used by the RESTCONF server
+	  (and by sysrepo/libyang) are looked up.
 
 choice
-	prompt "Select restconf sysrepo mode"
+	prompt "Sysrepo integration mode"
 	default SYSREPO_BUILTIN
+	help
+	  Select how the restconf server is wired to sysrepo:
+	    - builtin to the restconfd daemon itself ;
+	    - as a plugin loaded by sysrepo-plugind ;
+	    - as a standalone autonomous daemon.
+
 	config SYSREPO_PLUGIND
-		bool "Sysrepo plugin for plugind"
+		bool "Sysrepo plugin, loaded by sysrepo-plugind"
+		help
+		  Build restconf as a shared library plugin (restconf.so) meant to
+		  be loaded by an existing sysrepo-plugind instance. See
+		  SYSREPO_PLUGIND_PATH for the install location.
+
 	config SYSREPO_DAEMON
 		bool "Autonomous daemon"
+		help
+		  Build restconf as a standalone daemon (sysrepo-restconf) that
+		  manages its own sysrepo session, independently of restconfd.
+
 	config SYSREPO_BUILTIN
-		bool "Builtin to restconf daemon"
+		bool "Builtin to the restconf daemon"
+		help
+		  Build sysrepo support directly into the restconfd binary. This
+		  is the simplest deployment mode: a single daemon handles both
+		  the RESTCONF HTTP/2 frontend and the sysrepo session.
 endchoice
 
 config SYSREPO_PLUGIND_PATH
-	string "Sysrepo plugind path"
+	string "Sysrepo plugind plugins install path"
 	depends on SYSREPO_PLUGIND
 	default "/lib/sysrepo-plugind/plugins/"
+	help
+	  Directory where the restconf.so plugin is installed so that
+	  sysrepo-plugind can discover and load it.
 
 config H2C_MAX_REQUEST_BODY_SIZE
-	int "Max request body size"
+	int "Maximum HTTP request body size (bytes)"
 	default 16777216
+	help
+	  Upper bound, in bytes, on the size of an HTTP/2 request body accepted
+	  by the backend. Requests exceeding this limit should be rejected to
+	  protect the server against oversized-payload abuse.
 
 config H2C_MAX_CONCURRENT_STREAMS
-	int "Max concurrent streams"
+	int "Maximum concurrent HTTP/2 streams per connection"
 	default 100
+	help
+	  Value advertised in the HTTP/2 SETTINGS_MAX_CONCURRENT_STREAMS
+	  parameter, limiting the number of streams a single client connection
+	  may keep open at once (multiplexing/DoS protection).
 
 config H2C_INITIAL_WINDOW_SIZE
-	int "Intial window  size"
+	int "Initial HTTP/2 per-stream flow-control window size (bytes)"
 	default 1048576
+	help
+	  Initial flow-control window size, in bytes, advertised for each
+	  individual HTTP/2 stream.
 
 config H2C_CONNECTION_WINDOW_SIZE
-	int "Connection window size"
+	int "HTTP/2 connection-level flow-control window size (bytes)"
 	default 4194304
+	help
+	  Flow-control window size, in bytes, applied at the HTTP/2 connection
+	  level (as opposed to the per-stream window set by
+	  H2C_INITIAL_WINDOW_SIZE).
 
 config H2C_RESTCONF_ROOT
-	string "{+restconf} path
+	string "RESTCONF root resource path ({+restconf})"
 	default "/restconf"
+	help
+	  Path at which the RESTCONF root resource ({+restconf}, as defined by
+	  RFC 8040) is exposed, e.g. as advertised by the
+	  /.well-known/host-meta discovery document.
