@@ -193,7 +193,7 @@ WORKDIR /workspace
 COPY . .
 
 # Installer les dépendances Python pour les tests
-#RUN pip install --break-system-packages -r test/requirements.txt
+RUN pip install --break-system-packages -r test/requirements.txt
 ENV PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig
 ENV EXTRA_CFLAGS="-Werror ${CFLAGS} -Wmissing-declarations -Wstrict-prototypes \
                  -fsanitize=address -fsanitize=pointer-compare \

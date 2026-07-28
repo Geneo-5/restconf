@@ -1,0 +1,4 @@
+pytest>=7.0.0
+# Client HTTP capable de parler HTTP/2 (h2) derrière le reverse proxy TLS
+# du CI. `requests` ne supporte pas HTTP/2 ; httpx le fait via l'extra `http2`.
+httpx[http2]>=0.27.0
