@@ -44,3 +44,7 @@ config H2C_INITIAL_WINDOW_SIZE
 config H2C_CONNECTION_WINDOW_SIZE
 	int "Connection window size"
 	default 4194304
+
+config H2C_RESTCONF_ROOT
+	string "{+restconf} path
+	default "/restconf"

@@ -13,11 +13,6 @@
 #include <event2/listener.h>
 #include <event2/bufferevent.h>
 
-#define MAKE_NV(NAME, VALUE, VALUELEN) \
-	((nghttp2_nv){(uint8_t *)(NAME), (uint8_t *)(VALUE), \
-				  sizeof(NAME) - 1, VALUELEN, \
-				  NGHTTP2_NV_FLAG_NONE})
-
 struct rest_server {
 	struct event_base        *base;
 	sr_conn_ctx_t            *conn;
@@ -107,7 +102,6 @@ h2c_send_error(struct rest_stream  *stream, uint16_t err)
 	nghttp2_nv hdrs[2];
 	char status[6];
 	size_t nb = 0;
-	int ret;
 
 	rest_assert(err < 999);
 
@@ -139,22 +133,21 @@ h2c_send_error(struct rest_stream  *stream, uint16_t err)
 		break;
 	case 404:
 	case 405:
+	case 406:
 		break;
 	default:
 		rest_assert(0);
 	}
 
-	ret = nghttp2_submit_response2(stream->parent->ng_session, stream->stream_id,
-	                               hdrs, nb, NULL);
-	return ret ? NGHTTP2_ERR_NOMEM : 0;
+	return  nghttp2_submit_response2(stream->parent->ng_session, stream->stream_id,
+	                                 hdrs, nb, NULL);
 }
 
 int
 h2c_send_options(struct rest_stream  *stream, char *options)
 {
-	int ret;
 	nghttp2_nv hdrs[2] = {
-		MAKE_NV(":status", "200", 3),
+		MAKE_NV_OK,
 		MAKE_NV("allow", NULL, 0),
 	};
 
@@ -165,9 +158,41 @@ h2c_send_options(struct rest_stream  *stream, char *options)
 	hdrs[1].value = (uint8_t *)options;
 	hdrs[1].valuelen = strlen(options);
 
-	ret = nghttp2_submit_response2(stream->parent->ng_session, stream->stream_id,
-	                               hdrs, 2, NULL);
-	return ret ? NGHTTP2_ERR_NOMEM : 0;
+	return nghttp2_submit_response2(stream->parent->ng_session, stream->stream_id,
+	                                 hdrs, 2, NULL);
+}
+
+static ssize_t
+read_evbuffer(nghttp2_session     *session __unused,
+              int32_t              stream_id __unused,
+              uint8_t             *buf,
+              size_t               length,
+              uint32_t            *data_flags,
+              nghttp2_data_source *source,
+              void                *ctx __unused)
+{
+	struct evbuffer *out = source->ptr;
+	ssize_t len;
+
+	len = evbuffer_remove(out, buf, length);
+	if (!evbuffer_get_length(out))
+		*data_flags |= NGHTTP2_DATA_FLAG_EOF;
+
+	return len < 0 ? NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE : len;
+}
+
+int
+h2c_send_answer(struct rest_stream  *stream,
+                nghttp2_nv          *hdrs,
+                size_t               nb,
+                struct evbuffer     *out)
+{
+	nghttp2_data_provider2 data_prd = {
+		.source.ptr = out,
+		.read_callback = read_evbuffer
+	};
+	return nghttp2_submit_response2(stream->parent->ng_session, stream->stream_id,
+	                                 hdrs, nb, out ? &data_prd : NULL);
 }
 
 static int
@@ -243,7 +268,7 @@ search_dispatcher(CURLU *url)
 		rest_assert(ptr->path);
 		rest_assert(ptr->path[0] = '/');
 
-		if (memcmp(ptr->path, path, ptr->path_len) == 0) {
+		if (strncmp(ptr->path, path, ptr->path_len) == 0) {
 			ops = ptr->ops;
 			break;
 		}

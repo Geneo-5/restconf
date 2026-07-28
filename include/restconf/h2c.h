@@ -16,6 +16,13 @@
 #include <event2/buffer.h>
 #include <curl/curl.h>
 
+#define MAKE_NV(NAME, VALUE, VALUELEN) \
+	((nghttp2_nv){(uint8_t *)(NAME), (uint8_t *)(VALUE), \
+				  sizeof(NAME) - 1, VALUELEN, \
+				  NGHTTP2_NV_FLAG_NONE})
+
+#define MAKE_NV_OK MAKE_NV(":status", "200", 3)
+
 enum rest_method {
 	METHOD_UNKNOW,
 	METHOD_OPTIONS,
@@ -71,6 +78,10 @@ h2c_send_error(struct rest_stream  *stream, uint16_t error)
 int
 h2c_send_options(struct rest_stream  *stream, char *options)
 	__rest_nonull(1);
+
+int
+h2c_send_answer(struct rest_stream  *stream, nghttp2_nv *hdrs, size_t nb, struct evbuffer *out)
+	__rest_nonull(1, 2);
 
 static inline
 struct rest_server * __rest_nonull(1, 2, 3)
