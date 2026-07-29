@@ -9,6 +9,7 @@ config-in                = Config.in
 config-h                 = restconf/config.h
 
 subdirs                  = src
+subdirs                 += test
 
 ################################################################################
 # Source code tags generation

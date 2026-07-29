@@ -1,0 +1,857 @@
+module restconf-test {
+    yang-version 1.1;
+    namespace "urn:restconf:test";
+    prefix rt;
+
+    import ietf-inet-types {
+        prefix inet;
+    }
+    import ietf-yang-types {
+        prefix yang;
+    }
+
+    revision 2026-07-30 {
+        description
+            "RESTCONF Qualification Test Module.
+
+            Contient l'ensemble des constructs YANG nécessaires aux tests de
+            conformité décrits dans ROADMAP.md :
+              - RFC 8040 (cœur RESTCONF : GET/POST/PUT/PATCH/DELETE, listes,
+                leaf-lists, media types, erreurs, query params) ;
+              - RFC 7950 / RFC 7951 (YANG 1.1 + encodage JSON/XML) ;
+              - RFC 8525 (YANG Library : modules, features) ;
+              - RFC 8072 (YANG Patch : ordered-by user) ;
+              - RFC 8341 (NACM : nœuds à restreindre) ;
+              - RFC 8639 / RFC 8641 (notifications, souscriptions, YANG-Push).
+
+            Ce module DOIT être installé :
+                sysrepoctl -i restconf-test.yang \\
+                    --enable-feature=advanced-monitoring \\
+                    --enable-feature=legacy-support
+                sysrepocfg -i restconf-test.json -f json -d startup
+            et son plugin opérationnel (restconf-test.so) chargé dans
+            sysrepo-plugind pour que les données 'config false' et les
+            RPC/actions soient exploitables.
+
+            Couverture des sections de tests de la ROADMAP :
+              §4  GET simple        : system, basic-data, interfaces,
+                                      access-control, keyed-entries ;
+              §5  query params      : config (system/config, basic-data) +
+                                      état (system/state, basic-data/uptime),
+                                      defaults (timeout, enabled,
+                                      sensor-type-ref) ;
+              §7  écritures         : interfaces/interface (POST/PUT/PATCH/
+                                      DELETE), ordered-queue (ordered-by user),
+                                      device-management (actions) ;
+              §8  RPC/actions       : get-system-status, configure-device,
+                                      create-resource, set-operation-mode,
+                                      process-data, trigger-event, reset,
+                                      test-connection, reboot ;
+              §12 YANG Library      : features advanced-monitoring /
+                                      legacy-support ;
+              §14 YANG Patch        : ordered-queue (insert/move) ;
+              §15/16/17 notif/push  : system-startup, threshold-exceeded,
+                                      event-notification, system-alert.
+
+            Restent volontairement commentés (limitation connue de
+            l'environnement libyang 5.8.6 / sysrepo 5.1.0 sur la fourniture
+            de données opérationnelles anydata/anyxml) :
+              TC-3-009, TC-3-010, TC-7-043..045.";
+    }
+
+    // ========================================================================
+    // FEATURES (RFC 7950 §7.18, RFC 8525) - T-YLIB-01, R16
+    //   Les features sont exposées dans la YANG Library ; 'legacy-support'
+    //   conditionne en outre le container optionnel 'legacy-data'.
+    // ========================================================================
+    feature advanced-monitoring {
+        description
+            "Indicates support for advanced monitoring constructs. Déclarée
+             pour être exposée dans la YANG Library (RFC 8525).";
+    }
+
+    feature legacy-support {
+        description
+            "Indicates support for legacy configuration constructs. Conditionne
+             le container 'legacy-data' via if-feature.";
+    }
+
+    // ========================================================================
+    // IDENTITIES (RFC 7950 §7.18) - identityref testing (TC-7-026)
+    // ========================================================================
+    identity sensor-type {
+        description "Base identity for sensor types";
+    }
+    identity temperature-sensor {
+        base sensor-type;
+        description "Temperature sensor";
+    }
+    identity humidity-sensor {
+        base sensor-type;
+        description "Humidity sensor";
+    }
+    identity pressure-sensor {
+        base sensor-type;
+        description "Pressure sensor";
+    }
+
+    // ========================================================================
+    // TYPEDEFS (RFC 7950 §7.3) - contraintes de type
+    // ========================================================================
+    typedef percentage {
+        type uint8 {
+            range "0..100";
+        }
+    }
+    typedef device-name {
+        type string {
+            pattern '[a-zA-Z][a-zA-Z0-9-]{0,19}';
+        }
+    }
+    typedef serial-number {
+        type string {
+            length "8..20";
+        }
+    }
+    typedef temperature-celsius {
+        type int16 {
+            range "-273..1000";
+        }
+        units "degrees Celsius";
+    }
+
+    // ========================================================================
+    // CONTAINERS DE BASE (RFC 8040 §3.3, RFC 7950 §7.5)
+    // ========================================================================
+    container system {
+        description "Root container for system configuration and state";
+
+        container config {
+            presence "System configuration is present";
+            description "Configuration container with presence";
+
+            leaf system-name {
+                type device-name;
+                description "System name";
+            }
+        }
+
+        container state {
+            config false;
+            description "Operational state container (fourni par le plugin)";
+
+            leaf system-status {
+                type string;
+                config false;
+                description "Current system status";
+            }
+
+            leaf extended-status {
+                if-feature advanced-monitoring;
+                type string;
+                config false;
+                description
+                    "Extended status, present only if the 'advanced-monitoring'
+                     feature is enabled (fourni par le plugin).";
+            }
+        }
+    }
+
+    // ========================================================================
+    // MANDATORY, DEFAULT, READ-ONLY (RFC 7950 §7.6)
+    //   TC-3-039, TC-7-014 : mandatory
+    //   TC-7-023, TC-7-024 : boolean
+    //   TC-3-017, TC-3-021, TC-3-031 : read-only
+    // ========================================================================
+    container basic-data {
+        description "Test container for basic data types and constraints";
+
+        leaf device-id {
+            type device-name;
+            mandatory true;
+            description "MANDATORY: Device identifier must be present";
+        }
+
+        leaf timeout {
+            type uint16;
+            default 30;
+            units "seconds";
+            description "Leaf with default value";
+        }
+
+        leaf uptime {
+            type uint32;
+            config false;
+            units "seconds";
+            description "READ-ONLY: System uptime (fourni par le plugin)";
+        }
+
+        leaf enabled {
+            type boolean;
+            default true;
+            description "Boolean field for type testing";
+        }
+    }
+
+    // ========================================================================
+    // LISTS (RFC 7950 §7.7) - TC-3-005, TC-3-006, TC-3-011, TC-3-029, ...
+    // ========================================================================
+    container interfaces {
+        description "Container for list testing (RFC 8040 §4.2)";
+
+        list interface {
+            key "name";
+            description "Network interface list - GET/POST/PUT/PATCH/DELETE";
+
+            leaf name {
+                type device-name;
+                description "Interface name - used as key";
+            }
+            leaf description {
+                type string;
+                description "Interface description";
+            }
+            leaf enabled {
+                type boolean;
+                default true;
+                description "Interface enabled status";
+            }
+            leaf mtu {
+                type uint16 {
+                    range "64..9192";
+                }
+                description "Maximum Transmission Unit";
+            }
+
+            unique "name";
+        }
+
+        list vlan {
+            key "vlan-id";
+            min-elements 1;
+            max-elements 4094;
+            description "VLAN configuration - min/max elements testing";
+
+            leaf vlan-id {
+                type uint16 {
+                    range "1..4094";
+                }
+                description "VLAN ID";
+            }
+            leaf name {
+                type string;
+                description "VLAN name";
+            }
+        }
+
+        list ordered-queue {
+            key "position";
+            ordered-by user;
+            description "Ordered list for insert parameter testing";
+
+            leaf position {
+                type uint8;
+                description "Position in queue";
+            }
+            leaf item {
+                type string;
+                description "Queue item name";
+            }
+        }
+
+        container advanced-features {
+            leaf enable-advanced {
+                type boolean;
+                default false;
+                description "Enable advanced features";
+            }
+
+            list advanced-interface {
+                key "name";
+                when "../enable-advanced = 'true'";
+                description
+                    "Only present when advanced features are enabled -
+                     WHEN constraint testing (TC-3-049, TC-7-032)";
+
+                leaf name {
+                    type device-name;
+                }
+                leaf advanced-setting {
+                    type uint8;
+                    description "Advanced setting value";
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // LISTE À CLÉ CHAÎNE LIBRE - T-GET-11 (clés avec virgules / espaces)
+    //   RFC 8040 §3.5.3 : les clés de liste peuvent contenir des caractères
+    //   spéciaux (',', ' ', ...) qui doivent être percent-encodés dans l'URI
+    //   puis décodés avant construction du XPath.
+    // ========================================================================
+    container keyed-entries {
+        description "Container for list-key parsing tests (special chars)";
+
+        list keyed-entry {
+            key "label";
+            description
+                "List whose key is an unconstrained string, so that keys may
+                 contain commas, spaces, quotes, etc. (T-GET-11).";
+
+            leaf label {
+                type string;
+                description "Free-form key, may contain ',' ' ' '\"' etc.";
+            }
+            leaf value {
+                type string;
+                description "Arbitrary value associated with the key";
+            }
+        }
+    }
+
+    // ========================================================================
+    // LEAF-LISTS (RFC 7950 §7.8) - TC-3-008
+    // ========================================================================
+    container access-control {
+        description "Container for leaf-list testing";
+
+        leaf-list allowed-ips {
+            type inet:ipv4-address;
+            description "List of allowed IP addresses - leaf-list testing";
+        }
+
+        leaf-list allowed-macs {
+            type string {
+                pattern '[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}';
+            }
+            min-elements 1;
+            max-elements 10;
+            description "Constrained leaf-list testing";
+        }
+
+        leaf-list tags {
+            type string;
+            description "List of tags - duplicate testing (TC-7-040)";
+        }
+    }
+
+    // ========================================================================
+    // ANYDATA / ANYXML (RFC 7950 §7.10, §7.11) - TC-3-009, TC-3-010, TC-7-043-045
+    // NOTE : laissé commenté — libyang 5.8.6 / sysrepo 5.1.0 posent problème
+    //        sur la fourniture de données opérationnelles anydata/anyxml.
+    // ========================================================================
+    // container custom-data {
+    //     description "Container for anydata/anyxml testing";
+    //
+    //     anydata vendor-specific {
+    //         description "Anydata field for vendor extensions - TC-3-009, TC-7-043";
+    //     }
+    //
+    //     anyxml legacy-config {
+    //         description "Anyxml field for legacy configuration - TC-3-010, TC-7-044, TC-7-045";
+    //     }
+    // }
+
+    // ========================================================================
+    // ADVANCED TYPES (RFC 7950 §9) - TC-7-018, TC-7-020-022, TC-7-026-030
+    // ========================================================================
+    container advanced-types {
+        description "Container for advanced type testing";
+
+        leaf mixed-value {
+            type union {
+                type uint8;
+                type string;
+                type inet:ipv4-address;
+            }
+            description "Union of multiple types - TC-7-029";
+        }
+
+        leaf feature-flags {
+            type bits {
+                bit logging {
+                    position 0;
+                    description "Enable logging";
+                }
+                bit monitoring {
+                    position 1;
+                    description "Enable monitoring";
+                }
+                bit debugging {
+                    position 2;
+                    description "Enable debugging";
+                }
+                bit security {
+                    position 3;
+                    description "Enable security features";
+                }
+            }
+            description "Feature flags using bits type - TC-7-021";
+        }
+
+        leaf precision-value {
+            type decimal64 {
+                fraction-digits 4;
+                range "0..10000.0000";
+            }
+            description "Decimal64 value with precision - TC-7-022";
+        }
+
+        leaf certificate {
+            type binary;
+            description "Binary certificate data - TC-7-030";
+        }
+
+        leaf sensor-type-ref {
+            type identityref {
+                base sensor-type;
+            }
+            default temperature-sensor;
+            description "Reference to a sensor type identity - TC-7-026";
+        }
+
+        leaf default-interface {
+            type leafref {
+                path "/rt:interfaces/rt:interface/rt:name";
+            }
+            description "Reference to an existing interface - TC-3-048, TC-7-027";
+        }
+    }
+
+    // ========================================================================
+    // CONSTRAINTS (RFC 7950 §7.5.3) - TC-3-043, TC-3-049-050, TC-7-017-018,
+    //                                 TC-7-031-033
+    // ========================================================================
+    container constraints {
+        description "Container for logical constraint testing";
+
+        container range-test {
+            description "Container for range constraint testing";
+
+            leaf percentage-value {
+                type percentage;
+                description "Value with percentage range (0-100) - TC-3-043, TC-7-018";
+            }
+            leaf temperature {
+                type temperature-celsius;
+                description "Temperature with range constraint";
+            }
+        }
+
+        container must-test {
+            description "Container with MUST constraint - TC-3-050, TC-7-031";
+
+            leaf start-time {
+                type uint32;
+                description "Start time";
+            }
+            leaf end-time {
+                type uint32;
+                description "End time";
+            }
+
+            must "start-time < end-time" {
+                error-message "Start time must be less than end time";
+                error-app-tag "invalid-range";
+            }
+        }
+
+        container when-test {
+            description "Container for WHEN constraint testing";
+
+            leaf enable-optional {
+                type boolean;
+                default false;
+                description "Enable optional features";
+            }
+
+            container optional-config {
+                when "../enable-optional = 'true'";
+                description
+                    "Configuration only valid when enabled - TC-3-049, TC-7-032";
+
+                leaf optional-value {
+                    type uint8;
+                    description "Optional value";
+                }
+            }
+        }
+
+        container unique-test {
+            description "Container for UNIQUE constraint testing";
+
+            list items {
+                key "id";
+                unique "name priority";
+                description "List with unique constraint on multiple fields";
+
+                leaf id {
+                    type uint8;
+                }
+                leaf name {
+                    type string;
+                }
+                leaf priority {
+                    type uint8;
+                }
+            }
+        }
+
+        leaf password {
+            type string {
+                length "8..64";
+            }
+            description "Password with length constraint - TC-7-019";
+        }
+
+        leaf email {
+            type string {
+                pattern '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}';
+            }
+            description "Email address with pattern constraint - TC-7-017";
+        }
+
+        leaf operation-mode {
+            type enumeration {
+                enum "normal" {
+                    value 1;
+                    description "Normal operation mode";
+                }
+                enum "maintenance" {
+                    value 2;
+                    description "Maintenance mode";
+                }
+                enum "emergency" {
+                    value 3;
+                    description "Emergency operation mode";
+                }
+            }
+            description "Enumeration type - TC-7-020, TC-3-045";
+        }
+    }
+
+    // ========================================================================
+    // LEGACY DATA (if-feature) - R16, T-YLIB-01
+    //   Container optionnel conditionné par la feature 'legacy-support'.
+    //   Absent du datastore si la feature n'est pas activée à l'installation.
+    // ========================================================================
+    container legacy-data {
+        if-feature legacy-support;
+        description
+            "Legacy configuration, present only if the 'legacy-support'
+             feature is enabled.";
+
+        leaf legacy-mode {
+            type boolean;
+            default false;
+            description "Enable legacy mode";
+        }
+    }
+
+    // ========================================================================
+    // RPC (RFC 7950 §7.15, RFC 8040 §5) - TC-5-001-014, T-OPS-01..10
+    // ========================================================================
+
+    rpc get-system-status {
+        description "RPC without input parameters - TC-5-004";
+        output {
+            leaf status {
+                type string;
+                description "System status";
+            }
+            leaf timestamp {
+                type yang:date-and-time;
+                description "When status was retrieved";
+            }
+        }
+    }
+
+    rpc configure-device {
+        description "RPC with input parameters - TC-5-005";
+        input {
+            leaf device-name {
+                type device-name;
+                mandatory true;
+                description "Device name - mandatory parameter";
+            }
+            leaf enable {
+                type boolean;
+                default true;
+                description "Enable device";
+            }
+            leaf settings {
+                type string;
+                description "Device settings";
+            }
+        }
+        output {
+            leaf result {
+                type string;
+                description "Operation result";
+            }
+            leaf device-id {
+                type uint32;
+                description "Assigned device ID";
+            }
+        }
+    }
+
+    rpc create-resource {
+        description "RPC with mandatory parameter - TC-5-006";
+        input {
+            leaf name {
+                type string;
+                mandatory true;
+                description "MANDATORY: Resource name must be provided";
+            }
+        }
+        output {
+            leaf id {
+                type uint32;
+                description "Created resource ID";
+            }
+        }
+    }
+
+    rpc set-operation-mode {
+        description "RPC with enumeration parameter - TC-5-007";
+        input {
+            leaf mode {
+                type enumeration {
+                    enum "normal" {
+                        value 1;
+                        description "Normal operation mode";
+                    }
+                    enum "maintenance" {
+                        value 2;
+                        description "Maintenance mode";
+                    }
+                    enum "emergency" {
+                        value 3;
+                        description "Emergency operation mode";
+                    }
+                }
+                mandatory true;
+                description "Operation mode - enumeration type";
+            }
+        }
+        output {
+            leaf previous-mode {
+                type enumeration {
+                    enum "normal";
+                    enum "maintenance";
+                    enum "emergency";
+                }
+                description "Previous operation mode";
+            }
+        }
+    }
+
+    rpc process-data {
+        description "RPC for type validation testing - TC-5-007";
+        input {
+            leaf uint-value {
+                type uint8 {
+                    range "0..100";
+                }
+                description "Value with range constraint";
+            }
+            leaf enum-value {
+                type enumeration {
+                    enum "option1";
+                    enum "option2";
+                }
+                description "Enumeration value";
+            }
+        }
+        output {
+            leaf processed {
+                type boolean;
+                description "Whether data was processed successfully";
+            }
+        }
+    }
+
+    rpc trigger-event {
+        description "RPC with no output - TC-5-011";
+        input {
+            leaf event-type {
+                type string;
+                mandatory true;
+                description "Type of event to trigger";
+            }
+        }
+    }
+
+    // ========================================================================
+    // ACTIONS (YANG 1.1, RFC 7950 §7.15) - TC-5-015-019, T-OPS-08/09
+    // ========================================================================
+    container device-management {
+        description "Container for action testing";
+
+        action reset {
+            description "Reset action without parameters - TC-5-015";
+            output {
+                leaf status {
+                    type string;
+                    description "Reset operation status";
+                }
+            }
+        }
+
+        action test-connection {
+            description "Action with parameters - TC-5-015, TC-5-016";
+            input {
+                leaf target {
+                    type inet:host;
+                    mandatory true;
+                    description "Target host to test";
+                }
+                leaf timeout {
+                    type uint16;
+                    default 5;
+                    units "seconds";
+                    description "Connection timeout";
+                }
+            }
+            output {
+                leaf success {
+                    type boolean;
+                    description "Connection test result";
+                }
+                leaf latency {
+                    type uint32;
+                    units "milliseconds";
+                    description "Connection latency";
+                }
+            }
+        }
+
+        list managed-device {
+            key "device-id";
+            description "List of managed devices for action testing";
+
+            leaf device-id {
+                type uint32;
+            }
+            leaf device-name {
+                type device-name;
+            }
+
+            action reboot {
+                description "Action on a specific device - TC-5-017";
+                input {
+                    leaf force {
+                        type boolean;
+                        default false;
+                        description "Force reboot";
+                    }
+                }
+                output {
+                    leaf status {
+                        type string;
+                        description "Reboot status";
+                    }
+                    leaf reboot-time {
+                        type uint32;
+                        units "seconds";
+                        description "Time taken to reboot";
+                    }
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // NOTIFICATIONS (RFC 7950 §7.16, RFC 8040 §6) - TC-5-020-040, §15/16/17
+    // ========================================================================
+    notification system-startup {
+        description "System startup notification - TC-5-020, TC-5-021";
+        leaf timestamp {
+            type yang:date-and-time;
+            description "When system started";
+        }
+        leaf message {
+            type string;
+            description "Startup message";
+        }
+    }
+
+    notification threshold-exceeded {
+        description "Notification with structured data - TC-5-026";
+        leaf sensor-name {
+            type device-name;
+            description "Name of the sensor that exceeded threshold";
+        }
+        leaf current-value {
+            type decimal64 {
+                fraction-digits 2;
+            }
+            description "Current measured value";
+        }
+        leaf threshold {
+            type decimal64 {
+                fraction-digits 2;
+            }
+            description "Threshold value that was exceeded";
+        }
+        leaf timestamp {
+            type yang:date-and-time;
+            description "When threshold was exceeded";
+        }
+        leaf severity {
+            type enumeration {
+                enum "warning";
+                enum "critical";
+            }
+            description "Severity of the threshold breach";
+        }
+    }
+
+    notification event-notification {
+        description "Generic event notification for stream testing - TC-5-022-030";
+        leaf event-type {
+            type string;
+            mandatory true;
+            description "Type of event";
+        }
+        leaf severity {
+            type enumeration {
+                enum info;
+                enum warning;
+                enum error;
+                enum critical;
+            }
+            description "Event severity";
+        }
+        leaf source {
+            type string;
+            description "Event source";
+        }
+        leaf description {
+            type string;
+            description "Event description";
+        }
+        leaf timestamp {
+            type yang:date-and-time;
+            description "Event timestamp";
+        }
+    }
+
+    notification system-alert {
+        description "System alert notification";
+        leaf alert-type {
+            type string;
+            description "Alert type";
+        }
+        leaf message {
+            type string;
+            description "Alert message";
+        }
+        leaf code {
+            type uint32;
+            description "Alert code";
+        }
+    }
+}

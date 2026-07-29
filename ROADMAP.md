@@ -421,21 +421,21 @@ Toutes les lignes sont initialisées avec l’avancement `⬜ À faire`.
 
 | ID | Test | Résultat attendu | Avancement |
 |---|---|---|---|
-| T-TRANS-01 | Accès à la racine RESTCONF en HTTPS avec ALPN `h2` | La connexion HTTP/2 over TLS est établie, le serveur répond correctement | ⬜ À faire |
-| T-TRANS-02 | Accès direct au backend h2c depuis l’extérieur | L’accès direct doit être impossible : filtrage réseau, proxy seul point d’entrée | ⬜ À faire |
-| T-TRANS-03 | Requête HTTP/2 avec pseudo-headers `:method`, `:path`, `:authority`, `:scheme` | Le backend reconstruit correctement la requête RESTCONF | ⬜ À faire |
-| T-TRANS-04 | Requête HTTP/1.1 si supportée par le proxy | La sémantique RESTCONF reste conforme ; sinon le proxy doit refuser proprement | ⬜ À faire |
-| T-TRANS-05 | Préservation du header `Authorization: Bearer` par le proxy | Le backend reçoit le JWT intact et peut le valider | ⬜ À faire |
-| T-TRANS-06 | Préservation des headers `Accept`, `Content-Type`, `If-Match`, `If-None-Match`, `Location` | Les headers ne sont ni supprimés ni altérés | ⬜ À faire |
-| T-TRANS-07 | Ouverture d’un flux SSE long | Le proxy ne coupe pas le flux prématurément si des heartbeats sont émis | ⬜ À faire |
-| T-TRANS-08 | Bufferisation proxy sur SSE | Les événements SSE sont transmis sans délai anormal | ⬜ À faire |
-| T-TRANS-09 | Fermeture du flux HTTP/2 par le client (`RST_STREAM`) | Le serveur détecte la fermeture et nettoie les ressources associées | ⬜ À faire |
-| T-TRANS-10 | Dépassement de `SETTINGS_MAX_CONCURRENT_STREAMS` | Le serveur refuse ou limite les streams supplémentaires conformément à HTTP/2 | ⬜ À faire |
-| T-TRANS-11 | Headers HTTP trop volumineux | Le serveur rejette la requête avec une erreur HTTP appropriée | ⬜ À faire |
-| T-TRANS-12 | Corps de requête trop volumineux | Le serveur rejette avec `413 Payload Too Large` ou erreur équivalente | ⬜ À faire |
-| T-TRANS-13 | Timeout proxy inférieur à la durée d’un flux SSE | Le test doit démontrer que le heartbeat ou la configuration proxy évite la coupure | ⬜ À faire |
-| T-TRANS-14 | TLS 1.0/1.1 si interdits | La connexion est refusée | ⬜ À faire |
-| T-TRANS-15 | ALPN sans `h2` si HTTP/2 est requis | La connexion est refusée ou dégradée uniquement si explicitement supporté | ⬜ À faire |
+| T-TRANS-01 | Accès à la racine RESTCONF en HTTPS avec ALPN `h2` | La connexion HTTP/2 over TLS est établie, le serveur répond correctement | ✅ Terminé |
+| T-TRANS-02 | Accès direct au backend h2c depuis l’extérieur | L’accès direct doit être impossible : filtrage réseau, proxy seul point d’entrée | ✅ Terminé |
+| T-TRANS-03 | Requête HTTP/2 avec pseudo-headers `:method`, `:path`, `:authority`, `:scheme` | Le backend reconstruit correctement la requête RESTCONF | ✅ Terminé |
+| T-TRANS-04 | Requête HTTP/1.1 si supportée par le proxy | La sémantique RESTCONF reste conforme ; sinon le proxy doit refuser proprement | ✅ Terminé |
+| T-TRANS-05 | Préservation du header `Authorization: Bearer` par le proxy | Le backend reçoit le JWT intact et peut le valider | ✅ Terminé |
+| T-TRANS-06 | Préservation des headers `Accept`, `Content-Type`, `If-Match`, `If-None-Match`, `Location` | Les headers ne sont ni supprimés ni altérés | 🟡 En cours — `If-Match` non couvert explicitement, seul `If-None-Match` est testé |
+| T-TRANS-07 | Ouverture d’un flux SSE long | Le proxy ne coupe pas le flux prématurément si des heartbeats sont émis | 🟡 En cours — test écrit mais `skip` (endpoint SSE non implémenté) |
+| T-TRANS-08 | Bufferisation proxy sur SSE | Les événements SSE sont transmis sans délai anormal | 🟡 En cours — test écrit mais `skip` (endpoint SSE non implémenté) |
+| T-TRANS-09 | Fermeture du flux HTTP/2 par le client (`RST_STREAM`) | Le serveur détecte la fermeture et nettoie les ressources associées | ✅ Terminé |
+| T-TRANS-10 | Dépassement de `SETTINGS_MAX_CONCURRENT_STREAMS` | Le serveur refuse ou limite les streams supplémentaires conformément à HTTP/2 | ✅ Terminé |
+| T-TRANS-11 | Headers HTTP trop volumineux | Le serveur rejette la requête avec une erreur HTTP appropriée | ✅ Terminé |
+| T-TRANS-12 | Corps de requête trop volumineux | Le serveur rejette avec `413 Payload Too Large` ou erreur équivalente | ✅ Terminé |
+| T-TRANS-13 | Timeout proxy inférieur à la durée d’un flux SSE | Le test doit démontrer que le heartbeat ou la configuration proxy évite la coupure | 🟡 En cours — test écrit mais `skip` (endpoint SSE non implémenté) |
+| T-TRANS-14 | TLS 1.0/1.1 si interdits | La connexion est refusée | ✅ Terminé |
+| T-TRANS-15 | ALPN sans `h2` si HTTP/2 est requis | La connexion est refusée ou dégradée uniquement si explicitement supporté | ✅ Terminé |
 
 ---
 
@@ -446,11 +446,11 @@ Toutes les lignes sont initialisées avec l’avancement `⬜ À faire`.
 
 | ID | Test | Résultat attendu | Avancement |
 |---|---|---|---|
-| T-DISC-01 | GET non authentifié sur `/.well-known/host-meta` | Réponse valide contenant un lien de relation `restconf` | ⬜ À faire |
-| T-DISC-02 | Vérification du lien `restconf` | Le lien pointe vers la racine RESTCONF correcte | ⬜ À faire |
-| T-DISC-03 | GET sur `/.well-known/host-meta.json` si supporté | Réponse JSON valide avec le lien `restconf` | ⬜ À faire |
-| T-DISC-04 | Accès à `/.well-known/host-meta` avec un token invalide | L’endpoint reste accessible ou retourne une erreur cohérente, sans exposer de données sensibles | ⬜ À faire |
-| T-DISC-05 | Absence de données sensibles dans host-meta | La réponse ne contient aucune information de configuration ou d’état | ⬜ À faire |
+| T-DISC-01 | GET non authentifié sur `/.well-known/host-meta` | Réponse valide contenant un lien de relation `restconf` | ✅ Terminé |
+| T-DISC-02 | Vérification du lien `restconf` | Le lien pointe vers la racine RESTCONF correcte | ✅ Terminé |
+| T-DISC-03 | GET sur `/.well-known/host-meta.json` si supporté | Réponse JSON valide avec le lien `restconf` | ✅ Terminé |
+| T-DISC-04 | Accès à `/.well-known/host-meta` avec un token invalide | L’endpoint reste accessible ou retourne une erreur cohérente, sans exposer de données sensibles | ✅ Terminé |
+| T-DISC-05 | Absence de données sensibles dans host-meta | La réponse ne contient aucune information de configuration ou d’état | ✅ Terminé |
 
 ---
 
@@ -461,12 +461,12 @@ Toutes les lignes sont initialisées avec l’avancement `⬜ À faire`.
 
 | ID | Test | Résultat attendu | Avancement |
 |---|---|---|---|
-| T-API-01 | GET sur `{+restconf}` | La ressource racine est retournée dans le media type négocié | ⬜ À faire |
-| T-API-02 | Vérification des sous-ressources annoncées | `data` et `operations` sont présentes ; `streams` ou `restconf-state` selon l’implémentation | ⬜ À faire |
-| T-API-03 | OPTIONS sur la racine | Réponse avec header `Allow` contenant au minimum `GET`, `OPTIONS` | ⬜ À faire |
-| T-API-04 | GET sur `{+restconf}/restconf-state/capabilities` si supporté | Les capacités RESTCONF sont listées et cohérentes avec les fonctionnalités activées | ⬜ À faire |
-| T-API-05 | Cohérence des capacités annoncées | Si YANG Patch, NMDA, with-defaults, depth, fields ou subscriptions sont supportés, ils sont annoncés | ⬜ À faire |
-| T-API-06 | Accès non autorisé à la racine si authentification requise | `401 Unauthorized` avec `WWW-Authenticate` ou `403 Forbidden` selon le cas | ⬜ À faire |
+| T-API-01 | GET sur `{+restconf}` | La ressource racine est retournée dans le media type négocié | ✅ Terminé |
+| T-API-02 | Vérification des sous-ressources annoncées | `data` et `operations` sont présentes ; `streams` ou `restconf-state` selon l’implémentation | ✅ Terminé |
+| T-API-03 | OPTIONS sur la racine | Réponse avec header `Allow` contenant au minimum `GET`, `OPTIONS` | ✅ Terminé |
+| T-API-04 | GET sur `{+restconf}/restconf-state/capabilities` si supporté | Les capacités RESTCONF sont listées et cohérentes avec les fonctionnalités activées | ✅ Terminé |
+| T-API-05 | Cohérence des capacités annoncées | Si YANG Patch, NMDA, with-defaults, depth, fields ou subscriptions sont supportés, ils sont annoncés | ✅ Terminé |
+| T-API-06 | Accès non autorisé à la racine si authentification requise | `401 Unauthorized` avec `WWW-Authenticate` ou `403 Forbidden` selon le cas | ✅ Terminé |
 
 ---
 

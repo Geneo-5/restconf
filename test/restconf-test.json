@@ -1,0 +1,156 @@
+{
+  "restconf-test:system": {
+    "config": {
+      "system-name": "restconf-dut"
+    }
+  },
+  "restconf-test:basic-data": {
+    "device-id": "dut-01",
+    "timeout": 30,
+    "enabled": true
+  },
+  "restconf-test:interfaces": {
+    "interface": [
+      {
+        "name": "eth0",
+        "description": "Uplink interface",
+        "enabled": true,
+        "mtu": 1500
+      },
+      {
+        "name": "eth1",
+        "description": "Management interface",
+        "enabled": false,
+        "mtu": 9000
+      },
+      {
+        "name": "lo0",
+        "description": "Loopback",
+        "enabled": true,
+        "mtu": 1500
+      }
+    ],
+    "vlan": [
+      {
+        "vlan-id": 100,
+        "name": "mgmt"
+      },
+      {
+        "vlan-id": 200,
+        "name": "data"
+      }
+    ],
+    "ordered-queue": [
+      {
+        "position": 1,
+        "item": "first"
+      },
+      {
+        "position": 2,
+        "item": "second"
+      },
+      {
+        "position": 3,
+        "item": "third"
+      }
+    ],
+    "advanced-features": {
+      "enable-advanced": true,
+      "advanced-interface": [
+        {
+          "name": "adv0",
+          "advanced-setting": 42
+        }
+      ]
+    }
+  },
+  "restconf-test:keyed-entries": {
+    "keyed-entry": [
+      {
+        "label": "alpha",
+        "value": "first entry"
+      },
+      {
+        "label": "beta",
+        "value": "second entry"
+      },
+      {
+        "label": "with,comma",
+        "value": "key contains a comma"
+      },
+      {
+        "label": "with space",
+        "value": "key contains a space"
+      }
+    ]
+  },
+  "restconf-test:access-control": {
+    "allowed-ips": [
+      "192.0.2.1",
+      "198.51.100.7",
+      "203.0.113.9"
+    ],
+    "allowed-macs": [
+      "00:11:22:33:44:55",
+      "aa:bb:cc:dd:ee:ff"
+    ],
+    "tags": [
+      "production",
+      "edge",
+      "restconf"
+    ]
+  },
+  "restconf-test:advanced-types": {
+    "mixed-value": "hello",
+    "feature-flags": "logging monitoring",
+    "precision-value": "3.1416",
+    "certificate": "AQIDBA==",
+    "sensor-type-ref": "restconf-test:temperature-sensor",
+    "default-interface": "eth0"
+  },
+  "restconf-test:constraints": {
+    "range-test": {
+      "percentage-value": 42,
+      "temperature": 21
+    },
+    "must-test": {
+      "start-time": 100,
+      "end-time": 200
+    },
+    "when-test": {
+      "enable-optional": true,
+      "optional-config": {
+        "optional-value": 7
+      }
+    },
+    "unique-test": {
+      "items": [
+        {
+          "id": 1,
+          "name": "alpha",
+          "priority": 1
+        },
+        {
+          "id": 2,
+          "name": "beta",
+          "priority": 2
+        }
+      ]
+    },
+    "password": "secret123",
+    "email": "admin@example.com",
+    "operation-mode": "normal"
+  },
+  "restconf-test:device-management": {
+    "managed-device": [
+      {
+        "device-id": 1,
+        "device-name": "sw1"
+      },
+      {
+        "device-id": 2,
+        "device-name": "sw2"
+      }
+    ]
+  }
+}
