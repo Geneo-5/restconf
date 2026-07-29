@@ -106,7 +106,7 @@ def auth_headers():
 class TestAPIResourceRetrieval:
     """T-API-01 : GET sur {+restconf} retourne la ressource racine API."""
 
-    def test_get_api_root_json(self, http2_client, api_url, auth_headers):
+    def test_get_api_root_json(self, http2_client, api_url, auth_headers, require_jwt):
         """
         RFC 8040 §3.3, B.1.1 : GET sur {+restconf} avec Accept: application/yang-data+json
         doit retourner la ressource racine API en JSON.
@@ -169,7 +169,7 @@ class TestAPIResourceRetrieval:
                 f"reçu {version}"
             )
 
-    def test_get_api_root_xml(self, http2_client, api_url, auth_headers):
+    def test_get_api_root_xml(self, http2_client, api_url, auth_headers, require_jwt):
         """
         RFC 8040 §3.3, B.1.1 : GET sur {+restconf} avec Accept: application/yang-data+xml
         doit retourner la ressource racine API en XML.
@@ -290,7 +290,7 @@ class TestAPISubResources:
             )
 
     def test_restconf_state_subresource_if_supported(
-        self, http2_client, api_url, auth_headers
+        self, http2_client, api_url, auth_headers, require_jwt
     ):
         """
         RFC 8040 §9 : La sous-ressource restconf-state peut être exposée
@@ -331,7 +331,7 @@ class TestAPISubResources:
 class TestAPIOptions:
     """T-API-03 : OPTIONS sur la racine retourne Allow."""
 
-    def test_options_api_root(self, http2_client, api_url, auth_headers):
+    def test_options_api_root(self, http2_client, api_url, auth_headers, require_jwt):
         """
         RFC 8040 §4.1, RFC 9110 §9.3.7 : OPTIONS sur {+restconf} doit retourner
         un header Allow contenant au minimum GET et OPTIONS.
@@ -360,7 +360,7 @@ class TestAPIOptions:
             f"Allow doit contenir OPTIONS, reçu {allow}"
         )
 
-    def test_options_operations(self, http2_client, api_url, auth_headers):
+    def test_options_operations(self, http2_client, api_url, auth_headers, require_jwt):
         """
         RFC 8040 §3.6, §4.1 : OPTIONS sur {+restconf}/operations doit retourner
         un header Allow contenant GET, OPTIONS et POST.
@@ -613,7 +613,7 @@ class TestCapabilitiesConsistency:
                     )
 
     def test_defaults_capability_has_basic_mode(
-        self, http2_client, api_url, auth_headers
+        self, http2_client, api_url, auth_headers, require_jwt
     ):
         """
         RFC 8040 §9.1.2 : Si la capacité 'defaults' est annoncée, elle doit
@@ -758,7 +758,7 @@ class TestOperationsResource:
     """Tests complémentaires pour la ressource operations."""
 
     def test_get_operations_returns_rpc_list(
-        self, http2_client, api_url, auth_headers
+        self, http2_client, api_url, auth_headers, require_jwt
     ):
         """
         RFC 8040 §3.6, B.1.1 : GET sur {+restconf}/operations retourne
@@ -803,7 +803,7 @@ class TestOperationsResource:
             )
 
     def test_operations_content_type_negotiation(
-        self, http2_client, api_url, auth_headers
+        self, http2_client, api_url, auth_headers, require_jwt
     ):
         """
         RFC 8040 §3.2, R41 : La ressource operations doit supporter
@@ -846,7 +846,7 @@ class TestMethodNotAllowed:
     """Tests pour 405 Method Not Allowed avec Allow."""
 
     def test_post_on_api_root_returns_405_with_allow(
-        self, http2_client, api_url, auth_headers
+        self, http2_client, api_url, auth_headers, require_jwt
     ):
         """
         RFC 9110 §9.3.7, RFC 8040 §4.1 : POST sur {+restconf} doit retourner
@@ -880,7 +880,7 @@ class TestMethodNotAllowed:
         )
 
     def test_delete_on_api_root_returns_405_with_allow(
-        self, http2_client, api_url, auth_headers
+        self, http2_client, api_url, auth_headers, require_jwt
     ):
         """
         RFC 9110 §9.3.7, RFC 8040 §4.1 : DELETE sur {+restconf} doit retourner

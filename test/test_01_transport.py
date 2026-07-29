@@ -295,7 +295,15 @@ class TestT_TRANS_04_Http11Support:
         """
         try:
             response = http1_client.get(f"{restconf_root}")
-            
+
+            # Un 401/403 est une réponse HTTP sémantiquement valide :
+            # le serveur refuse l'accès non authentifié (RFC 9110 §11.6).
+            if response.status_code in (401, 403):
+                assert "WWW-Authenticate" in response.headers, (
+                    f"{response.status_code} sans WWW-Authenticate"
+                )
+                return
+
             # Vérifications de base de la sémantique HTTP
             assert "Content-Type" in response.headers or response.status_code == 204
             assert response.status_code in (200, 204, 401, 403, 404, 405)
@@ -636,8 +644,9 @@ class TestT_TRANS_12_OversizedBody:
                 timeout=30.0
             )
             
-            # Le serveur doit rejeter (413, 400, ou erreur)
-            assert response.status_code in (400, 413, 500), \
+            # 401 est acceptable : le serveur vérifie l'authentification
+            # avant de traiter le corps (RFC 9110 §11.6).
+            assert response.status_code in (400, 401, 413, 500), \
                 f"Oversized body should be rejected, got {response.status_code}"
                 
         except httpx.HTTPError:

@@ -113,3 +113,13 @@ def client(base_url):
         timeout=30.0,
     ) as http_client:
         yield http_client
+
+@pytest.fixture()
+def require_jwt(test_jwt: str | None):
+    """Skip le test si aucun JWT n'est configuré."""
+    if not test_jwt:
+        pytest.skip(
+            "RESTCONF_TEST_JWT non défini — "
+            "test authentifié impossible sans token"
+        )
+    return test_jwt
