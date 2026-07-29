@@ -29,18 +29,11 @@ RFC 9110 - HTTP Semantics :
   - 403 Forbidden pour authentification valide mais accès refusé
 """
 
-import os
 import pytest
 import httpx
 import xml.etree.ElementTree as ET
 import json
 import re
-
-
-# Configuration par variables d'environnement
-BASE_URL = os.getenv("RESTCONF_BASE_URL", "https://127.0.0.1")
-RESTCONF_ROOT = os.getenv("RESTCONF_ROOT", "/restconf")
-TEST_JWT = os.getenv("RESTCONF_TEST_JWT", "")
 
 # Namespaces XML
 RESTCONF_NS = "urn:ietf:params:xml:ns:yang:ietf-restconf"
@@ -56,45 +49,6 @@ CAPABILITY_URNS = {
     "start-time": "urn:ietf:params:restconf:capability:start-time:1.0",
     "stop-time": "urn:ietf:params:restconf:capability:stop-time:1.0",
 }
-
-
-@pytest.fixture(scope="module")
-def http2_client():
-    """Client HTTP/2 avec TLS (vérification désactivée pour cert auto-signé)."""
-    with httpx.Client(
-        http2=True,
-        verify=False,
-        timeout=30.0,
-        headers={"User-Agent": "pytest-restconf-conformance/1.0"},
-    ) as client:
-        yield client
-
-
-@pytest.fixture(scope="module")
-def base_url():
-    """URL de base du serveur RESTCONF."""
-    return BASE_URL.rstrip("/")
-
-
-@pytest.fixture(scope="module")
-def restconf_root():
-    """Racine RESTCONF (ex: /restconf)."""
-    return RESTCONF_ROOT.rstrip("/")
-
-
-@pytest.fixture(scope="module")
-def api_url(base_url, restconf_root):
-    """URL de la ressource racine API."""
-    return f"{base_url}{restconf_root}"
-
-
-@pytest.fixture(scope="module")
-def auth_headers():
-    """Headers d'authentification avec JWT si disponible."""
-    if TEST_JWT:
-        return {"Authorization": f"Bearer {TEST_JWT}"}
-    return {}
-
 
 # ============================================================================
 # T-API-01 : GET sur {+restconf}

@@ -22,61 +22,6 @@ import time
 import threading
 from typing import Optional
 
-
-# ============================================================================
-# Fixtures et configuration
-# ============================================================================
-
-@pytest.fixture(scope="module")
-def base_url() -> str:
-    """URL de base du serveur RESTCONF (reverse proxy TLS)."""
-    import os
-    return os.environ.get("RESTCONF_BASE_URL", "https://127.0.0.1")
-
-
-@pytest.fixture(scope="module")
-def restconf_root() -> str:
-    """Racine RESTCONF configurée."""
-    import os
-    return os.environ.get("RESTCONF_ROOT", "/restconf")
-
-
-@pytest.fixture(scope="module")
-def backend_h2c_url() -> str:
-    """URL du backend h2c (ne doit PAS être accessible directement)."""
-    import os
-    return os.environ.get("RESTCONF_BACKEND_H2C_URL", "http://127.0.0.1:8080")
-
-
-@pytest.fixture(scope="module")
-def test_jwt() -> Optional[str]:
-    """Token JWT de test si disponible."""
-    import os
-    return os.environ.get("RESTCONF_TEST_JWT")
-
-
-@pytest.fixture(scope="module")
-def http2_client(base_url: str) -> httpx.Client:
-    """Client HTTP/2 avec TLS (ALPN h2)."""
-    return httpx.Client(
-        base_url=base_url,
-        http2=True,
-        verify=False,  # Certificat auto-signé en dev
-        timeout=30.0
-    )
-
-
-@pytest.fixture(scope="module")
-def http1_client(base_url: str) -> httpx.Client:
-    """Client HTTP/1.1 avec TLS."""
-    return httpx.Client(
-        base_url=base_url,
-        http2=False,
-        verify=False,
-        timeout=30.0
-    )
-
-
 # ============================================================================
 # T-TRANS-01 : Accès HTTPS avec ALPN h2
 # ============================================================================
@@ -145,58 +90,174 @@ class TestT_TRANS_01_HttpsAlpnH2:
 
 @pytest.mark.roadmap("R1", "A2", "A18")
 @pytest.mark.rfc("RFC 8040 §2")
-class TestT_TRANS_02_BackendH2cNotExposed:
+class TestT_TRANS_02_BackendNotExposed:
     """
-    T-TRANS-02 : Accès direct au backend h2c depuis l'extérieur
-    
+    T-TRANS-02 : Le backend ne doit jamais être accessible directement.
+
     RFC 8040 §2 : The RESTCONF protocol MUST be transported over HTTPS.
-    
-    Comportement attendu :
-    - Le backend h2c (HTTP/2 cleartext) ne doit JAMAIS être accessible directement
-    - Seul le reverse proxy TLS doit être le point d'entrée
-    - Toute tentative de connexion directe au backend doit échouer
+
+    Deux configurations possibles :
+    - Backend en socket Unix (CI Docker) : on vérifie l'absence d'écoute TCP
+      et les permissions du socket.
+    - Backend en TCP (dev) : on vérifie que le port n'est pas accessible.
     """
-    
-    def test_backend_h2c_not_accessible(self, backend_h2c_url: str):
+
+    def test_no_tcp_listener_for_backend(
+        self, backend_h2c_url: str | None, backend_unix_socket: str | None
+    ):
         """
-        Le backend h2c ne doit pas être accessible directement.
-        
-        Note : Ce test peut échouer si le backend est exposé par erreur,
-        ce qui indiquerait une faille de sécurité critique.
+        Aucune écoute TCP ne doit exposer le backend.
+
+        Si le backend est en socket Unix, il ne doit PAS y avoir d'écoute
+        TCP simultanée. Si une URL TCP est configurée, la connexion doit
+        être refusée.
         """
         from urllib.parse import urlparse
-        parsed = urlparse(backend_h2c_url)
-        host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or 8080
-        
-        # Tentative de connexion TCP directe
-        try:
-            with socket.create_connection((host, port), timeout=5) as sock:
-                # Si on arrive ici, le backend est accessible (FAIL)
-                pytest.fail(
-                    f"Backend h2c accessible directement sur {host}:{port}. "
-                    "Le backend ne doit JAMAIS être exposé, seul le reverse proxy TLS "
-                    "doit être le point d'entrée (RFC 8040 §2)."
-                )
-        except (socket.timeout, ConnectionRefusedError, OSError):
-            # Comportement attendu : connexion refusée ou timeout
-            pass
-    
-    def test_backend_h2c_http_request_fails(self, backend_h2c_url: str):
+
+        if backend_unix_socket and not backend_h2c_url:
+            # Backend en socket Unix : vérifier qu'aucun port TCP connu
+            # du backend n'est en écoute.
+            # On teste les ports courants du projet.
+            for port in (8080, 8443, 9090):
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=2):
+                        pytest.fail(
+                            f"Le backend ne doit pas écouter sur TCP 127.0.0.1:{port} "
+                            f"lorsqu'il est configuré en socket Unix "
+                            f"({backend_unix_socket}). Seul le reverse proxy TLS "
+                            f"doit être le point d'entrée (RFC 8040 §2)."
+                        )
+                except (socket.timeout, ConnectionRefusedError, OSError):
+                    pass  # Comportement attendu
+            return
+
+        if backend_h2c_url:
+            parsed = urlparse(backend_h2c_url)
+            host = parsed.hostname or "127.0.0.1"
+            port = parsed.port or 8080
+            try:
+                with socket.create_connection((host, port), timeout=5):
+                    pytest.fail(
+                        f"Backend accessible directement sur {host}:{port}. "
+                        "Le backend ne doit JAMAIS être exposé, seul le reverse "
+                        "proxy TLS doit être le point d'entrée (RFC 8040 §2)."
+                    )
+            except (socket.timeout, ConnectionRefusedError, OSError):
+                pass  # Comportement attendu
+            return
+
+        pytest.skip("Aucune configuration backend (ni TCP ni socket Unix)")
+
+    def test_unix_socket_permissions(
+        self,
+        backend_unix_socket: str | None,
+        backend_socket_mode: int,
+        backend_socket_group: str | None,
+        backend_socket_user: str | None,
+    ):
         """
-        Une requête HTTP directe au backend h2c doit échouer.
+        Le socket Unix du backend doit avoir exactement le mode attendu
+        (défaut : 0o770) et appartenir au group du reverse proxy.
+
+        Pour un socket Unix, connect() requiert la permission write
+        (unix(7)). Avec 0o770 :
+        - owner (backend) : rwx → peut se connecter
+        - group (proxy)   : rwx → peut se connecter
+        - other           : --- → accès refusé
+
+        Tout autre mode est une faille :
+        - 0o777 / 0o776 / 0o775 : other peut se connecter
+        - 0o755 / 0o750 : group ne peut pas se connecter (proxy bloqué)
+        - 0o700 : proxy bloqué aussi
         """
-        try:
-            with httpx.Client(base_url=backend_h2c_url, timeout=5.0) as client:
-                response = client.get("/restconf")
-                # Si on obtient une réponse, le backend est exposé (FAIL)
-                pytest.fail(
-                    f"Backend h2c a répondu avec status {response.status_code}. "
-                    "Le backend ne doit pas être accessible directement."
+        import grp
+        import os
+        import pwd
+        import stat
+
+        if not backend_unix_socket:
+            pytest.skip("Backend non configuré en socket Unix")
+
+        if not os.path.exists(backend_unix_socket):
+            pytest.skip(f"Socket Unix {backend_unix_socket} absent")
+
+        st = os.stat(backend_unix_socket)
+        perms = stat.S_IMODE(st.st_mode)
+
+        # 1) Mode exact
+        assert perms == backend_socket_mode, (
+            f"Le socket {backend_unix_socket} a le mode {oct(perms)}, "
+            f"attendu {oct(backend_socket_mode)}. "
+            f"Seuls le backend (owner) et le reverse proxy (group) "
+            f"doivent pouvoir se connecter au socket."
+        )
+
+        # 2) Doit être un socket
+        assert stat.S_ISSOCK(st.st_mode), (
+            f"{backend_unix_socket} n'est pas un socket Unix "
+            f"(mode {oct(st.st_mode)})"
+        )
+
+        # 3) Group propriétaire = group du proxy
+        if backend_socket_group:
+            try:
+                expected_gid = grp.getgrnam(backend_socket_group).gr_gid
+            except KeyError:
+                pytest.skip(
+                    f"Group {backend_socket_group!r} inexistant sur ce système"
                 )
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout):
-            # Comportement attendu
-            pass
+            actual_group = grp.getgrgid(st.st_gid).gr_name
+            assert st.st_gid == expected_gid, (
+                f"Le socket {backend_unix_socket} appartient au group "
+                f"{actual_group!r} (gid {st.st_gid}), attendu "
+                f"{backend_socket_group!r} (gid {expected_gid}). "
+                f"Le reverse proxy doit être dans le group du socket "
+                f"pour pouvoir s'y connecter."
+            )
+
+        # 4) User propriétaire (optionnel)
+        if backend_socket_user:
+            try:
+                expected_uid = pwd.getpwnam(backend_socket_user).pw_uid
+            except KeyError:
+                pytest.skip(
+                    f"User {backend_socket_user!r} inexistant sur ce système"
+                )
+            actual_user = pwd.getpwuid(st.st_uid).pw_name
+            assert st.st_uid == expected_uid, (
+                f"Le socket {backend_unix_socket} appartient à l'user "
+                f"{actual_user!r} (uid {st.st_uid}), attendu "
+                f"{backend_socket_user!r} (uid {expected_uid})."
+            )
+
+    def test_backend_http_request_fails(
+        self, backend_h2c_url: str | None, backend_unix_socket: str | None
+    ):
+        """
+        Une requête HTTP directe au backend doit échouer.
+        """
+        if backend_h2c_url:
+            try:
+                with httpx.Client(base_url=backend_h2c_url, timeout=5.0) as c:
+                    response = c.get("/restconf")
+                    pytest.fail(
+                        f"Backend a répondu avec status {response.status_code}. "
+                        "Le backend ne doit pas être accessible directement."
+                    )
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout):
+                pass  # Comportement attendu
+            return
+
+        if backend_unix_socket:
+            # En socket Unix, on ne peut pas faire de requête HTTP directe
+            # via httpx sans transport Unix. L'absence d'écoute TCP (testée
+            # ci-dessus) garantit la non-accessibilité.
+            pytest.skip(
+                "Backend en socket Unix : la non-accessibilité TCP est "
+                "vérifiée par test_no_tcp_listener_for_backend"
+            )
+
+        pytest.skip("Aucune configuration backend")
 
 
 # ============================================================================
@@ -685,8 +746,7 @@ class TestT_TRANS_13_ProxyTimeoutSse:
 
 @pytest.mark.roadmap("R1", "R44")
 @pytest.mark.rfc("RFC 8446")
-@pytest.mark.filterwarnings("ignore:.*TLSv1 is deprecated.*:DeprecationWarning")
-@pytest.mark.filterwarnings("ignore:.*TLSv1_1 is deprecated.*:DeprecationWarning")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 class TestT_TRANS_14_OldTlsRejected:
     """
     T-TRANS-14 : TLS 1.0/1.1 si interdits
