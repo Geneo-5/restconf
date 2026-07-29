@@ -11,10 +11,16 @@ if [[ " $@ " == *" -vv "* ]]; then
     echo ""
     echo "📋 Liste des plugins chargés:"
     find / -type d -name "sysrepo-plugind" -exec ls -l {}/plugins \;
+
+fi
+
+hap_verbose='-q'
+if (( ${SYSREPO_LOGLEVEL} > 3 )); then
+    hap_verbose="-d"
 fi
 
 sysrepo-plugind -d -v${SYSREPO_LOGLEVEL} &
-haproxy -d -f /etc/haproxy/haproxy.cfg &
+haproxy -db -f /etc/haproxy/haproxy.cfg $hap_verbose &
 
 if [[ " $@ " == *" --listen "* ]]; then
     exec /usr/local/sbin/restconfd -u /run/restconf.socket

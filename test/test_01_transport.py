@@ -676,6 +676,8 @@ class TestT_TRANS_13_ProxyTimeoutSse:
 
 @pytest.mark.roadmap("R1", "R44")
 @pytest.mark.rfc("RFC 8446")
+@pytest.mark.filterwarnings("ignore:.*TLSv1 is deprecated.*:DeprecationWarning")
+@pytest.mark.filterwarnings("ignore:.*TLSv1_1 is deprecated.*:DeprecationWarning")
 class TestT_TRANS_14_OldTlsRejected:
     """
     T-TRANS-14 : TLS 1.0/1.1 si interdits
