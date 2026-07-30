@@ -58,8 +58,8 @@ endchoice
 
 config SYSREPO_PLUGIND_PATH
 	string "Sysrepo plugind plugins install path"
-	depends on SYSREPO_PLUGIND
-	default "/lib/sysrepo-plugind/plugins/"
+	depends on SYSREPO_PLUGIND || RESTCONF_TEST
+	default "/usr/lib/sysrepo-plugind/plugins"
 	help
 	  Directory where the restconf.so plugin is installed so that
 	  sysrepo-plugind can discover and load it.
@@ -102,3 +102,34 @@ config H2C_RESTCONF_ROOT
 	  Path at which the RESTCONF root resource ({+restconf}, as defined by
 	  RFC 8040) is exposed, e.g. as advertised by the
 	  /.well-known/host-meta discovery document.
+
+choice
+	prompt "JWT alog"
+	default ALG_NONE
+	config ALG_NONE
+		bool "JWT Algo NONE"
+		help
+		  Use JWT with algo NONE. Use only for test.
+endchoice
+
+config JWT_GRANT_USERNAME
+	string "JWT grant username"
+	default "name"
+	help
+	  Set grant value whose store user name used for NACM.
+
+config ROOT_WELL_KNOWN
+	bool "Enable well known path"
+	default y
+	help
+	  Enable '/.well-known/host-meta' path
+
+config RESTCONF_TEST
+	bool "Build RESTCONF test"
+	default n
+	help
+	  Build the RESTCONF test plugin for sysrepo-plugind and install
+	  the corresponding restconf-test.yang module.
+
+	  Say Y here to enable the RESTCONF pytest suite. Without this
+	  option, most RESTCONF tests will be skipped.

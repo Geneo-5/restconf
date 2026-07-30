@@ -184,7 +184,7 @@ rt_input_value(const struct lyd_node *input, const char *name)
 static int
 rt_add_output(struct lyd_node *output, const char *name, const char *value)
 {
-	if (lyd_new_path(output, NULL, name, value, LYD_NEW_PATH_OUTPUT, NULL)
+	if (lyd_new_path(output, NULL, name, value, 0, NULL)
 			!= LY_SUCCESS) {
 		SRPLG_LOG_ERR(RT_LOG, "lyd_new_path(output '%s') failed.", name);
 		return SR_ERR_OPERATION_FAILED;

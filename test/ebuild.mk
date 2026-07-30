@@ -7,14 +7,17 @@
 
 include $(TOPDIR)/common.mk
 
-solibs                        := restconf-test.so
-restconf-test.o-objs          := $(plugin-objs)
-restconf-test.o-cflags        := $(shared-common-cflags)
-restconf-test.o-ldflags       := $(shared-common-ldflags)
-restconf-test.o-pkgconf       := $(common-pkgconf)
-restconf-test.o-path          := $(CONFIG_SYSREPO_PLUGIND_PATH)/restconf-test.so
+solibs                     := restconf-test.so
+restconf-test.so-objs      := restconf-test.o
+restconf-test.so-cflags    := $(shared-common-cflags)
+restconf-test.so-ldflags   := $(shared-common-ldflags)
+restconf-test.so-pkgconf   := $(common-pkgconf)
+restconf-test.so-path      := $(CONFIG_SYSREPO_PLUGIND_PATH)/restconf-test.so
 
-install: install-yang
+install: $(CONFIG_YANG_PATH)/restconf-test.yang install-yang-test
+
+$(CONFIG_YANG_PATH)/restconf-test.yang: restconf-test.yang
+	$(call install_recipe,-m644,$(<),$(@))
 
 # ----------------------------------------------------------------------------
 # Installation du module de qualification RESTCONF (tests §4+)
@@ -23,7 +26,7 @@ install: install-yang
 #   clés de liste spéciales). Le module 'oven', lui, est déjà installé à
 #   l'étape 2 (compilation sysrepo) et couvert par test/test_05_oven.py.
 # ----------------------------------------------------------------------------
-.PHONY: install-yang
-install-yang: restconf-test.yang restconf-test.jsons
-	$(@)sysrepoctl -i test/restconf-test.yang --enable-feature=advanced-monitoring \
-	               --enable-feature=legacy-support --init-data test/restconf-test.json
+.PHONY: install-yang-test
+install-yang-test: restconf-test.yang restconf-test.json
+	$(Q)sysrepoctl -i restconf-test.yang --enable-feature=advanced-monitoring \
+	               --enable-feature=legacy-support --init-data restconf-test.json

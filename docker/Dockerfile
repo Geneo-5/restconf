@@ -74,6 +74,8 @@ RUN echo "🔨 Compilation de sysrepo..." && \
     mkdir build && cd build && \
     cmake -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_INSTALL_PREFIX=/usr \
+          -DSRPD_PLUGINS_PATH=/usr/lib/sysrepo-plugind/plugins/ \
+          -DSR_PLUGINS_PATH=/usr/lib/sysrepo/plugins/ \
           -DBUILD_TESTING=OFF \
           -DNOTIFD_SETUP=ON \
           .. && \
@@ -131,7 +133,7 @@ RUN echo "🔨 Compilation de libjwt..." && \
           -DWITH_OPENSSL=ON \
           -DWITH_GNUTLS=OFF \
           -DWITH_MBEDTLS=OFF \
-          -DWITH_LIBCURL=OFF \
+          -DWITH_LIBCURL=ON \
           -DWITH_TESTS=OFF \
           -DWITH_KCAPI_MD=OFF \
           -DENABLE_COVERAGE=OFF \
@@ -203,6 +205,7 @@ ENV EXTRA_LDFLAGS="${LDFLAGS}"
 
 # Compilation du projet RESTCONF avec les options configurables
 RUN echo "🔨 Compilation du projet RESTCONF..." && \
+    make defconfig DEFCONFIG:=docker/restconf.config && \
     make -j$(nproc) \
          EXTRA_CFLAGS="${EXTRA_CFLAGS}" \
          EXTRA_LDFLAGS="${EXTRA_LDFLAGS}" && \

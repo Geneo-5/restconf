@@ -157,18 +157,18 @@ class TestT_TRANS_02_BackendNotExposed:
     ):
         """
         Le socket Unix du backend doit avoir exactement le mode attendu
-        (défaut : 0o770) et appartenir au group du reverse proxy.
+        (défaut : 0o660) et appartenir au group du reverse proxy.
 
         Pour un socket Unix, connect() requiert la permission write
-        (unix(7)). Avec 0o770 :
-        - owner (backend) : rwx → peut se connecter
-        - group (proxy)   : rwx → peut se connecter
+        (unix(7)). Avec 0o660 :
+        - owner (backend) : rw_ → peut se connecter
+        - group (proxy)   : rw_ → peut se connecter
         - other           : --- → accès refusé
 
         Tout autre mode est une faille :
-        - 0o777 / 0o776 / 0o775 : other peut se connecter
-        - 0o755 / 0o750 : group ne peut pas se connecter (proxy bloqué)
-        - 0o700 : proxy bloqué aussi
+        - 0o666 / 0o665 : other peut se connecter
+        - 0o655 / 0o650 : group ne peut pas se connecter (proxy bloqué)
+        - 0o600 : proxy bloqué aussi
         """
         import grp
         import os

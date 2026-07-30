@@ -155,6 +155,8 @@ struct rest_ops {
 	 *         abort processing of this stream.
 	 */
 	int (*dispatch)(void *priv, struct evbuffer *body);
+
+	int (*identified)(void *priv, const char *name);
 	/**
 	 * @brief Called when the stream is being torn down.
 	 *
@@ -183,6 +185,15 @@ struct rest_dispatcher {
 	size_t                 priv_len; /**< Size, in bytes, of the handler's private per-stream state. */
 };
 
+int
+jwt_bearer_token_get_name(const char *bearer, char **user)
+	__rest_nonull(1, 2);
+
+
+sr_conn_ctx_t *
+h2c_stream_get_conn(struct rest_stream *stream)
+	__rest_nonull(1);
+
 /**
  * @def ADD_DISPATCHER
  * @brief Register a resource handler for a given URI path prefix.
@@ -200,24 +211,24 @@ struct rest_dispatcher {
  * registration elsewhere.
  */
 #define ADD_DISPATCHER(_str, opsl, _priv_len) \
-static const struct rest_dispatcher __rest_dispatcher_##opsl \
-__attribute((section("rest_dispatcher"), used)) = { \
+static const struct rest_dispatcher __rest_dispatcher_##opsl = { \
 	.path     = _str, \
 	.path_len = sizeof(_str) - 1, \
 	.ops      = &(opsl), \
-	.priv_len = _priv_len \
-};
+	.priv_len = _priv_len}; \
+static const struct rest_dispatcher * ___rest_dispatcher_##opsl \
+__attribute((section("rest_dispatcher"), used)) = &__rest_dispatcher_##opsl;
 
 /**
  * @brief Start-of-table marker for the @c rest_dispatcher linker section.
  * @see ADD_DISPATCHER, __stop_rest_dispatcher
  */
-extern const struct rest_dispatcher __start_rest_dispatcher;
+extern const struct rest_dispatcher *__start_rest_dispatcher[];
 /**
  * @brief End-of-table marker for the @c rest_dispatcher linker section.
  * @see ADD_DISPATCHER, __start_rest_dispatcher
  */
-extern const struct rest_dispatcher __stop_rest_dispatcher;
+extern const struct rest_dispatcher *__stop_rest_dispatcher[];
 
 /**
  * @brief Send a bare HTTP error response and terminate the stream.
@@ -302,6 +313,18 @@ create_server(struct event_base  *base,
 	__rest_nonull(1, 2, 3);
 
 /**
+ * @brief Destroy an h2c server and all its active sessions/streams.
+ *
+ * Stops the connection listener, tears down every still-active session (and
+ * their streams, invoking each stream's #rest_ops::fini as appropriate),
+ * and releases the server context itself.
+ *
+ * @param server server to destroy, or @c NULL (no-op).
+ */
+void
+destroy_server(struct rest_server *server);
+
+/**
  * @brief Create and bind an h2c server listening on a Unix domain socket.
  *
  * Convenience wrapper around create_server() building the @c AF_UNIX socket
@@ -318,17 +341,12 @@ create_server(struct event_base  *base,
  *
  * @see create_server(), create_tcp_server()
  */
-static inline
-struct rest_server * __rest_nonull(1, 2, 3)
+struct rest_server *
 create_uds_server(struct event_base  *base,
                   sr_conn_ctx_t      *conn,
-                  const char         *uds_path)
-{
-	struct sockaddr_un sun = {0};
-	sun.sun_family = AF_UNIX;
-	strncpy(sun.sun_path, uds_path, sizeof(sun.sun_path) - 1);
-	return create_server(base, conn, (struct sockaddr *)&sun, sizeof(sun));
-}
+                  const char         *uds_path,
+                  gid_t               gid)
+	__rest_nonull(1, 2, 3);
 
 /**
  * @brief Create and bind an h2c server listening on a TCP/IPv4 socket.
@@ -375,16 +393,5 @@ void
 server_set_idle_timeout(struct rest_server *server, int timeout_sec)
 	__rest_nonull(1);
 
-/**
- * @brief Destroy an h2c server and all its active sessions/streams.
- *
- * Stops the connection listener, tears down every still-active session (and
- * their streams, invoking each stream's #rest_ops::fini as appropriate),
- * and releases the server context itself.
- *
- * @param server server to destroy, or @c NULL (no-op).
- */
-void
-destroy_server(struct rest_server *server);
 
 #endif /* _RESTCONF_H2C_H */

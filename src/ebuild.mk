@@ -10,10 +10,11 @@ include $(TOPDIR)/common.mk
 subdirs            = sysrepo
 
 bins              := restconfd
-restconfd-objs    := main.o h2c_server.o signal.o well-known.o
+restconfd-objs    := main.o h2c_server.o signal.o jwt.o restconf.o
+restconfd-objs    += $(call kconf_enabled,ROOT_WELL_KNOWN,well-known.o)
 restconfd-lots    := $(call kconf_enabled,SYSREPO_BUILTIN,sysrepo/builtin.a)
 restconfd-cflags  := $(common-cflags)
 restconfd-ldflags := $(common-ldflags)
-restconfd-pkgconf := $(common-pkgconf) libevent libnghttp2 libcurl
+restconfd-pkgconf := $(common-pkgconf) libevent libnghttp2 libcurl libjwt
 restconfd-path    := $(SBINDIR)/restconfd
 

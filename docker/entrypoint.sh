@@ -9,8 +9,7 @@ if [[ " $@ " == *" -vv "* ]]; then
     sysrepoctl -L || true
 
     echo ""
-    echo "📋 Liste des plugins chargés:"
-    find / -type d -name "sysrepo-plugind" -exec ls -l {}/plugins \;
+    find / -type d -name "sysrepo-plugind" -exec echo "📋 Liste des plugins chargés in {}/plugins:" \; -exec ls -l {}/plugins \;
 
 fi
 
@@ -26,7 +25,7 @@ if [[ " $@ " == *" --listen "* ]]; then
     exec /usr/local/sbin/restconfd -u /run/restconf.socket
 fi
 
-/usr/local/sbin/restconfd -d -u /run/restconf.socket
+/usr/local/sbin/restconfd -d -u /run/restconf.socket -g haproxy
 
 if [[ " $@ " == *" -vv "* ]]; then
     echo ""

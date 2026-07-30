@@ -72,7 +72,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
     group.addoption(
         "--restconf-backend-socket-mode",
-        default="0o770",
+        default="0o660",
         help="Mode octal attendu du socket Unix du backend (défaut : 0o770)",
     )
     group.addoption(
@@ -157,8 +157,8 @@ def backend_unix_socket(request: pytest.FixtureRequest) -> str | None:
 
 @pytest.fixture(scope="session")
 def backend_socket_mode(request: pytest.FixtureRequest) -> int:
-    """Mode octal attendu du socket Unix (défaut : 0o770)."""
-    raw = _resolve(request, "restconf_backend_socket_mode", "RESTCONF_BACKEND_SOCKET_MODE", "0o770")
+    """Mode octal attendu du socket Unix (défaut : 0o660)."""
+    raw = _resolve(request, "restconf_backend_socket_mode", "RESTCONF_BACKEND_SOCKET_MODE", "0o660")
     return int(raw, 8)
 
 

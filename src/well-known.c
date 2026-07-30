@@ -36,7 +36,7 @@ static int
 well_known_init(void               *priv,
                 struct rest_stream *stream,
                 enum rest_method    method,
-                CURLU              *url __unused)
+                CURLU              *url)
 {
 	struct well_known_ctx *ctx = priv;
 	char *path;
@@ -62,6 +62,16 @@ well_known_init(void               *priv,
 
 end:
 	curl_free(path);
+	switch (method) {
+	case METHOD_GET:
+	case METHOD_HEAD:
+		break;
+	case METHOD_OPTIONS:
+		return h2c_send_options(ctx->stream, ALLOW_OPTIONS);
+	default:
+		return h2c_send_error(ctx->stream, 405);
+	}
+
 	return 0;
 }
 
@@ -120,32 +130,24 @@ well_known_dispatch(void            *priv,
 	char *content = ctx->type == XRD_XML ? "application/xrd+xml" :
 	                                       "application/json";
 	char length[64];
-	nghttp2_nv hdrs[3] = {
+	nghttp2_nv hdrs[] = {
 		MAKE_NV_OK,
 		MAKE_NV("content-type", content, strlen(content)),
 		MAKE_NV("Content-Length", NULL, 0),
 	};
 
-	switch (ctx->method) {
-	case METHOD_GET:
-	case METHOD_HEAD:
-		ctx->output = evbuffer_new();
-		if (!ctx->output)
-			return NGHTTP2_ERR_NOMEM;
+	ctx->output = evbuffer_new();
+	if (!ctx->output)
+		return NGHTTP2_ERR_NOMEM;
 
-		if (evbuffer_add(ctx->output, out, strlen(out)))
-			return NGHTTP2_ERR_NOMEM;
+	if (evbuffer_add(ctx->output, out, strlen(out)))
+		return NGHTTP2_ERR_NOMEM;
 
-		snprintf(length, sizeof(length), "%zu", evbuffer_get_length(ctx->output));
-		hdrs[2].value = (uint8_t *)length;
-		hdrs[2].valuelen = strlen(length);
-		return h2c_send_answer(ctx->stream, hdrs, 3,
-			ctx->method == METHOD_GET ? ctx->output : NULL);
-	case METHOD_OPTIONS:
-		return h2c_send_options(ctx->stream, ALLOW_OPTIONS);
-	default:
-		return h2c_send_error(ctx->stream, 405);
-	}
+	snprintf(length, sizeof(length), "%zu", evbuffer_get_length(ctx->output));
+	hdrs[2].value = (uint8_t *)length;
+	hdrs[2].valuelen = strlen(length);
+	return h2c_send_answer(ctx->stream, hdrs, stroll_array_nr(hdrs),
+		ctx->method == METHOD_GET ? ctx->output : NULL);
 }
 
 static void

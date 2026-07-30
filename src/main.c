@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <grp.h>
 
 #include "restconf/sysrepo.h"
 #include "restconf/h2c.h"
@@ -69,6 +70,7 @@ usage(const char *prog)
 	fprintf(stderr, "  -a <addr>   Bind address (default: 127.0.0.1)\n");
 	fprintf(stderr, "  -p <port>   Port to listen on (default: 8080)\n");
 	fprintf(stderr, "  -u <path>   Listen on Unix socket (h2c) instead of TCP\n");
+	fprintf(stderr, "  -g <group>  Set Unix socket group permission\n");
 	fprintf(stderr, "  -d          Run as daemon (background)\n");
 	fprintf(stderr, "  -t <sec>    Idle read timeout per connection, 0=disabled (default: 300)\n");
 	fprintf(stderr, "  -h          Show this help\n");
@@ -79,6 +81,7 @@ main(int argc, char **argv)
 {
 	const char         *bind_addr = "127.0.0.1";
 	uint16_t            port = 8080;
+	gid_t               gid = (gid_t)-1;
 	const char         *uds_path = NULL;
 	bool                daemonize = false;
 	int                 idle_timeout_sec = 300;
@@ -91,7 +94,7 @@ main(int argc, char **argv)
 	int                 ret;
 
 	int opt;
-	while ((opt = getopt(argc, argv, "a:p:u:dt:h")) != -1) {
+	while ((opt = getopt(argc, argv, "a:p:u:g:dt:h")) != -1) {
 		switch (opt) {
 			case 'a':
 				bind_addr = optarg;
@@ -101,6 +104,16 @@ main(int argc, char **argv)
 				break;
 			case 'u':
 				uds_path = optarg;
+				break;
+			case 'g':
+				struct group *group = getgrnam(optarg);
+
+				if (!group) {
+					fprintf(stderr, "Bad group name %s\n", optarg);
+					usage(argv[0]);
+					return 1;
+				}
+				gid = group->gr_gid;
 				break;
 			case 'd':
 				daemonize = true;
@@ -140,7 +153,7 @@ main(int argc, char **argv)
 		goto end;
 
 	if (uds_path)
-		server = create_uds_server(base, conn, uds_path);
+		server = create_uds_server(base, conn, uds_path, gid);
 	else
 		server = create_tcp_server(base, conn, bind_addr, port);
 	if (!server) {

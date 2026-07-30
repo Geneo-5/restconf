@@ -50,6 +50,12 @@ struct rest_stream {
 	uint8_t                   priv[] __aligned;
 };
 
+sr_conn_ctx_t *
+h2c_stream_get_conn(struct rest_stream *stream)
+{
+	return stream->parent->parent->conn;
+}
+
 static enum rest_method
 h2c_parse_method(const char *method)
 {
@@ -255,7 +261,6 @@ on_data_chunk_recv(nghttp2_session *session,
 static const struct rest_ops *
 search_dispatcher(CURLU *url)
 {
-	const struct rest_dispatcher * ptr;
 	const struct rest_ops *ops = NULL;
 	CURLUcode rc;
 	char *path;
@@ -264,7 +269,10 @@ search_dispatcher(CURLU *url)
 	if (rc)
 		return NULL;
 
-	for (ptr = &__start_rest_dispatcher; ptr < &__stop_rest_dispatcher; ++ptr) {
+	for (const struct rest_dispatcher **p = __start_rest_dispatcher;
+	    p < __stop_rest_dispatcher; ++p) {
+		const struct rest_dispatcher *ptr = *p;
+
 		rest_assert(ptr->path);
 		rest_assert(ptr->path[0] == '/');
 
@@ -289,6 +297,7 @@ on_header(nghttp2_session     *session __unused,
 	struct rest_stream  *stream;
 	nghttp2_vec          vname = nghttp2_rcbuf_get_buf(name);
 	nghttp2_vec          vvalue = nghttp2_rcbuf_get_buf(value);
+	int ret = 0;
 
 	if (frame->hd.type != NGHTTP2_HEADERS ||
 	    frame->headers.cat != NGHTTP2_HCAT_REQUEST)
@@ -325,12 +334,23 @@ on_header(nghttp2_session     *session __unused,
 
 			stream->ops = search_dispatcher(url);
 			if (stream->ops && stream->ops->init)
-				stream->ops->init(stream->priv, stream, stream->method, url);
+				ret = stream->ops->init(stream->priv, stream, stream->method, url);
 
 			curl_url_cleanup(url);
-			return 0;
+			return ret;
 		}
 		break;
+	case 13:
+		if (memcmp(vname.base, "authorization", 5) == 0) {
+			char *user = NULL;
+
+			ret = jwt_bearer_token_get_name((const char *)vvalue.base, &user);
+			stream->status = ret ? STATUS_AUTH_INVALID : STATUS_AUTH_VALID;
+			if (stream->ops && stream->ops->identified)
+				ret = stream->ops->identified(stream->priv, user);
+			free(user);
+			return ret;
+		}
 	}
 
 	if (stream->ops && stream->ops->header)
@@ -584,7 +604,6 @@ create_server(struct event_base  *base,
 
 	struct rest_server *server;
 	size_t stream_size = sizeof(struct rest_stream);
-	const struct rest_dispatcher * ptr;
 
 	server = malloc(sizeof(*server));
 	if (!server) {
@@ -600,9 +619,13 @@ create_server(struct event_base  *base,
 	                              sizeof(struct rest_session),
 	                              stroll_page_size());
 
-	for (ptr = &__start_rest_dispatcher; ptr < &__stop_rest_dispatcher; ++ptr)
+	for (const struct rest_dispatcher **p = __start_rest_dispatcher;
+	     p < __stop_rest_dispatcher; ++p) {
+		const struct rest_dispatcher *ptr = *p;
+
 		stream_size = stroll_max(stream_size,
-		                         sizeof(struct rest_session) + ptr->priv_len);
+		                         sizeof(struct rest_stream) + ptr->priv_len);
+	}
 
 	stroll_falloc_init_block_size(&server->stream_alloc,
 	                              STROLL_FALLOC_UNBOUND_CHUNK_NR,
@@ -622,6 +645,35 @@ error:
 	free(server);
 	return NULL;
 }
+
+struct rest_server *
+create_uds_server(struct event_base  *base,
+                  sr_conn_ctx_t      *conn,
+                  const char         *uds_path,
+                  gid_t               gid)
+{
+	struct rest_server *srv;
+	int ret = 0;
+
+	struct sockaddr_un sun = {0};
+	sun.sun_family = AF_UNIX;
+	strncpy(sun.sun_path, uds_path, sizeof(sun.sun_path) - 1);
+	srv = create_server(base, conn, (struct sockaddr *)&sun, sizeof(sun));
+	if (srv && (gid != (uid_t)-1)) {
+		ret = chown(uds_path, (uid_t)-1, gid);
+		if (ret)
+			goto error;
+
+		ret = chmod(uds_path, 0660);
+		if (ret)
+			goto error;
+	}
+	return srv;
+error:
+	destroy_server(srv);
+	return NULL;
+}
+
 
 void
 server_set_idle_timeout(struct rest_server *server, int timeout_sec)
