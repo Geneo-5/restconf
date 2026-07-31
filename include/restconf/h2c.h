@@ -36,6 +36,13 @@
 #include <event2/buffer.h>
 #include <curl/curl.h>
 
+#define WWW_AUTH     "WWW-Authenticate"
+#define WWW_AUTH_401 "Bearer realm=\"restconf\""
+#define WWW_AUTH_403 "Bearer realm=\"restconf\",error=\"insufficient_scope\""
+#define CONTENT_JSON "application/yang-data+json"
+#define CONTENT_XML  "application/yang-data+XML"
+
+
 /**
  * @def MAKE_NV
  * @brief Build an nghttp2 name/value header pair literal.
@@ -63,6 +70,25 @@
  * array passed to h2c_send_answer() when signaling a successful response.
  */
 #define MAKE_NV_OK MAKE_NV(":status", "200", 3)
+
+#define MAKE_NV_TEMP(NAME) MAKE_NV(NAME, NULL, 0)
+
+static inline void __rest_nonull(1, 2)
+set_nv(nghttp2_nv *nv, char *value)
+{
+	nv->value = (uint8_t *)value;
+	nv->valuelen = strlen(value);
+}
+
+static inline void __rest_nonull(1, 2)
+make_nv(nghttp2_nv *nv, char *name, char *value)
+{
+	nv->name = (uint8_t *)name;
+	nv->namelen = strlen(name);
+	nv->value = (uint8_t *)value;
+	nv->valuelen = strlen(value);
+	nv->flags = NGHTTP2_NV_FLAG_NONE;
+}
 
 /**
  * @brief HTTP request method, as parsed from the @c :method pseudo-header.
@@ -284,6 +310,11 @@ h2c_send_options(struct rest_stream  *stream, char *options)
 int
 h2c_send_answer(struct rest_stream  *stream, nghttp2_nv *hdrs, size_t nb, struct evbuffer *out)
 	__rest_nonull(1, 2);
+
+
+void
+h2c_discard_body(struct rest_stream  *stream)
+	__rest_nonull(1);
 
 /**
  * @brief Create and bind an h2c server on an arbitrary socket address.

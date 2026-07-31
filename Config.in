@@ -118,6 +118,23 @@ config JWT_GRANT_USERNAME
 	help
 	  Set grant value whose store user name used for NACM.
 
+choice
+	prompt "Capability defaults mode"
+	default CAPABILITY_TRIM
+	config CAPABILITY_REPORT_ALL
+		bool "report-all"
+		help
+		  No data nodes are considered default
+	config CAPABILITY_TRIM
+		bool "trim"
+		help
+		  Values set to the YANG default-stmt value are default
+	config CAPABILITY_EXPLICIT
+		bool "explicit"
+		help
+		  Values set by the client are never considered default
+endchoice
+
 config ROOT_WELL_KNOWN
 	bool "Enable well known path"
 	default y

@@ -10,7 +10,9 @@ include $(TOPDIR)/common.mk
 subdirs            = sysrepo
 
 bins              := restconfd
-restconfd-objs    := main.o h2c_server.o signal.o jwt.o restconf.o
+restconfd-objs    := main.o h2c_server.o signal.o jwt.o
+restconfd-objs    += restconf.o restconf-accept.o restconf-error.o
+restconfd-objs    += restconf-rooter.o
 restconfd-objs    += $(call kconf_enabled,ROOT_WELL_KNOWN,well-known.o)
 restconfd-lots    := $(call kconf_enabled,SYSREPO_BUILTIN,sysrepo/builtin.a)
 restconfd-cflags  := $(common-cflags)

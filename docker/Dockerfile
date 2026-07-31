@@ -211,6 +211,9 @@ RUN echo "🔨 Compilation du projet RESTCONF..." && \
          EXTRA_LDFLAGS="${EXTRA_LDFLAGS}" && \
     make install
 
+RUN sysrepoctl -i /usr/share/yang/modules/ietf-restconf@2017-01-26.yang -s /usr/share/yang/modules && \
+    sysrepoctl -i /usr/share/yang/modules/ietf-restconf-subscribed-notifications@2019-11-17.yang -s /usr/share/yang/modules && \
+    sysrepoctl -i /usr/share/yang/modules/ietf-restconf-monitoring@2017-01-26.yang -s /usr/share/yang/modules
 
 # Copier le script d'entrée
 COPY docker/entrypoint.sh /entrypoint.sh

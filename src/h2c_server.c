@@ -36,6 +36,7 @@ enum stream_status {
 	STATUS_AUTH_UNKNOW,
 	STATUS_AUTH_VALID,
 	STATUS_AUTH_INVALID,
+	STATUS_DISCARD_BODY,
 	STATUS_DONE,
 };
 
@@ -98,14 +99,13 @@ h2c_parse_method(const char *method)
 	return METHOD_UNKNOW;
 }
 
-#define WWW_AUTH     "WWW-Authenticate"
-#define WWW_AUTH_401 "Bearer realm=\"restconf\""
-#define WWW_AUTH_403 "Bearer realm=\"restconf\",error=\"insufficient_scope\""
-
 int
 h2c_send_error(struct rest_stream  *stream, uint16_t err)
 {
-	nghttp2_nv hdrs[2];
+	nghttp2_nv hdrs[] = {
+		MAKE_NV_TEMP(":status"),
+		MAKE_NV_TEMP(WWW_AUTH),
+	};
 	char status[6];
 	size_t nb = 0;
 
@@ -113,29 +113,14 @@ h2c_send_error(struct rest_stream  *stream, uint16_t err)
 
 	stream->status = STATUS_DONE;
 	snprintf(status, sizeof(status), "%d", err);
-	hdrs[nb].name     = (uint8_t *)":status";
-	hdrs[nb].namelen  = 7;
-	hdrs[nb].value    = (uint8_t *)status;
-	hdrs[nb].valuelen = strlen(status);
-	hdrs[nb].flags    = NGHTTP2_NV_FLAG_NONE;
-	nb++;
+	set_nv(&hdrs[nb++], status);
 
 	switch (err) {
 	case 401:
-		hdrs[nb].name     = (uint8_t *)WWW_AUTH;
-		hdrs[nb].namelen  = sizeof(WWW_AUTH) - 1;
-		hdrs[nb].value    = (uint8_t *)WWW_AUTH_401;
-		hdrs[nb].valuelen = sizeof(WWW_AUTH_401) - 1;
-		hdrs[nb].flags    = NGHTTP2_NV_FLAG_NONE;
-		nb++;
+		set_nv(&hdrs[nb++], WWW_AUTH_401);
 		break;
 	case 403:
-		hdrs[nb].name     = (uint8_t *)WWW_AUTH;
-		hdrs[nb].namelen  = sizeof(WWW_AUTH) - 1;
-		hdrs[nb].value    = (uint8_t *)WWW_AUTH_403;
-		hdrs[nb].valuelen = sizeof(WWW_AUTH_403) - 1;
-		hdrs[nb].flags    = NGHTTP2_NV_FLAG_NONE;
-		nb++;
+		set_nv(&hdrs[nb++], WWW_AUTH_403);
 		break;
 	case 404:
 	case 405:
@@ -197,8 +182,16 @@ h2c_send_answer(struct rest_stream  *stream,
 		.source.ptr = out,
 		.read_callback = read_evbuffer
 	};
+
+	stream->status = STATUS_DONE;
 	return nghttp2_submit_response2(stream->parent->ng_session, stream->stream_id,
 	                                 hdrs, nb, out ? &data_prd : NULL);
+}
+
+void
+h2c_discard_body(struct rest_stream  *stream)
+{
+	stream->status = STATUS_DISCARD_BODY;
 }
 
 static int
