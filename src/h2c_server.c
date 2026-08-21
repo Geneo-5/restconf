@@ -169,6 +169,13 @@ read_evbuffer(nghttp2_session     *session __unused,
 	if (!evbuffer_get_length(out))
 		*data_flags |= NGHTTP2_DATA_FLAG_EOF;
 
+	// if (len > 0) {
+	// 	fwrite("\n", 1, 1, stdout);
+	// 	fwrite(buf, (size_t)len, 1, stdout);
+	// 	fwrite("\n", 1, 1, stdout);
+	// 	fflush(stdout);
+	// }
+
 	return len < 0 ? NGHTTP2_ERR_TEMPORAL_CALLBACK_FAILURE : len;
 }
 
@@ -300,7 +307,6 @@ on_header(nghttp2_session     *session __unused,
 	if (!stream || stream->status == STATUS_DONE)
 		return 0;
 
-
 	switch (vname.len) {
 	case 7:
 		if (memcmp(vname.base, ":method", 7) == 0) {
@@ -336,9 +342,10 @@ on_header(nghttp2_session     *session __unused,
 	case 13:
 		if (memcmp(vname.base, "authorization", 5) == 0) {
 			char *user = NULL;
+			int   err;
 
-			ret = jwt_bearer_token_get_name((const char *)vvalue.base, &user);
-			stream->status = ret ? STATUS_AUTH_INVALID : STATUS_AUTH_VALID;
+			err = jwt_bearer_token_get_name((const char *)vvalue.base, &user);
+			stream->status = err ? STATUS_AUTH_INVALID : STATUS_AUTH_VALID;
 			if (stream->ops && stream->ops->identified)
 				ret = stream->ops->identified(stream->priv, user);
 			free(user);
@@ -439,15 +446,17 @@ on_stream_close(nghttp2_session *session,
 static void
 destroy_session(struct rest_session *sess)
 {
-	struct rest_stream *stream;
+	struct rest_stream       *stream;
+	struct stroll_dlist_node *node;
 
 	if (!sess)
 		return;
 
 	nghttp2_session_del(sess->ng_session);
 	while (!stroll_dlist_empty(&sess->streams)) {
-		stream = stroll_dlist_next_entry((struct rest_stream *)&sess->streams, node);
-		stroll_dlist_remove(&stream->node);
+		node = stroll_dlist_next(&sess->streams);
+		stream = stroll_dlist_entry(node, typeof(*stream), node);
+		stroll_dlist_remove(node);
 		destroy_stream(stream);
 	}
 
@@ -617,7 +626,7 @@ create_server(struct event_base  *base,
 		const struct rest_dispatcher *ptr = *p;
 
 		stream_size = stroll_max(stream_size,
-		                         sizeof(struct rest_stream) + ptr->priv_len);
+		                sizeof(struct rest_stream) + ptr->priv_len);
 	}
 
 	stroll_falloc_init_block_size(&server->stream_alloc,

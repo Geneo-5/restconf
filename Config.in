@@ -19,6 +19,19 @@ config RESTCONF_ASSERT
 
 	  Disables -DNDEBUG when enabled.
 
+config RESTCONF_DEBUG
+	bool "Enable debug mode"
+	default n
+	help
+	  Enable debug mode. Daemon not redirect stdout to /dev/null.
+
+config RESTCONF_DEBUG_SYSREPO
+	bool "Enable sysrepo trace"
+	depends on RESTCONF_DEBUG
+	default n
+	help
+	  Enable sysrepo trace to stderr.
+
 config YANG_PATH
 	string "Path to the YANG modules directory"
 	default "/usr/share/yang/modules"

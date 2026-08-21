@@ -32,9 +32,9 @@ ifneq ($(filter y,$(CONFIG_RESTCONF_ASSERT)),)
 common-ldflags        := $(filter-out -DNDEBUG,$(common-ldflags))
 endif # ($(filter y,$(CONFIG_RESTCONF_ASSERT)),)
 
-shared-common-cflags  := $(filter-out -fpie -fPIE,$(common-cflags)) -fpic
+shared-common-cflags  := $(filter-out -fpie -fPIE -fsanitize=%,$(common-cflags)) -fpic
 
-shared-common-ldflags := $(filter-out -pie -fpie -fPIE,$(common-ldflags)) \
+shared-common-ldflags := $(filter-out -pie -fpie -fPIE -fsanitize=%,$(common-ldflags)) \
                          -shared -Bsymbolic -fpic
 
 common-pkgconf        := sysrepo libyang libstroll libutils

@@ -131,11 +131,15 @@ main(int argc, char **argv)
 	}
 
 	if (daemonize) {
-		if (daemon(0, 0) != 0) {
+		if (daemon(0, CONFIG_RESTCONF_DEBUG) != 0) {
 			perror("daemon");
 			return 1;
 		}
 	}
+
+#ifdef CONFIG_RESTCONF_DEBUG_SYSREPO
+	sr_log_stderr(SR_LL_DBG);
+#endif
 
 	base = event_base_new();
 	signal = create_signal(base);

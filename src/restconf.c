@@ -19,15 +19,21 @@ restconf_init(void               *priv,
 	char *path;
 	int ret;
 
-	ctx->stream   = stream;
-	ctx->method   = method;
-	ctx->output   = NULL;
-	ctx->session  = NULL;
-	ctx->xpath    = NULL;
-	ctx->username = NULL;
-	ctx->errors   = NULL;
+	ctx->stream      = stream;
+	ctx->method      = method;
+	ctx->output      = NULL;
+	ctx->session     = NULL;
+	ctx->xpath       = NULL;
+	ctx->username    = NULL;
+	ctx->errors      = NULL;
+	ctx->dispatch_cd = NULL;
+	ctx->options     = NULL;
+	ctx->lyd_options = LYD_PRINT_WD_ALL;
 
-	if (curl_url_get(url, CURLUPART_PATH, &path, 0))
+	ctx->input_format = LYD_UNKNOWN;
+	ctx->output_format = LYD_UNKNOWN;
+
+	if (curl_url_get(url, CURLUPART_PATH, &path, CURLU_URLDECODE))
 		return -1;
 
 	ret = restconf_parse_path(ctx, path);
@@ -68,40 +74,62 @@ restconf_identified(void *priv, const char *name)
 {
 	struct restconf_ctx *ctx = priv;
 
+	if (!name)
+		return 0;
+
 	ctx->username = strdup(name);
 	return ctx->username ? 0 : -ENOMEM;
 }
 
+int
+restconf_start_session(struct restconf_ctx *ctx)
+{
+	sr_conn_ctx_t *conn = h2c_stream_get_conn(ctx->stream);
+
+	rest_assert(ctx->username);
+	rest_assert(!ctx->session);
+
+
+	// pr_dbg("Start session %d", ctx->datastore);
+	sr_session_start(conn, ctx->datastore, &ctx->session);
+	return sr_session_set_user(ctx->session, ctx->username);
+}
+
+int
+restconf_force_session(struct restconf_ctx *ctx, sr_datastore_t datastore)
+{
+	rest_assert(ctx->username);
+
+	if (ctx->session) {
+		sr_session_stop(ctx->session);
+		ctx->session = NULL;
+	}
+
+	ctx->datastore = datastore;
+	return restconf_start_session(ctx);
+}
+
 static int
-restconf_dispatch(void            *priv __unused,
-                  struct evbuffer *body __unused)
+restconf_dispatch(void            *priv,
+                  struct evbuffer *body)
 {
 	struct restconf_ctx *ctx = priv;
-	sr_conn_ctx_t       *conn = h2c_stream_get_conn(ctx->stream);
-	sr_data_t           *data = NULL;
-	int                  ret;
 
-	printf("%p user %p: %s\n", ctx->errors, ctx->username, ctx->username);
 	if (!ctx->username) {
 		if (ctx->errors)
 			srplg_errinfo_free(&ctx->errors);
+
 		srplg_errinfo_set_netconf_error(&ctx->errors, "transport",
 			"access-denied", NULL, NULL, "access-denied", 0);
 	}
 
 	restconf_check_accept(ctx);
 
-	printf("error, %p\n", ctx->errors);
 	if (ctx->errors)
 		return restconf_send_error(ctx, ctx->errors);
 
-	sr_session_start(conn, ctx->datastore, &ctx->session);
-	sr_session_set_user(ctx->session, ctx->username);
-
-	sr_get_data(ctx->session, ctx->xpath, 0, 0, 0, &data);
-	ret = restconf_send_answer(ctx, data->tree);
-	sr_release_data(data);
-	return ret;
+	rest_assert(ctx->dispatch_cd);
+	return ctx->dispatch_cd(ctx, body);
 }
 
 static const struct rest_ops restconf_ops = {

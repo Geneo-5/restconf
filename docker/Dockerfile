@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # ==============================================================================
 ENV CFLAGS="-Wall -Wextra -Wshadow -Wformat=2 -Wuninitialized \
 	-fstack-protector-strong -D_FORTIFY_SOURCE=2 \
-	-O2 -ggdb3"
+	-O0 -ggdb3"
 ENV CXXFLAGS="${CFLAGS}"
 ENV LDFLAGS="-Wl,-z,relro,-z,now"
 
@@ -187,6 +187,10 @@ RUN rm -rf /tmp/deps
 COPY docker/haproxy.cfg /etc/haproxy/haproxy.cfg
 COPY docker/dev.pem /etc/haproxy/certs/restconf.pem
 RUN haproxy -c -V -f /etc/haproxy/haproxy.cfg
+
+# add user admin used in test (JWT)
+RUN useradd -ms /bin/bash admin
+RUN pip install --break-system-packages pytest>=7.0.0 httpx[http2]>=0.27.0
 
 # ==============================================================================
 # Compilation du projet RESTCONF principal

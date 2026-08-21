@@ -91,9 +91,9 @@
  * ------------------------------------------------------------------------ */
 
 /** Session du plugin, valable jusqu'à l'appel de sr_plugin_cleanup_cb(). */
-static sr_session_ctx_t *rt_sess;
+static sr_session_ctx_t *rt_sess = NULL;
 /** Regroupe l'ensemble des souscriptions créées à l'initialisation. */
-static sr_subscription_ctx_t *rt_subscription;
+static sr_subscription_ctx_t *rt_subscription = NULL;
 /** Instant de départ simulé, pour le calcul de 'uptime' (secondes). */
 static time_t rt_start_time;
 /** Identifiant attribué au prochain 'configure-device' (uint32). */
@@ -617,6 +617,21 @@ rt_reboot_cb(sr_session_ctx_t *session, uint32_t sub_id, const char *op_path,
 	return rt_add_output_u32(output, "reboot-time", 30);
 }
 
+static int
+rt_change_cb(sr_session_ctx_t *session, uint32_t sub_id, const char *module_name, const char *xpath,
+        sr_event_t event, uint32_t request_id, void *private_data)
+{
+	(void)session;
+	(void)sub_id;
+	(void)module_name;
+	(void)xpath;
+	(void)event;
+	(void)request_id;
+	(void)private_data;
+
+	return SR_ERR_OK;
+}
+
 /* ---------------------------------------------------------------------------
  * Points d'entrée du plugin
  * ------------------------------------------------------------------------ */
@@ -624,7 +639,6 @@ rt_reboot_cb(sr_session_ctx_t *session, uint32_t sub_id, const char *op_path,
 int
 sr_plugin_init_cb(sr_session_ctx_t *session, void **private_data)
 {
-	const struct ly_ctx *ly_ctx;
 	int rc = SR_ERR_OK;
 
 	(void)private_data;
@@ -635,20 +649,11 @@ sr_plugin_init_cb(sr_session_ctx_t *session, void **private_data)
 	rt_next_resource_id = 1;
 	snprintf(rt_current_mode, sizeof(rt_current_mode), "normal");
 
-	/* Si le module n'est pas installé, le plugin reste inactif (no-op) afin
-	 * de ne pas faire échouer le chargement par sysrepo-plugind. */
-	ly_ctx = sr_acquire_context(sr_session_get_connection(session));
-	if ((ly_ctx == NULL)
-			|| (ly_ctx_get_module(ly_ctx, RT_MODULE, NULL) == NULL)) {
-		if (ly_ctx != NULL) {
-			sr_release_context(sr_session_get_connection(session));
-		}
-		SRPLG_LOG_WRN(RT_LOG,
-			"Module '" RT_MODULE "' not installed, plugin disabled.");
-		return SR_ERR_OK;
+	rc = sr_module_change_subscribe(session, "restconf-test", NULL,
+		rt_change_cb, NULL, 0, SR_SUBSCR_DONE_ONLY, &rt_subscription);
+	if (rc != SR_ERR_OK) {
+		goto error;
 	}
-	sr_release_context(sr_session_get_connection(session));
-
 	/* --- Données opérationnelles (config false) --- */
 	rc = sr_oper_get_subscribe(session, RT_MODULE,
 		"/restconf-test:system/state", rt_system_state_cb, NULL, 0,

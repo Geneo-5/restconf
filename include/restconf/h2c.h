@@ -40,7 +40,7 @@
 #define WWW_AUTH_401 "Bearer realm=\"restconf\""
 #define WWW_AUTH_403 "Bearer realm=\"restconf\",error=\"insufficient_scope\""
 #define CONTENT_JSON "application/yang-data+json"
-#define CONTENT_XML  "application/yang-data+XML"
+#define CONTENT_XML  "application/yang-data+xml"
 
 
 /**

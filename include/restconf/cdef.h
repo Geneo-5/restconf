@@ -74,5 +74,7 @@
  */
 #define __aligned __attribute__ ((aligned))
 
+#define pr_dbg(format, ...) printf("[DBG] " format "\n", ## __VA_ARGS__);fflush(stdout);
+
 #endif /* _RESTCONF_CDEF_H */
 
