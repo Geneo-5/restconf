@@ -720,9 +720,9 @@ class TestOperationsResource:
         
         Réponse attendue (exemple RFC 8040) :
         {
-          "operations": {
+          "operations": [{
             "example-jukebox:play": [null]
-          }
+          }]
         }
         """
         headers = {
@@ -745,16 +745,18 @@ class TestOperationsResource:
         )
         
         operations = body["operations"]
-        assert isinstance(operations, dict), (
+        assert isinstance(operations, list), (
             "operations doit être un objet JSON"
         )
         
         # Chaque RPC doit être identifié par module:rpc-name
-        for rpc_name in operations.keys():
+        for rpc_name in operations:
+            assert isinstance(rpc_name, dict), ("operations éléments doit être un objet JSON")
+            assert len(rpc_name) == 1, ("Il doit y avoir qu'une seul clef dans l'objet JSON")
             # Format attendu : module-name:rpc-name
-            assert ":" in rpc_name, (
-                f"RPC '{rpc_name}' doit être au format module:rpc-name"
-            )
+            assert ":" in list(rpc_name.keys())[0], (f"RPC '{rpc_name}' doit être au format module:rpc-name")
+            # body = response.json() converti [null] en [None]
+            assert [None] == list(rpc_name.values())[0], (f"RPC '{rpc_name}' doit avoir [null] comme valeur")
 
     def test_operations_content_type_negotiation(
         self, http2_client, api_url, auth_headers, require_jwt

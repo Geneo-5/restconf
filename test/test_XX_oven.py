@@ -271,7 +271,7 @@ def oven_operations(http2_client, api_url, auth_headers, require_jwt):
         f"(RFC 8040 §3.6), obtenu {sorted(body.keys())!r}"
     )
     operations = body["operations"]
-    assert isinstance(operations, dict), "'operations' doit être un objet JSON"
+    assert isinstance(operations, list), "'operations' doit être un objet JSON"
     return operations
 
 
