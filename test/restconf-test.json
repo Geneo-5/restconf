@@ -82,6 +82,23 @@
         "label": "with space",
         "value": "key contains a space"
       }
+    ],
+    "multi-keyed-entry": [
+      {
+        "region": "eu",
+        "label": "alpha",
+        "value": "eu/alpha entry"
+      },
+      {
+        "region": "eu",
+        "label": "with,comma",
+        "value": "second key contains a comma"
+      },
+      {
+        "region": "us",
+        "label": "beta",
+        "value": "us/beta entry"
+      }
     ]
   },
   "restconf-test:access-control": {

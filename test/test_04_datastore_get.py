@@ -103,6 +103,7 @@ ACCESS_CONTROL = "/data/restconf-test:access-control"
 ALLOWED_IPS = "/data/restconf-test:access-control/allowed-ips"
 TAGS = "/data/restconf-test:access-control/tags"
 KEYED_ENTRIES = "/data/restconf-test:keyed-entries"
+MULTI_KEYED_ENTRIES = "/data/restconf-test:keyed-entries/multi-keyed-entry"
 
 # Jeu de données attendu (issu de test/restconf-test.json).
 INTERFACE_NAMES = {"eth0", "eth1", "lo0"}
@@ -117,6 +118,14 @@ TAG_VALUES = {"production", "edge", "restconf"}
 SPECIAL_KEYS = {
     "with,comma": "key contains a comma",
     "with space": "key contains a space",
+}
+
+# Entrées de la liste à deux clés ``multi-keyed-entry`` (T-GET-11, clés
+# multiples, Errata RFC 8040 EID 5255). Clé = tuple (region, label).
+MULTI_KEYS = {
+    ("eu", "alpha"): "eu/alpha entry",
+    ("eu", "with,comma"): "second key contains a comma",
+    ("us", "beta"): "us/beta entry",
 }
 
 
@@ -1126,6 +1135,119 @@ class TestT_GET_11_ListKeys:
         entry = response.json()[f"{MOD}:keyed-entry"]
         assert entry.get("label") == "with,comma"
         assert entry.get("value") == "key contains a comma"
+
+
+@pytest.mark.roadmap("R43")
+@pytest.mark.rfc("RFC 8040 §3.5.3")
+@pytest.mark.rfc("RFC 3986 §2.1")
+class TestT_GET_11_MultiKeyList:
+    """
+    T-GET-11 (clés multiples) : GET sur une liste à plusieurs clés.
+
+    RFC 8040 §3.5.3, `Errata EID 5255
+    <https://www.rfc-editor.org/errata/eid5255>`_ : pour une liste à
+    plusieurs clés, le path segment doit être construit comme
+    ``list-name=key1,key2,...`` — un seul ``=`` introduit le *jeu* de
+    valeurs de clé, qui sont ensuite séparées par des virgules dans l'ordre
+    de déclaration des clés dans le YANG (ici ``region label``). Le texte
+    initial de la RFC omettait ce ``=`` pour le cas multi-clés.
+
+    Le module ``restconf-test`` déclare ``keyed-entries/multi-keyed-entry``
+    avec ``key "region label"``.
+    """
+
+    @pytest.mark.parametrize(
+        "keys,value",
+        sorted(
+            ((k, v) for k, v in MULTI_KEYS.items() if "," not in k[1]),
+            key=lambda kv: kv[0],
+        ),
+        ids=["eu-alpha", "us-beta"],
+    )
+    def test_get_multi_key_entry(
+        self, http2_client, api_url, auth_headers, require_rt, keys, value
+    ):
+        """Une entrée à deux clés est résolue via ``list=key1,key2``."""
+        region, label = keys
+        path = f"{api_url}{MULTI_KEYED_ENTRIES}={quote(region, safe='')},{quote(label, safe='')}"
+        headers = {"Accept": YANG_JSON, **auth_headers}
+        response = http2_client.get(path, headers=headers)
+
+        assert response.status_code == 200, (
+            f"GET multi-keyed-entry={region},{label} doit retourner 200 "
+            f"(RFC 8040 §3.5.3, Errata EID 5255), obtenu "
+            f"{response.status_code} : {response.text[:300]}"
+        )
+        assert get_content_type(response) == YANG_JSON
+
+        body = response.json()
+        assert_json_data_envelope(body, f"{MOD}:multi-keyed-entry")
+        entry = body[f"{MOD}:multi-keyed-entry"]
+        assert isinstance(entry, dict), (
+            f"une instance de liste unique doit être un objet JSON, "
+            f"obtenu {type(entry).__name__}"
+        )
+        assert entry.get("region") == region, (
+            f"la première clé décodée doit être {region!r}, "
+            f"obtenu {entry.get('region')!r}"
+        )
+        assert entry.get("label") == label, (
+            f"la seconde clé décodée doit être {label!r}, "
+            f"obtenu {entry.get('label')!r}"
+        )
+        assert entry.get("value") == value, (
+            f"la valeur de multi-keyed-entry={region},{label} doit être "
+            f"{value!r}, obtenu {entry.get('value')!r}"
+        )
+
+    def test_encoded_comma_within_second_key_not_split(
+        self, http2_client, api_url, auth_headers, require_rt
+    ):
+        """Une virgule percent-encodée *dans* la 2e clé n'ajoute pas de clé.
+
+        La clé ``("eu", "with,comma")`` s'encode
+        ``multi-keyed-entry=eu,with%2Ccomma`` : un seul ``=``, puis deux
+        valeurs de clé séparées par une virgule *non* encodée, la virgule
+        interne à la seconde valeur étant percent-encodée (``%2C``). Si le
+        serveur décodait le ``%2C`` avant de découper les clés, la valeur
+        serait scindée en trois clés (``eu``, ``with``, ``comma``) pour une
+        liste qui n'en a que deux, et échouerait ; à l'inverse, décoder
+        après découpage restitue correctement ``with,comma`` comme seconde
+        clé.
+        """
+        headers = {"Accept": YANG_JSON, **auth_headers}
+        response = http2_client.get(
+            f"{api_url}{MULTI_KEYED_ENTRIES}=eu,with%2Ccomma", headers=headers
+        )
+        assert response.status_code == 200, (
+            f"la virgule percent-encodée dans la seconde clé doit être "
+            f"décodée comme un caractère de la clé, pas comme un séparateur "
+            f"supplémentaire ; obtenu {response.status_code} : "
+            f"{response.text[:300]}"
+        )
+        entry = response.json()[f"{MOD}:multi-keyed-entry"]
+        assert entry.get("region") == "eu"
+        assert entry.get("label") == "with,comma"
+        assert entry.get("value") == "second key contains a comma"
+
+    def test_missing_second_key_is_rejected(
+        self, http2_client, api_url, auth_headers, require_rt
+    ):
+        """Un jeu de clés incomplet (une seule valeur) est rejeté.
+
+        RFC 8040 §3.5.3 : le nombre de valeurs de clé dans l'api-path doit
+        correspondre au nombre de clés déclarées dans le YANG. Fournir une
+        seule valeur pour une liste à deux clés est structurellement
+        invalide.
+        """
+        headers = {"Accept": YANG_JSON, **auth_headers}
+        response = http2_client.get(
+            f"{api_url}{MULTI_KEYED_ENTRIES}=eu", headers=headers
+        )
+        assert response.status_code in (400, 404), (
+            f"un jeu de clés incomplet doit être rejeté (400 ou 404 selon "
+            f"RFC 8040 §7), obtenu {response.status_code}"
+        )
 
 
 # ============================================================================

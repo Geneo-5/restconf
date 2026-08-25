@@ -35,7 +35,10 @@ module restconf-test {
 
             Couverture des sections de tests de la ROADMAP :
               §4  GET simple        : system, basic-data, interfaces,
-                                      access-control, keyed-entries ;
+                                      access-control, keyed-entries
+                                      (keyed-entry clé simple,
+                                      multi-keyed-entry clés multiples -
+                                      Errata EID 5255) ;
               §5  query params      : config (system/config, basic-data) +
                                       état (system/state, basic-data/uptime),
                                       defaults (timeout, enabled,
@@ -289,6 +292,14 @@ module restconf-test {
     //   RFC 8040 §3.5.3 : les clés de liste peuvent contenir des caractères
     //   spéciaux (',', ' ', ...) qui doivent être percent-encodés dans l'URI
     //   puis décodés avant construction du XPath.
+    //
+    //   T-GET-11 (clés multiples) - Errata RFC 8040 EID 5255 :
+    //   pour une liste à plusieurs clés, le path segment doit être construit
+    //   comme <list-name>=<key1>,<key2>,... : le caractère '=' introduit le
+    //   *jeu* de valeurs de clé (un seul '=', jamais un par clé), et les
+    //   valeurs sont ensuite séparées par des virgules. Toute virgule ou
+    //   caractère réservé apparaissant *dans* une valeur de clé doit être
+    //   percent-encodé pour être distingué du séparateur de clés.
     // ========================================================================
     container keyed-entries {
         description "Container for list-key parsing tests (special chars)";
@@ -306,6 +317,34 @@ module restconf-test {
             leaf value {
                 type string;
                 description "Arbitrary value associated with the key";
+            }
+        }
+
+        list multi-keyed-entry {
+            key "region label";
+            description
+                "List with two string keys, dedicated to testing multi-key
+                 api-path encoding (T-GET-11, RFC 8040 §3.5.3, Errata
+                 EID 5255): the URI segment is
+                 'multi-keyed-entry=<region>,<label>', with a single '='
+                 after the list name followed by the comma-separated key
+                 values, in key declaration order. 'label' may itself
+                 contain a percent-encoded comma to verify it is not
+                 mistaken for the key separator.";
+
+            leaf region {
+                type string;
+                description "First key component";
+            }
+            leaf label {
+                type string;
+                description
+                    "Second key component, may contain ',' ' ' etc. once
+                     percent-encoded";
+            }
+            leaf value {
+                type string;
+                description "Arbitrary value associated with the compound key";
             }
         }
     }
