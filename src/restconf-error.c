@@ -52,7 +52,7 @@ restconf_set_status(struct restconf_ctx *ctx,
 		break;
 	case 12:
 		rest_assert(strcmp(tag, "data-missing") == 0);
-		set_nv(nv, "409");
+		set_nv(nv, "404");
 		return;
 
 	case 13:
@@ -450,24 +450,10 @@ restconf_send_answer(struct restconf_ctx *ctx, const struct lyd_node *root)
 	if (root && ctx->xpath) {
 		struct ly_set *set = NULL;
 
-		while (1) {
-			char *s;
+		lyd_find_xpath(root, ctx->xpath, &set);
+		if (!set)
+			goto show_all;
 
-			lyd_find_xpath(root, ctx->xpath, &set);
-			if (!set)
-				goto show_all;
-
-			// pr_dbg("%s -> %d", ctx->xpath, set->count);
-			if ((set->count == 1) || (ly_fmt == LYD_JSON))
-				break;
-
-			ly_set_free(set, NULL);
-			set = NULL;
-			s = strrchr(ctx->xpath, '/');
-			s[0] = '\0';
-			if (!ctx->xpath[0])
-				goto show_all;
-		};
 		lyd_print_clb(restconf_write_cb, ctx, set->dnodes[0], ly_fmt, options);
 		ly_set_free(set, NULL);
 	} else {

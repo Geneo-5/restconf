@@ -33,7 +33,7 @@ restconf_init(void               *priv,
 	ctx->input_format = LYD_UNKNOWN;
 	ctx->output_format = LYD_UNKNOWN;
 
-	if (curl_url_get(url, CURLUPART_PATH, &path, CURLU_URLDECODE))
+	if (curl_url_get(url, CURLUPART_PATH, &path, 0))
 		return -1;
 
 	ret = restconf_parse_path(ctx, path);

@@ -18,3 +18,5 @@ curl $ARGS $@ -H "$AUTH_HEADER" -H "$JSON" ${URL}/restconf
 echo
 curl $ARGS $@ -H "$AUTH_HEADER" -H "$JSON" ${URL}/restconf/ds
 echo
+curl $ARGS $@ -H "$AUTH_HEADER" -H "$JSON" ${URL}/restconf/operations
+echo

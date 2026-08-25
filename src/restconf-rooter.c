@@ -81,32 +81,12 @@ resconf_root_data_answer(struct restconf_ctx *ctx, struct evbuffer *body __unuse
 static int
 resconf_root_operations_answer(struct restconf_ctx *ctx __unused, struct evbuffer *body __unused)
 {
-	// struct lyd_node *root = NULL;
-	// const struct ly_ctx *ly_ctx;
-	// struct lyd_node *child;
-	// struct lyd_node *restconf_op = NULL;
-	// sr_data_t *data = NULL;
-	// int ret;
-
-	// restconf_start_session(ctx);
-	// sr_get_data(ctx->session, "/*", 0, 0, 0, &data);
-
-	// ly_ctx = sr_acquire_context(h2c_stream_get_conn(ctx->stream));
-	// lyd_new_path(NULL, ly_ctx, "/ietf-restconf:restconf", NULL, 0, &root);
-	// lyd_new_inner(root, NULL, "operations", 0, &restconf_op);
-	// LY_LIST_FOR(data->tree, child) {
-	// 	lyd_dup_siblings(child, restconf_op, 0, NULL);
-	// }
-
-	// sr_release_context(h2c_stream_get_conn(ctx->stream));
-	// ret = restconf_send_answer(ctx, restconf_op);
-	// lyd_free_siblings(root);
-	// sr_release_data(data);
-	// return ret;
-	LYD_FORMAT ly_fmt = restconf_get_format(ctx);
-	const char *data = ly_fmt == LYD_JSON ? "{\"operations\":{}}" :
-		"<operations xmlns=\"urn:ietf:params:xml:ns:yang:ietf-restconf\"></operations>";
+	const struct ly_ctx *ly_ctx;
 	char length[64];
+	const char *sep = "";
+	uint32_t idx = 0;
+	const struct lys_module *module;
+	LYD_FORMAT ly_fmt = restconf_get_format(ctx);
 	nghttp2_nv hdrs[] = {
 		MAKE_NV_OK,
 		MAKE_NV_TEMP("content-type"),
@@ -119,7 +99,34 @@ resconf_root_operations_answer(struct restconf_ctx *ctx __unused, struct evbuffe
 	if (!ctx->output)
 		return -ENOMEM;
 
-	evbuffer_add(ctx->output, data, strlen(data));
+	evbuffer_add_printf(ctx->output, "%s", ly_fmt == LYD_JSON ?
+		"{\"operations\":[" :
+		"<operations xmlns=\"urn:ietf:params:xml:ns:yang:ietf-restconf\">");
+	ly_ctx = sr_acquire_context(h2c_stream_get_conn(ctx->stream));
+
+	while ((module = ly_ctx_get_module_iter(ly_ctx, &idx))) {
+		const struct lysc_node_action *node = NULL;
+
+		if (!module->implemented)
+			continue;
+
+		LY_LIST_FOR(module->compiled->rpcs, node) {
+			if (node->nodetype == LYS_RPC) {
+				if (ly_fmt == LYD_JSON)
+					evbuffer_add_printf(ctx->output,
+						"%s{\"%s:%s\":[null]}",
+						sep, module->name, node->name);
+				else
+					evbuffer_add_printf(ctx->output,
+						"<%s xmlns='urn:ietf:params:xml:ns:yang:%s'/>",
+						node->name, module->name);
+				sep = ",";
+			}
+		}
+	}
+
+	sr_release_context(h2c_stream_get_conn(ctx->stream));
+	evbuffer_add_printf(ctx->output, "%s", ly_fmt == LYD_JSON ? "]}" : "</operations>");
 	snprintf(length, sizeof(length), "%zu", evbuffer_get_length(ctx->output));
 	set_nv(&hdrs[2], length);
 	return h2c_send_answer(ctx->stream, hdrs, stroll_array_nr(hdrs),
@@ -196,6 +203,7 @@ parse_segment(struct restconf_ctx *ctx,
 	const struct lysc_node *node;
 	char *str = NULL;
 	char *eq_pos = strchr(path, '=');
+	char *decoded;
 
 	if (eq_pos && (eq_pos > (path + len)))
 		eq_pos = NULL;
@@ -203,23 +211,31 @@ parse_segment(struct restconf_ctx *ctx,
 	rest_assert(max_len > len);
 
 	length = eq_pos ? (size_t)(eq_pos - path) : length;
-	memcpy(xpath, path, length);
+	decoded = curl_unescape(path, (int)length);
+	written = snprintf(xpath, max_len, "%s", decoded);
+	if (written < 0)
+		goto err;
+
+	curl_free(decoded);
+	length   = (size_t)written;
 	xpath   += length;
 	max_len -= length;
-	xpath[0] = '\0';
+
+	ly_ctx = sr_acquire_context(h2c_stream_get_conn(ctx->stream));
+	node = lys_find_path(ly_ctx, NULL, ctx->xpath, 0);
+	sr_release_context(h2c_stream_get_conn(ctx->stream));
+	if (!node)
+		goto err;
 
 	if (!eq_pos)
 		return (ssize_t)length;
 
-	ly_ctx = sr_acquire_context(h2c_stream_get_conn(ctx->stream));
-	node = lys_find_path(ly_ctx, NULL, ctx->xpath, 0);
-	if (!node)
-		goto err;
-
 	str = strndup(eq_pos + 1, len - length - 1);
 	switch (node->nodetype) {
 	case LYS_LEAFLIST:
-		written = snprintf(xpath, max_len, "[.='%s']", str);
+		decoded = curl_unescape(str, (int)strlen(str));
+		written = snprintf(xpath, max_len, "[.='%s']", decoded);
+		curl_free(decoded);
 		if (written < 0)
 			goto err;
 
@@ -233,10 +249,16 @@ parse_segment(struct restconf_ctx *ctx,
 		while (key && ptr) {
 			if (key->flags & LYS_KEY) {
 				char *comma = strchr(ptr, ',');
+
 				if (comma)
 					comma[0] = '\0';
 
-				written = snprintf(xpath, max_len, "[%s='%s']", key->name, ptr);
+				if (ptr == comma)
+					goto next;
+
+				decoded = curl_unescape(str, (int)strlen(str));
+				written = snprintf(xpath, max_len, "[%s='%s']", key->name, decoded);
+				curl_free(decoded);
 				if (written < 0)
 					goto err;
 
@@ -245,6 +267,7 @@ parse_segment(struct restconf_ctx *ctx,
 				max_len -= (size_t)written;
 				if (!comma)
 					break;
+next:
 				ptr = comma + 1;
 			}
 			key = key->next;
@@ -255,11 +278,9 @@ parse_segment(struct restconf_ctx *ctx,
 	}
 
 	free(str);
-	sr_release_context(h2c_stream_get_conn(ctx->stream));
 	return (ssize_t)length;
 err:
 	free(str);
-	srplg_errinfo_set_netconf_error(&ctx->errors, "protocol", "invalid-value", NULL,  NULL, "Invalid path", 0);
 	return -1;
 }
 
@@ -278,21 +299,30 @@ make_xpath(struct restconf_ctx *ctx, const char *path)
 		return;
 	}
 
+	// pr_dbg("path %s", path);
 	while(ppts[0] == '/') {
 		char *seg_end = strchr(ppts + 1, '/');
 		size_t seg_len = seg_end ? (size_t)(seg_end - ppts) : strlen(ppts);
 		ssize_t len;
 
+		if (seg_len == 0)
+			goto error_404;
+
 		len = parse_segment(ctx, ppts, seg_len, xpts, max_len);
-		if (len < 0) {
-			free(ctx->xpath);
-			ctx->xpath = NULL;
-			return;
-		}
+		if (len < 0)
+			goto error_404;
+
 		xpts    += (size_t)len;
 		max_len -= (size_t)len;
 		ppts    += seg_len;
 	}
+
+	return;
+
+error_404:
+	srplg_errinfo_set_netconf_error(&ctx->errors, "protocol", "invalid-value", NULL, NULL, "Invalid path", 0);
+	free(ctx->xpath);
+	ctx->xpath = NULL;
 }
 
 int
