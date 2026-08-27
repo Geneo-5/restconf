@@ -64,7 +64,7 @@ class TestAPIResourceRetrieval:
         """
         RFC 8040 §3.3, B.1.1 : GET sur {+restconf} avec Accept: application/yang-data+json
         doit retourner la ressource racine API en JSON.
-        
+
         Réponse attendue (exemple RFC 8040 B.1.1) :
         {
           "ietf-restconf:restconf": {
@@ -101,27 +101,22 @@ class TestAPIResourceRetrieval:
         
         restconf_obj = body["ietf-restconf:restconf"]
         
-        # Sous-ressources obligatoires
+        # data est obligatoire. operations est optionnel lorsqu'aucun RPC
+        # n'est annoncé (RFC 8040 §3.3.2).
         assert "data" in restconf_obj, (
             "La ressource racine doit contenir 'data'"
         )
-        assert "operations" in restconf_obj, (
-            "La ressource racine doit contenir 'operations'"
+        if "operations" in restconf_obj:
+            assert isinstance(restconf_obj["operations"], dict), (
+                "operations doit être un objet JSON lorsqu'il est présent"
+            )
+
+        # yang-library-version est obligatoire (RFC 8040 §3.3.3).
+        version = restconf_obj.get("yang-library-version")
+        assert isinstance(version, str), "yang-library-version doit être une chaîne"
+        assert re.match(r"^\d{4}-\d{2}-\d{2}$", version), (
+            f"yang-library-version doit être au format YYYY-MM-DD, reçu {version}"
         )
-        
-        # yang-library-version (RFC 8040 §3.3.3)
-        # Note : peut être absent si YANG Library n'est pas supportée
-        # mais si présent, doit être une chaîne de révision YANG
-        if "yang-library-version" in restconf_obj:
-            version = restconf_obj["yang-library-version"]
-            assert isinstance(version, str), (
-                "yang-library-version doit être une chaîne"
-            )
-            # Format de révision YANG : YYYY-MM-DD
-            assert re.match(r"^\d{4}-\d{2}-\d{2}$", version), (
-                f"yang-library-version doit être au format YYYY-MM-DD, "
-                f"reçu {version}"
-            )
 
     def test_get_api_root_xml(self, http2_client, api_url, auth_headers, require_jwt):
         """
@@ -163,28 +158,22 @@ class TestAPIResourceRetrieval:
             f"reçu {root.tag}"
         )
         
-        # Sous-ressources obligatoires
+        # data est obligatoire ; operations est optionnel s'il n'existe aucun
+        # RPC annoncé (RFC 8040 §3.3.2).
         data_elem = root.find(f"{{{RESTCONF_NS}}}data")
         assert data_elem is not None, (
             "La ressource racine doit contenir <data/>"
         )
         
-        operations_elem = root.find(f"{{{RESTCONF_NS}}}operations")
-        assert operations_elem is not None, (
-            "La ressource racine doit contenir <operations/>"
-        )
-        
-        # yang-library-version (optionnel mais si présent, format YYYY-MM-DD)
+        # yang-library-version est obligatoire (RFC 8040 §3.3.3).
         version_elem = root.find(f"{{{RESTCONF_NS}}}yang-library-version")
-        if version_elem is not None:
-            version = version_elem.text
-            assert version is not None, (
-                "yang-library-version ne doit pas être vide"
-            )
-            assert re.match(r"^\d{4}-\d{2}-\d{2}$", version), (
-                f"yang-library-version doit être au format YYYY-MM-DD, "
-                f"reçu {version}"
-            )
+        assert version_elem is not None and version_elem.text is not None, (
+            "yang-library-version est obligatoire et ne doit pas être vide"
+        )
+        assert re.match(r"^\d{4}-\d{2}-\d{2}$", version_elem.text), (
+            f"yang-library-version doit être au format YYYY-MM-DD, "
+            f"reçu {version_elem.text}"
+        )
 
 
 # ============================================================================
@@ -230,17 +219,16 @@ class TestAPISubResources:
         }
         response = http2_client.get(f"{api_url}/operations", headers=headers)
         
-        # Doit être accessible (200) ou refusé (401/403) mais pas 404
-        assert response.status_code in [200, 401, 403], (
-            f"GET {api_url}/operations doit retourner 200, 401 ou 403, "
+        # operations est optionnel si le serveur n'annonce aucun RPC.
+        assert response.status_code in [200, 401, 403, 404], (
+            f"GET {api_url}/operations doit retourner 200, 401, 403 ou 404, "
             f"reçu {response.status_code}"
         )
         
         if response.status_code == 200:
             body = response.json()
-            # La réponse doit contenir un objet operations
-            assert "operations" in body, (
-                "La réponse de /operations doit contenir 'operations'"
+            assert "ietf-restconf:operations" in body, (
+                "La réponse de /operations doit contenir 'ietf-restconf:operations'"
             )
 
     def test_restconf_state_subresource_if_supported(
@@ -384,12 +372,9 @@ class TestCapabilitiesRetrieval:
             headers=headers,
         )
         
-        # Peut être 200 (supporté), 404 (non supporté), 401/403 (accès refusé)
-        if response.status_code == 404:
-            pytest.skip("restconf-state/capabilities non supporté")
-        
+        # ietf-restconf-monitoring est obligatoire pour un serveur RESTCONF.
         assert response.status_code in [200, 401, 403], (
-            f"GET capabilities doit retourner 200, 401, 403 ou 404, "
+            f"GET capabilities doit retourner 200, 401 ou 403, "
             f"reçu {response.status_code}"
         )
         
@@ -449,12 +434,9 @@ class TestCapabilitiesRetrieval:
             headers=headers,
         )
         
-        # Peut être 200 (supporté), 404 (non supporté), 401/403 (accès refusé)
-        if response.status_code == 404:
-            pytest.skip("restconf-state/capabilities non supporté")
-        
+        # ietf-restconf-monitoring est obligatoire pour un serveur RESTCONF.
         assert response.status_code in [200, 401, 403], (
-            f"GET capabilities doit retourner 200, 401, 403 ou 404, "
+            f"GET capabilities doit retourner 200, 401 ou 403, "
             f"reçu {response.status_code}"
         )
         
@@ -523,9 +505,9 @@ class TestCapabilitiesConsistency:
             headers=headers,
         )
         
-        if response.status_code == 404:
-            pytest.skip("restconf-state/capabilities non supporté")
-        
+        assert response.status_code in (200, 401, 403), (
+            f"GET capabilities doit retourner 200, 401 ou 403, obtenu {response.status_code}"
+        )
         if response.status_code != 200:
             pytest.skip(f"Accès refusé ({response.status_code})")
         

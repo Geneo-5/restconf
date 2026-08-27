@@ -128,9 +128,12 @@ class TestT_QUERY_04_Depth1:
     def test_depth_1(self, http2_client, api_url, auth_headers, require_rt):
         headers = {"Accept": YANG_JSON, **auth_headers}
         response = http2_client.get(f"{api_url}{INTERFACES}", headers=headers, params={"depth": "1"})
-        assert response.status_code == 200
-        body = response.json()
-        assert f"{MOD}:interfaces" in body
+        # depth est optionnel : un serveur qui ne l'annonce pas peut le
+        # rejeter avec 400 / invalid-value (RFC 8040 §4.8 et §4.8.2).
+        assert response.status_code in (200, 400)
+        if response.status_code == 200:
+            body = response.json()
+            assert f"{MOD}:interfaces" in body
 
 # ============================================================================
 # T-QUERY-05 : GET avec depth=unbounded
@@ -145,9 +148,10 @@ class TestT_QUERY_05_DepthUnbounded:
     def test_depth_unbounded(self, http2_client, api_url, auth_headers, require_rt):
         headers = {"Accept": YANG_JSON, **auth_headers}
         response = http2_client.get(f"{api_url}{INTERFACES}", headers=headers, params={"depth": "unbounded"})
-        assert response.status_code == 200
-        body = response.json()
-        assert f"{MOD}:interfaces" in body
+        assert response.status_code in (200, 400)
+        if response.status_code == 200:
+            body = response.json()
+            assert f"{MOD}:interfaces" in body
 
 # ============================================================================
 # T-QUERY-06 : GET avec fields valide
@@ -163,9 +167,11 @@ class TestT_QUERY_06_FieldsValid:
         headers = {"Accept": YANG_JSON, **auth_headers}
         # Adapté selon les feuilles réelles de restconf-test:basic-data
         response = http2_client.get(f"{api_url}{BASIC_DATA}", headers=headers, params={"fields": "device-id"})
-        assert response.status_code == 200
-        body = response.json()
-        assert f"{MOD}:basic-data" in body
+        # fields est optionnel, comme depth.
+        assert response.status_code in (200, 400)
+        if response.status_code == 200:
+            body = response.json()
+            assert f"{MOD}:basic-data" in body
 
 # ============================================================================
 # T-QUERY-07 : GET avec fields invalide
@@ -219,7 +225,8 @@ class TestT_QUERY_08_to_11_WithDefaults:
 class TestT_QUERY_12_UnknownParameter:
     """
     T-QUERY-12 : GET avec paramètre de requête inconnu.
-    Le paramètre inconnu doit être ignoré (réponse 200 attendue).
+    Un paramètre inattendu doit être rejeté avec ``400 Bad Request`` et
+    ``error-tag=invalid-value`` (RFC 8040 §4.8).
     """
     def test_unknown_parameter(self, http2_client, api_url, auth_headers, require_rt):
         headers = {"Accept": YANG_JSON, **auth_headers}
@@ -228,8 +235,13 @@ class TestT_QUERY_12_UnknownParameter:
             headers=headers, 
             params={"unknown-param-xyz": "some-value", "another-unknown": "123"}
         )
-        assert response.status_code == 200
+        assert response.status_code == 400
         assert get_content_type(response) == YANG_JSON
+        body = response.json()
+        errors = body.get("ietf-restconf:errors", {}).get("error", [])
+        assert any(error.get("error-tag") == "invalid-value" for error in errors), (
+            "Un paramètre inattendu doit utiliser error-tag=invalid-value"
+        )
 
 # ============================================================================
 # T-QUERY-13 : GET avec combinaison content, depth, fields

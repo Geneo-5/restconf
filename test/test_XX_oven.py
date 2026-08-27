@@ -266,12 +266,17 @@ def oven_operations(http2_client, api_url, auth_headers, require_jwt):
     )
 
     body = response.json()
-    assert "operations" in body, (
-        f"la réponse de {OPERATIONS} doit contenir 'operations' "
-        f"(RFC 8040 §3.6), obtenu {sorted(body.keys())!r}"
+    assert "ietf-restconf:operations" in body, (
+        f"la réponse de {OPERATIONS} doit contenir le nœud de premier niveau "
+        f"'ietf-restconf:operations' (RFC 8040 §3.6, RFC 7951 §4), "
+        f"obtenu {sorted(body.keys())!r}"
     )
-    operations = body["operations"]
-    assert isinstance(operations, list), "'operations' doit être un objet JSON"
+    operations = body["ietf-restconf:operations"]
+    assert isinstance(operations, dict), (
+        f"'ietf-restconf:operations' doit être un objet JSON : ses membres "
+        f"sont les feuilles vides 'module:rpc-name' (RFC 8040 §3.3.2, RFC 7951 §4), "
+        f"obtenu {type(operations).__name__}"
+    )
     return operations
 
 
@@ -321,24 +326,24 @@ class TestOvenDatastoreRead:
 
         container = body[f"{MOD}:oven-state"]
         assert isinstance(container, dict), "le container doit être un objet JSON"
-        # Les feuilles d'état, si présentes, doivent être correctement typées
-        # (mêmes module → non préfixées, RFC 7951 §4).
+        # Le plugin oven fournit les deux feuilles d'état. Elles restent non
+        # préfixées car elles partagent le module du conteneur (RFC 7951 §4).
         for leaf, py_type in STATE_LEAVES.items():
-            if leaf in container:
-                value = container[leaf]
-                if py_type is bool:
-                    assert isinstance(value, bool), (
-                        f"oven-state/{leaf} doit être un booléen JSON, obtenu {value!r}"
-                    )
-                else:
-                    assert isinstance(value, int) and not isinstance(value, bool), (
-                        f"oven-state/{leaf} doit être un entier JSON, obtenu {value!r}"
-                    )
-                if leaf == "temperature":
-                    assert TEMP_MIN <= value <= TEMP_MAX, (
-                        f"oven-state/temperature doit être dans "
-                        f"[{TEMP_MIN}, {TEMP_MAX}], obtenu {value}"
-                    )
+            assert leaf in container, f"oven-state/{leaf} doit être fourni par le plugin"
+            value = container[leaf]
+            if py_type is bool:
+                assert isinstance(value, bool), (
+                    f"oven-state/{leaf} doit être un booléen JSON, obtenu {value!r}"
+                )
+            else:
+                assert isinstance(value, int) and not isinstance(value, bool), (
+                    f"oven-state/{leaf} doit être un entier JSON, obtenu {value!r}"
+                )
+            if leaf == "temperature":
+                assert TEMP_MIN <= value <= TEMP_MAX, (
+                    f"oven-state/temperature doit être dans "
+                    f"[{TEMP_MIN}, {TEMP_MAX}], obtenu {value}"
+                )
 
     def test_get_state_container_xml(self, http2_client, api_url, auth_headers, require_oven):
         """GET oven:oven-state en XML : racine ``{urn:sysrepo:oven}oven-state``."""
@@ -395,10 +400,10 @@ class TestOvenLeaves:
     RFC 7951 §6.2 : les entiers YANG sont des nombres JSON.
     RFC 7951 §6.7 : les boolean YANG sont des booléens JSON.
 
-    Les feuilles de configuration (``turned-on``, ``temperature``) portent des
-    valeurs par défaut : si elles ne sont pas reportées (RFC 6243), un ``404``
-    est acceptable. Les feuilles d'état (``oven-state/*``) sont renseignées par
-    le plugin et attendues à ``200``.
+    Une lecture ciblant directement une leaf avec valeur par défaut doit
+    retourner cette valeur, indépendamment du basic-mode (RFC 8040 §3.5.4).
+    Les feuilles d'état (``oven-state/*``) sont renseignées par le plugin et
+    attendues à ``200``.
     """
 
     @pytest.mark.parametrize("leaf,py_type", sorted(CONFIG_LEAVES.items()))
@@ -407,12 +412,10 @@ class TestOvenLeaves:
         headers = {"Accept": YANG_JSON, **auth_headers}
         response = http2_client.get(f"{api_url}{OVEN_CONFIG}/{leaf}", headers=headers)
 
-        assert response.status_code in (200, 404), (
-            f"GET {OVEN_CONFIG}/{leaf} doit retourner 200 ou 404, "
+        assert response.status_code == 200, (
+            f"GET {OVEN_CONFIG}/{leaf} doit retourner la valeur par défaut (200), "
             f"obtenu {response.status_code}"
         )
-        if response.status_code == 404:
-            return  # leaf par défaut non reportée : comportement valide
 
         assert get_content_type(response) == YANG_JSON
         body = response.json()
@@ -430,12 +433,6 @@ class TestOvenLeaves:
         """GET sur une leaf d'état (fournie par le plugin) : 200 attendu."""
         headers = {"Accept": YANG_JSON, **auth_headers}
         response = http2_client.get(f"{api_url}{OVEN_STATE}/{leaf}", headers=headers)
-
-        if response.status_code == 404:
-            pytest.skip(
-                f"la leaf d'état oven-state/{leaf} n'est pas fournie par le "
-                f"plugin dans cet environnement"
-            )
 
         assert response.status_code == 200, (
             f"GET {OVEN_STATE}/{leaf} doit retourner 200, "
@@ -456,9 +453,6 @@ class TestOvenLeaves:
         """GET sur une leaf d'état en XML : racine ``{urn:sysrepo:oven}temperature``."""
         headers = {"Accept": YANG_XML, **auth_headers}
         response = http2_client.get(f"{api_url}{OVEN_STATE}/temperature", headers=headers)
-
-        if response.status_code == 404:
-            pytest.skip("oven-state/temperature non fournie par le plugin")
 
         assert response.status_code == 200
         assert get_content_type(response) == YANG_XML

@@ -14,6 +14,8 @@ Ces tests valident les comportements normatifs attendus du transport,
 indépendamment de l'implémentation interne du serveur.
 """
 
+from __future__ import annotations
+
 import pytest
 import httpx
 import ssl

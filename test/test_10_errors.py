@@ -61,11 +61,13 @@ STREAM_PATH = "/streams/stream/NETCONF"
 # Valeurs valides pour error-type (RFC 8040 §7)
 VALID_ERROR_TYPES = {"transport", "rpc", "protocol", "application"}
 
-# Table de correspondance error-tag -> codes HTTP attendus (RFC 8040 §7 + Errata EID 7311)
+# Table de correspondance error-tag -> codes HTTP attendus (RFC 8040 §7 +
+# Errata EID 7311).  "too-big" dépend du sens du message : 413 pour une
+# requête trop grande et 400 pour une réponse trop grande.
 ERROR_TAG_HTTP_CODES = {
     "in-use": {409},
     "invalid-value": {400, 404, 406},
-    "too-big": {413},
+    "too-big": {400, 413},
     "missing-attribute": {400},
     "bad-attribute": {400},
     "unknown-attribute": {400},
@@ -75,12 +77,13 @@ ERROR_TAG_HTTP_CODES = {
     "unknown-namespace": {400},
     "access-denied": {401, 403},
     "lock-denied": {409},
-    "resource-denied": {403, 500},
+    "resource-denied": {409},
     "rollback-failed": {500},
     "data-exists": {409},
     "data-missing": {409},
     "operation-not-supported": {405, 501},
-    "operation-failed": {400, 409, 412, 500},
+    "operation-failed": {412, 500},
+    "partial-operation": {500},
     "malformed-message": {400},
 }
 
@@ -153,14 +156,23 @@ def validate_error_entry(error_entry, response_status=None):
                 f"{response_status}. Codes attendus : {expected_codes}"
             )
 
-    # Les champs optionnels doivent être des strings s'ils sont présents
-    for optional_field in ("error-app-tag", "error-path", "error-message", "error-info"):
+    # Les trois leaves optionnelles sont des scalaires.  error-info est un
+    # anydata qui doit représenter un conteneur et s'encode donc comme objet
+    # JSON (RFC 8040 §8, grouping yang-error).
+    for optional_field in ("error-app-tag", "error-path", "error-message"):
         value = error_entry.get(optional_field)
-        if value is not None and not isinstance(value, (str, dict)):
+        if value is not None and not isinstance(value, str):
             issues.append(
-                f"{optional_field} doit être une chaîne ou un objet, "
+                f"{optional_field} doit être une chaîne, "
                 f"obtenu {type(value).__name__}"
             )
+
+    error_info = error_entry.get("error-info")
+    if error_info is not None and not isinstance(error_info, dict):
+        issues.append(
+            "error-info doit être un objet JSON représentant un conteneur, "
+            f"obtenu {type(error_info).__name__}"
+        )
 
     return issues
 

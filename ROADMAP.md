@@ -248,7 +248,7 @@ Les timeouts proxy doivent être configurés pour ne pas interrompre les flux SS
 | R16 | [RFC 8525](https://datatracker.ietf.org/doc/html/rfc8525) - YANG Library | Exposer la YANG Library décrivant modules, sous-modules, features, deviations, `content-id` et URLs de schéma. La YANG Library doit être cohérente avec l’état réel du serveur et exposée sur le datastore opérationnel. Si les modules changent à chaud, mettre à jour `content-id` et émettre la notification de changement si applicable. Voir R48. | R5 | Obligatoire | ⬜ À valider |
 | R17 | [RFC 8040 §3.7](https://datatracker.ietf.org/doc/html/rfc8040#section-3.7) - Schema Resource (GET) | Endpoint GET servant le code source d’un module YANG avec le media type `application/yang`. Valider la forme exacte de l’URI, par exemple `{+restconf}/yang/{module}@{revision}.yang`. Les URLs annoncées dans la YANG Library doivent être réellement accessibles. | R4, R16 | Conditionnel / Recommandé | ⬜ À valider |
 | R18 | [RFC 8040 §3.7](https://datatracker.ietf.org/doc/html/rfc8040#section-3.7) - `get-schema` (optionnel) | Alternative via l’opération RPC `get-schema` du module `ietf-netconf-monitoring`, exposée sur `/operations`, pour les modules sans URL de `location` statique. | R15 | Optionnel | ⬜ À valider |
-| R19 | [RFC 8040 §4.8.1-4.8.3, §4.8.9](https://datatracker.ietf.org/doc/html/rfc8040#section-4.8.1), [RFC 6243](https://datatracker.ietf.org/doc/html/rfc6243) - Query Params : mise en forme du GET | Paramètres `content` (`config`, `nonconfig`, `all`), `depth` (entier ou `unbounded`), `fields`, `with-defaults` (`report-all`, `trim`, `explicit`, et `report-all-tagged` si applicable). Les paramètres de requête inconnus doivent être ignorés. Valider l’applicabilité de `report-all-tagged` en JSON. **[Errata EID 6473]** Lorsque `depth` tronque une liste/leaf-list, celle-ci doit rester encodée comme un tableau JSON vide (`[]`) et non comme un objet vide (`{}`), conformément à RFC 7951. | R6, R7, R43 | Obligatoire | ⬜ À valider |
+| R19 | [RFC 8040 §4.8.1-4.8.3, §4.8.9](https://datatracker.ietf.org/doc/html/rfc8040#section-4.8.1), [RFC 6243](https://datatracker.ietf.org/doc/html/rfc6243) - Query Params : mise en forme du GET | Paramètres `content` (`config`, `nonconfig`, `all`), `depth` (entier ou `unbounded`), `fields`, `with-defaults` (`report-all`, `trim`, `explicit`, et `report-all-tagged` si applicable). Les paramètres de requête inattendus doivent être rejetés avec `400 Bad Request` et `error-tag=invalid-value`. Valider l’applicabilité de `report-all-tagged` en JSON. **[Errata EID 6473]** Lorsque `depth` tronque une liste/leaf-list, celle-ci doit rester encodée comme un tableau JSON vide (`[]`) et non comme un objet vide (`{}`), conformément à RFC 7951. | R6, R7, R43 | Obligatoire | ⬜ À valider |
 | R20 | [RFC 8040 §4.8.5, §4.8.6](https://datatracker.ietf.org/doc/html/rfc8040#section-4.8.5) - Query Params : ordonnancement | Paramètres `insert` (`first`, `last`, `before`, `after`) et `point` pour les listes/leaf-lists `ordered-by user`. `point` est requis pour `before`/`after`. **[Errata EID 6277]** La valeur par défaut `last` de `insert` ne s'applique qu'à la création d'une nouvelle entrée ; pour un PUT qui remplace une entrée existante d'une liste `ordered-by user`, le comportement par défaut est de conserver sa position, sauf si `insert` est explicitement fourni par le client. | R10, R12 | Obligatoire | ⬜ À valider |
 | R21 | [RFC 8040 §4.8.4, §4.8.7, §4.8.8](https://datatracker.ietf.org/doc/html/rfc8040#section-4.8.4) - Query Params : flux d’événements | Paramètres `filter`, `start-time`, `stop-time` pour les ressources de type stream. `start-time`/`stop-time` ne sont utilisables que si le replay est supporté par le stream. | R24 | Conditionnel si streams | ⬜ À valider |
 | R22 | [RFC 8040 §7](https://datatracker.ietf.org/doc/html/rfc8040#section-7), [RFC 9110](https://datatracker.ietf.org/doc/html/rfc9110) - Error Reporting | Modèle d’erreurs `ietf-restconf:errors`. Centraliser le mapping `error-tag` → code HTTP → enveloppe JSON/XML. Inclure les headers requis : `WWW-Authenticate` pour `401`, `Allow` pour `405`. Gérer `406`, `415`, `412`. Les erreurs après établissement d’un flux SSE ne peuvent plus être renvoyées via une enveloppe RESTCONF classique. | Plusieurs | Obligatoire | ⬜ À valider |
@@ -272,7 +272,7 @@ Les timeouts proxy doivent être configurés pour ne pas interrompre les flux SS
 | R40 | [RFC 8040](https://datatracker.ietf.org/doc/html/rfc8040), [RFC 9110](https://datatracker.ietf.org/doc/html/rfc9110) - OPTIONS et Allow | Implémenter OPTIONS sur les ressources RESTCONF et retourner un header `Allow` correct. Toute réponse `405 Method Not Allowed` doit également inclure `Allow`. Centraliser les méthodes autorisées par type de ressource. | R4, R5 | Obligatoire | ⬜ À valider |
 | R41 | [RFC 8040](https://datatracker.ietf.org/doc/html/rfc8040), [RFC 7951](https://datatracker.ietf.org/doc/html/rfc7951) - Media types et négociation de contenu | Supporter les media types RESTCONF `application/yang-data+json` et `application/yang-data+xml` pour une conformité stricte. Gérer `Accept`, `Content-Type`, `406 Not Acceptable`, `415 Unsupported Media Type`. Renvoyer les erreurs dans le même media type que la requête lorsque possible. | R1 | Obligatoire | ⬜ À valider |
 | R42 | [RFC 9110](https://datatracker.ietf.org/doc/html/rfc9110) - Sémantique HTTP transverse | Prise en compte transverse de la sémantique HTTP : méthodes, headers conditionnels, validateurs, `304`, `412`, `405`, `401` + `WWW-Authenticate`, `406`, `415`, `Location`, `Allow`. | R1 | Obligatoire | ⬜ À valider |
-| R43 | [RFC 8040 §3.5.3](https://datatracker.ietf.org/doc/html/rfc8040#section-3.5.3), [RFC 3986](https://datatracker.ietf.org/doc/html/rfc3986) - Parsing URI / api-path | Décoder correctement le chemin RESTCONF avant toute transformation XPath : percent-encoding, clés de listes, virgules échappées, caractères spéciaux. Rejeter les chemins invalides. Ignorer les query parameters inconnus. **[Errata EID 5255]** En cas de clés multiples, le path segment doit être construit avec le nom de la liste, suivi d'un caractère `=`, suivi des valeurs de clé séparées par des virgules (le `=` était absent du texte initial de la RFC alors qu'il figure dans les exemples). **[Errata EID 7866]** Le pourcent-encodage des caractères réservés dans les clés/leaf-list values/query parameters doit suivre les Sections 2.1, **2.2** et 2.5 de RFC 3986 (la Section 2.2, qui définit la liste des caractères réservés, manquait dans le texte initial). | R5 | Obligatoire | ⬜ À valider |
+| R43 | [RFC 8040 §3.5.3](https://datatracker.ietf.org/doc/html/rfc8040#section-3.5.3), [RFC 3986](https://datatracker.ietf.org/doc/html/rfc3986) - Parsing URI / api-path | Décoder correctement le chemin RESTCONF avant toute transformation XPath : percent-encoding, clés de listes, virgules échappées, caractères spéciaux. Rejeter les chemins et les query parameters inconnus avec `400 Bad Request` et `error-tag=invalid-value`. **[Errata EID 5255]** En cas de clés multiples, le path segment doit être construit avec le nom de la liste, suivi d'un caractère `=`, suivi des valeurs de clé séparées par des virgules (le `=` était absent du texte initial de la RFC alors qu'il figure dans les exemples). **[Errata EID 7866]** Le pourcent-encodage des caractères réservés dans les clés/leaf-list values/query parameters doit suivre les Sections 2.1, **2.2** et 2.5 de RFC 3986 (la Section 2.2, qui définit la liste des caractères réservés, manquait dans le texte initial). | R5 | Obligatoire | ⬜ À valider |
 | R44 | [RFC 8040 §2](https://datatracker.ietf.org/doc/html/rfc8040#section-2), [RFC 8725](https://datatracker.ietf.org/doc/html/rfc8725), [RFC 9113](https://datatracker.ietf.org/doc/html/rfc9113), [RFC 8446](https://datatracker.ietf.org/doc/html/rfc8446) - Durcissement sécurité | Limiter `SETTINGS_MAX_CONCURRENT_STREAMS`, taille des headers, taille des corps, nombre de connexions/streams par client, fréquence de validation JWT, cache JWKS, protection contre rejeu, timeouts adaptés aux flux longs. Ajouter rate-limiting des RPC coûteux et des souscriptions. | R1, R2 | Obligatoire | 🟡 Amorcé — `SETTINGS_MAX_CONCURRENT_STREAMS`/fenêtres HTTP/2 configurés (`Config.in`) ; `H2C_MAX_REQUEST_BODY_SIZE` défini mais pas encore appliqué ; JWT/rate-limiting restent à faire |
 | R45 | [RFC 8040 §3.8](https://datatracker.ietf.org/doc/html/rfc8040#section-3.8) - RESTCONF capabilities | Exposer les capacités RESTCONF dans `restconf-state/capabilities`. Annoncer les capacités supportées : `with-defaults`, `depth`, `fields`, `filter`, YANG Patch, NMDA, souscriptions, YANG-Push, etc. | R4, R16 | Obligatoire | ⬜ À faire |
 | R46 | [RFC 8342](https://datatracker.ietf.org/doc/html/rfc8342), [RFC 8527](https://datatracker.ietf.org/doc/html/rfc8527) - Mapping NMDA de `/data` | Documenter et tester le comportement de `{+restconf}/data` lorsque NMDA est supporté. Préciser le datastore cible pour les écritures, le datastore lu pour les GET, et le traitement des données `config false`, `operational`, `intended`, `candidate`, `startup`. | R5, R27 | Conditionnel si NMDA | ⬜ À valider |
@@ -280,7 +280,7 @@ Les timeouts proxy doivent être configurés pour ne pas interrompre les flux SS
 | R48 | [RFC 8525](https://datatracker.ietf.org/doc/html/rfc8525) - Notification de changement YANG Library | Si les modules peuvent changer à chaud, mettre à jour `content-id`, rafraîchir la YANG Library et émettre la notification de changement de YANG Library si applicable. | R16 | Conditionnel si modules dynamiques | ⬜ À faire |
 | R49 | [RFC 8650](https://datatracker.ietf.org/doc/html/rfc8650), [RFC 8341](https://datatracker.ietf.org/doc/html/rfc8341) - Sécurité des URI de souscription | Les URI SSE de souscription doivent être protégées, associées à l’identité authentifiée, liées à l’identifiant de souscription, nettoyées à expiration/suppression/fermeture, et soumises à NACM. | R37, R39, R29 | Conditionnel si souscriptions | ⬜ À faire |
 | R50 | [RFC 9110](https://datatracker.ietf.org/doc/html/rfc9110) - Cache HTTP | Définir une politique de cache sûre pour les réponses RESTCONF. Pour les données sensibles ou volatiles, prévoir par exemple `Cache-Control: no-store` ou équivalent. | R42 | Recommandé | ⬜ À faire |
-| R51 | Toutes RFC - Tests de conformité | Ajouter et exécuter une suite de tests couvrant : discovery, media types, erreurs, NACM, conditional requests, SSE, souscriptions, YANG-Push, NMDA, YANG Library, OPTIONS, sécurité TLS/proxy. | Tous | Obligatoire | ⬜ À faire |
+| R51 | Toutes RFC - Tests de conformité | Ajouter et exécuter une suite de tests couvrant : discovery, media types, erreurs, NACM, conditional requests, SSE, souscriptions, YANG-Push, NMDA, YANG Library, OPTIONS, sécurité TLS/proxy. | Tous | Obligatoire | 🟡 En cours — transport/discovery/API/GET/conditional/writes/operations/media types/erreurs/NACM/YANG Library/NMDA/YANG Patch/SSE couverts par `test/test_01`–`test_15` + `test_XX_oven.py` (certains critères RFC vérifiés de manière peu stricte, ou tributaires de fonctionnalités serveur non encore implémentées) ; souscriptions dynamiques, YANG-Push, Call Home, JWT/JWKS, sécurité/robustesse HTTP2, intégration lib* et interopérabilité (sections 16–22) restent à écrire |
 
 ---
 
@@ -506,18 +506,18 @@ Toutes les lignes sont initialisées avec l’avancement `⬜ À faire`.
 
 | ID | Test | Résultat attendu | Avancement |
 |---|---|---|---|
-| T-GET-01 | GET sur `{+restconf}/data` | Retourne la vue du datastore conceptuel conformément à la politique NACM | ⬜ À faire |
-| T-GET-02 | GET sur un container | Réponse `200 OK` avec encodage JSON ou XML correct | ⬜ À faire |
-| T-GET-03 | GET sur une leaf | Réponse `200 OK` avec la valeur encodée correctement | ⬜ À faire |
-| T-GET-04 | HEAD sur une ressource | Mêmes headers que GET, sans corps | ⬜ À faire |
-| T-GET-05 | GET sur une liste | En JSON, tableau conforme RFC 7951 ; en XML, élément racine unique | ⬜ À faire |
-| T-GET-06 | GET sur une leaf-list | Encodage correct selon JSON/XML | ⬜ À faire |
-| T-GET-07 | GET avec `Accept: application/yang-data+json` | Réponse en JSON YANG | ⬜ À faire |
-| T-GET-08 | GET avec `Accept: application/yang-data+xml` | Réponse en XML YANG | ⬜ À faire |
-| T-GET-09 | GET sur ressource inexistante | `404 Not Found` avec erreur RESTCONF pertinente | ⬜ À faire |
-| T-GET-10 | GET avec chemin percent-encodé | Le chemin est correctement décodé avant traitement | ⬜ À faire |
-| T-GET-11 | GET avec clés de liste contenant virgules ou caractères spéciaux | Le parsing est correct et sécurisé | ⬜ À faire |
-| T-GET-12 | GET avec chemin invalide | `400 Bad Request` ou `404 Not Found` selon le cas, avec enveloppe d’erreur | ⬜ À faire |
+| T-GET-01 | GET sur `{+restconf}/data` | Retourne la vue du datastore conceptuel conformément à la politique NACM | ✅ Terminé — `test_04_datastore_get.py` |
+| T-GET-02 | GET sur un container | Réponse `200 OK` avec encodage JSON ou XML correct | ✅ Terminé — `test_04_datastore_get.py` |
+| T-GET-03 | GET sur une leaf | Réponse `200 OK` avec la valeur encodée correctement | ✅ Terminé — `test_04_datastore_get.py` |
+| T-GET-04 | HEAD sur une ressource | Mêmes headers que GET, sans corps | ✅ Terminé — `test_04_datastore_get.py` |
+| T-GET-05 | GET sur une liste | En JSON, tableau conforme RFC 7951 ; en XML, élément racine unique | ✅ Terminé — `test_04_datastore_get.py` |
+| T-GET-06 | GET sur une leaf-list | Encodage correct selon JSON/XML | ✅ Terminé — `test_04_datastore_get.py` |
+| T-GET-07 | GET avec `Accept: application/yang-data+json` | Réponse en JSON YANG | ✅ Terminé — `test_04_datastore_get.py` |
+| T-GET-08 | GET avec `Accept: application/yang-data+xml` | Réponse en XML YANG | ✅ Terminé — `test_04_datastore_get.py` |
+| T-GET-09 | GET sur ressource inexistante | `404 Not Found` avec erreur RESTCONF pertinente | ✅ Terminé — `test_04_datastore_get.py` |
+| T-GET-10 | GET avec chemin percent-encodé | Le chemin est correctement décodé avant traitement | ✅ Terminé — `test_04_datastore_get.py` |
+| T-GET-11 | GET avec clés de liste contenant virgules ou caractères spéciaux | Le parsing est correct et sécurisé | ✅ Terminé — `test_04_datastore_get.py` (clé simple et clés multiples, Errata EID 5255) |
+| T-GET-12 | GET avec chemin invalide | `400 Bad Request` ou `404 Not Found` selon le cas, avec enveloppe d’erreur | ✅ Terminé — `test_04_datastore_get.py` |
 
 ---
 
@@ -528,21 +528,21 @@ Toutes les lignes sont initialisées avec l’avancement `⬜ À faire`.
 
 | ID | Test | Résultat attendu | Avancement |
 |---|---|---|---|
-| T-QUERY-01 | GET avec `content=config` | Seules les données de configuration sont retournées | ⬜ À faire |
-| T-QUERY-02 | GET avec `content=nonconfig` | Seules les données d’état sont retournées | ⬜ À faire |
-| T-QUERY-03 | GET avec `content=all` | Données de configuration et d’état retournées | ⬜ À faire |
-| T-QUERY-04 | GET avec `depth=1` | Seuls les enfants directs sont inclus | ⬜ À faire |
-| T-QUERY-05 | GET avec `depth=unbounded` | L’arbre complet est retourné | ⬜ À faire |
-| T-QUERY-06 | GET avec `fields` valide | Seuls les champs demandés sont retournés | ⬜ À faire |
-| T-QUERY-07 | GET avec `fields` invalide | Erreur `400 Bad Request` avec `error-tag` pertinent | ⬜ À faire |
-| T-QUERY-08 | GET avec `with-defaults=report-all` | Valeurs par défaut incluses selon RFC 6243 | ⬜ À faire |
-| T-QUERY-09 | GET avec `with-defaults=trim` | Valeurs égales au default retirées si applicable | ⬜ À faire |
-| T-QUERY-10 | GET avec `with-defaults=explicit` | Seules les valeurs explicitement positionnées sont retournées | ⬜ À faire |
-| T-QUERY-11 | GET avec `with-defaults=report-all-tagged` si supporté | Annotations ou marquage conformes au mode supporté | ⬜ À faire |
-| T-QUERY-12 | GET avec paramètre de requête inconnu | Le paramètre inconnu est ignoré | ⬜ À faire |
-| T-QUERY-13 | GET avec combinaison `content`, `depth`, `fields` | La réponse respecte simultanément les trois paramètres | ⬜ À faire |
-| T-QUERY-14 | GET sur stream avec `start-time`/`stop-time` | Accepté uniquement si le replay est supporté | ⬜ À faire |
-| T-QUERY-15 | GET sur stream sans replay mais avec `start-time` | Erreur RESTCONF pertinente | ⬜ À faire |
+| T-QUERY-01 | GET avec `content=config` | Seules les données de configuration sont retournées | 🟡 En cours — `test_05_query_params.py` écrit mais assertion faible (vérifie 200 + présence du nœud, pas le filtrage effectif) |
+| T-QUERY-02 | GET avec `content=nonconfig` | Seules les données d’état sont retournées | 🟡 En cours — `test_05_query_params.py` accepte 200/404 sans vérifier le filtrage |
+| T-QUERY-03 | GET avec `content=all` | Données de configuration et d’état retournées | 🟡 En cours — `test_05_query_params.py` vérifie seulement 200 |
+| T-QUERY-04 | GET avec `depth=1` | Seuls les enfants directs sont inclus | 🟡 En cours — `test_05_query_params.py` ne vérifie pas la troncature réelle |
+| T-QUERY-05 | GET avec `depth=unbounded` | L’arbre complet est retourné | 🟡 En cours — `test_05_query_params.py` vérifie seulement 200 |
+| T-QUERY-06 | GET avec `fields` valide | Seuls les champs demandés sont retournés | 🟡 En cours — `test_05_query_params.py` ne vérifie pas le filtrage effectif des champs |
+| T-QUERY-07 | GET avec `fields` invalide | Erreur `400 Bad Request` avec `error-tag` pertinent | ✅ Terminé — `test_05_query_params.py` (assertion stricte 400 + enveloppe) |
+| T-QUERY-08 | GET avec `with-defaults=report-all` | Valeurs par défaut incluses selon RFC 6243 | 🟡 En cours — `test_05_query_params.py` accepte 200/400 sans vérifier le contenu retourné |
+| T-QUERY-09 | GET avec `with-defaults=trim` | Valeurs égales au default retirées si applicable | 🟡 En cours — `test_05_query_params.py` accepte 200/400 sans vérifier le contenu retourné |
+| T-QUERY-10 | GET avec `with-defaults=explicit` | Seules les valeurs explicitement positionnées sont retournées | 🟡 En cours — `test_05_query_params.py` accepte 200/400 sans vérifier le contenu retourné |
+| T-QUERY-11 | GET avec `with-defaults=report-all-tagged` si supporté | Annotations ou marquage conformes au mode supporté | 🟡 En cours — `test_05_query_params.py` accepte 200/400 sans vérifier le marquage |
+| T-QUERY-12 | GET avec paramètre de requête inconnu | Le paramètre inconnu est ignoré | ✅ Terminé — `test_05_query_params.py` (assertion stricte 200) |
+| T-QUERY-13 | GET avec combinaison `content`, `depth`, `fields` | La réponse respecte simultanément les trois paramètres | 🟡 En cours — `test_05_query_params.py` accepte 200/400 sans vérifier la combinaison | 
+| T-QUERY-14 | GET sur stream avec `start-time`/`stop-time` | Accepté uniquement si le replay est supporté | 🟡 En cours — `test_05_query_params.py` écrit mais tributaire des streams/SSE (R23/R24) non implementés |
+| T-QUERY-15 | GET sur stream sans replay mais avec `start-time` | Erreur RESTCONF pertinente | 🟡 En cours — `test_05_query_params.py` écrit mais tributaire des streams/SSE (R23/R24) non implementés |
 
 ---
 
@@ -553,17 +553,17 @@ Toutes les lignes sont initialisées avec l’avancement `⬜ À faire`.
 
 | ID | Test | Résultat attendu | Avancement |
 |---|---|---|---|
-| T-COND-01 | GET sur une ressource | Présence de `ETag` et/ou `Last-Modified` si supporté | ⬜ À faire |
-| T-COND-02 | GET avec `If-None-Match` égal à l’ETag courant | `304 Not Modified` sans corps | ⬜ À faire |
-| T-COND-03 | GET avec `If-None-Match` différent | `200 OK` avec corps | ⬜ À faire |
-| T-COND-04 | PUT avec `If-Match` valide | Modification acceptée | ⬜ À faire |
-| T-COND-05 | PUT avec `If-Match` invalide | `412 Precondition Failed` | ⬜ À faire |
-| T-COND-06 | DELETE avec `If-Match` valide | Suppression acceptée | ⬜ À faire |
-| T-COND-07 | DELETE avec `If-Match` invalide | `412 Precondition Failed` | ⬜ À faire |
-| T-COND-08 | GET avec `If-Modified-Since` antérieur à la modification | `200 OK` | ⬜ À faire |
-| T-COND-09 | GET avec `If-Modified-Since` postérieur à la modification | `304 Not Modified` si applicable | ⬜ À faire |
-| T-COND-10 | Modification de la ressource puis relecture | L’ETag ou le `Last-Modified` change | ⬜ À faire |
-| T-COND-11 | Validateurs sur ressources NMDA | Les validateurs sont cohérents par datastore si pertinent | ⬜ À faire |
+| T-COND-01 | GET sur une ressource | Présence de `ETag` et/ou `Last-Modified` si supporté | ✅ Terminé — `test_06_conditional_requests.py` |
+| T-COND-02 | GET avec `If-None-Match` égal à l’ETag courant | `304 Not Modified` sans corps | ✅ Terminé — `test_06_conditional_requests.py` |
+| T-COND-03 | GET avec `If-None-Match` différent | `200 OK` avec corps | ✅ Terminé — `test_06_conditional_requests.py` |
+| T-COND-04 | PUT avec `If-Match` valide | Modification acceptée | ✅ Terminé — `test_06_conditional_requests.py` |
+| T-COND-05 | PUT avec `If-Match` invalide | `412 Precondition Failed` | ✅ Terminé — `test_06_conditional_requests.py` |
+| T-COND-06 | DELETE avec `If-Match` valide | Suppression acceptée | ✅ Terminé — `test_06_conditional_requests.py` |
+| T-COND-07 | DELETE avec `If-Match` invalide | `412 Precondition Failed` | ✅ Terminé — `test_06_conditional_requests.py` |
+| T-COND-08 | GET avec `If-Modified-Since` antérieur à la modification | `200 OK` | ✅ Terminé — `test_06_conditional_requests.py` |
+| T-COND-09 | GET avec `If-Modified-Since` postérieur à la modification | `304 Not Modified` si applicable | ✅ Terminé — `test_06_conditional_requests.py` |
+| T-COND-10 | Modification de la ressource puis relecture | L’ETag ou le `Last-Modified` change | ✅ Terminé — `test_06_conditional_requests.py` |
+| T-COND-11 | Validateurs sur ressources NMDA | Les validateurs sont cohérents par datastore si pertinent | 🟡 En cours — `test_06_conditional_requests.py` écrit mais tributaire de NMDA/R27 non implementé |
 
 ---
 
@@ -574,24 +574,24 @@ Toutes les lignes sont initialisées avec l’avancement `⬜ À faire`.
 
 | ID | Test | Résultat attendu | Avancement |
 |---|---|---|---|
-| T-WRITE-01 | POST création d’une ressource enfant | `201 Created` avec header `Location` | ⬜ À faire |
-| T-WRITE-02 | POST création d’une ressource déjà existante | `409 Conflict` avec `error-tag=data-exists` | ⬜ À faire |
-| T-WRITE-03 | POST avec corps invalide | `400 Bad Request` avec erreur RESTCONF | ⬜ À faire |
-| T-WRITE-04 | POST avec `Content-Type` non supporté | `415 Unsupported Media Type` | ⬜ À faire |
-| T-WRITE-05 | PUT création d’une ressource | `201 Created` | ⬜ À faire |
-| T-WRITE-06 | PUT remplacement d’une ressource existante | `204 No Content` | ⬜ À faire |
-| T-WRITE-07 | PUT avec précondition `If-Match` invalide | `412 Precondition Failed` | ⬜ À faire |
-| T-WRITE-08 | DELETE d’une ressource existante | `204 No Content` | ⬜ À faire |
-| T-WRITE-09 | DELETE d’une ressource inexistante | `404 Not Found` | ⬜ À faire |
-| T-WRITE-10 | DELETE avec précondition invalide | `412 Precondition Failed` | ⬜ À faire |
-| T-WRITE-11 | Plain PATCH sur ressource existante | Fusion réussie, `200 OK` ou `204 No Content` | ⬜ À faire |
-| T-WRITE-12 | Plain PATCH créant des sous-ressources | Création/fusion réussie sans `404` systématique | ⬜ À faire |
-| T-WRITE-13 | Plain PATCH avec corps invalide | `400 Bad Request` | ⬜ À faire |
-| T-WRITE-14 | POST invocation d’une action YANG | `200 OK` avec sortie ou `204 No Content` sans sortie | ⬜ À faire |
-| T-WRITE-15 | POST action avec input invalide | `400 Bad Request` | ⬜ À faire |
-| T-WRITE-16 | Création dans liste `ordered-by user` avec `insert`/`point` | L’ordre demandé est respecté | ⬜ À faire |
-| T-WRITE-17 | `insert=before` sans `point` | Erreur `400 Bad Request` | ⬜ À faire |
-| T-WRITE-18 | Écriture sur ressource non autorisée | `403 Forbidden` ou `401 Unauthorized` selon authentification | ⬜ À faire |
+| T-WRITE-01 | POST création d’une ressource enfant | `201 Created` avec header `Location` | 🟡 En cours — `test_07_writes.py` accepte (200/201/204) au lieu du seul `201 Created` imposé par RFC 8040 §4.4.1 |
+| T-WRITE-02 | POST création d’une ressource déjà existante | `409 Conflict` avec `error-tag=data-exists` | ✅ Terminé — `test_07_writes.py` |
+| T-WRITE-03 | POST avec corps invalide | `400 Bad Request` avec erreur RESTCONF | ✅ Terminé — `test_07_writes.py` |
+| T-WRITE-04 | POST avec `Content-Type` non supporté | `415 Unsupported Media Type` | ✅ Terminé — `test_07_writes.py` |
+| T-WRITE-05 | PUT création d’une ressource | `201 Created` | 🟡 En cours — `test_07_writes.py` accepte (201/204) au lieu du seul `201 Created` imposé par RFC 8040 §4.5 |
+| T-WRITE-06 | PUT remplacement d’une ressource existante | `204 No Content` | ✅ Terminé — `test_07_writes.py` |
+| T-WRITE-07 | PUT avec précondition `If-Match` invalide | `412 Precondition Failed` | ✅ Terminé — `test_07_writes.py` |
+| T-WRITE-08 | DELETE d’une ressource existante | `204 No Content` | ✅ Terminé — `test_07_writes.py` |
+| T-WRITE-09 | DELETE d’une ressource inexistante | `404 Not Found` | ✅ Terminé — `test_07_writes.py` |
+| T-WRITE-10 | DELETE avec précondition invalide | `412 Precondition Failed` | ✅ Terminé — `test_07_writes.py` |
+| T-WRITE-11 | Plain PATCH sur ressource existante | Fusion réussie, `200 OK` ou `204 No Content` | ✅ Terminé — `test_07_writes.py` |
+| T-WRITE-12 | Plain PATCH créant des sous-ressources | Création/fusion réussie sans `404` systématique | ✅ Terminé — `test_07_writes.py` (même test que T-WRITE-11) |
+| T-WRITE-13 | Plain PATCH avec corps invalide | `400 Bad Request` | ✅ Terminé — `test_07_writes.py` |
+| T-WRITE-14 | POST invocation d’une action YANG | `200 OK` avec sortie ou `204 No Content` sans sortie | 🟡 En cours — `test_07_writes.py` écrit, tributaire d’une action présente dans le module de test |
+| T-WRITE-15 | POST action avec input invalide | `400 Bad Request` | ⬜ À faire — mentionné dans le docstring de `test_07_writes.py` mais aucun test n’est effectivement écrit |
+| T-WRITE-16 | Création dans liste `ordered-by user` avec `insert`/`point` | L’ordre demandé est respecté | ⬜ À faire — mentionné dans le docstring de `test_07_writes.py` mais aucun test n’est effectivement écrit (seul T-WRITE-17 l’est) |
+| T-WRITE-17 | `insert=before` sans `point` | Erreur `400 Bad Request` | ✅ Terminé — `test_07_writes.py` |
+| T-WRITE-18 | Écriture sur ressource non autorisée | `403 Forbidden` ou `401 Unauthorized` selon authentification | ✅ Terminé — `test_07_writes.py` |
 
 ---
 
@@ -602,16 +602,16 @@ Toutes les lignes sont initialisées avec l’avancement `⬜ À faire`.
 
 | ID | Test | Résultat attendu | Avancement |
 |---|---|---|---|
-| T-OPS-01 | GET sur `{+restconf}/operations` | Liste des RPC disponibles, filtrée selon NACM | ⬜ À faire |
-| T-OPS-02 | OPTIONS sur `{+restconf}/operations` | Header `Allow` correct | ⬜ À faire |
-| T-OPS-03 | POST sur un RPC avec input valide | `200 OK` avec output ou `204 No Content` | ⬜ À faire |
-| T-OPS-04 | POST sur un RPC sans output | `204 No Content` | ⬜ À faire |
-| T-OPS-05 | POST sur un RPC avec input invalide | `400 Bad Request` | ⬜ À faire |
-| T-OPS-06 | POST sur un RPC inconnu | `404 Not Found` ou erreur RESTCONF pertinente | ⬜ À faire |
-| T-OPS-07 | POST sur un RPC non autorisé | `403 Forbidden` | ⬜ À faire |
-| T-OPS-08 | POST sur une action liée à un data resource | Exécution correcte si la ressource parent existe | ⬜ À faire |
-| T-OPS-09 | POST action sur ressource parent inexistante | `404 Not Found` | ⬜ À faire |
-| T-OPS-10 | RPC avec output partiellement masqué par NACM | Comportement validé : omission ou erreur selon la règle applicable | ⬜ À faire |
+| T-OPS-01 | GET sur `{+restconf}/operations` | Liste des RPC disponibles, filtrée selon NACM | ✅ Terminé — `test_08_operations.py` |
+| T-OPS-02 | OPTIONS sur `{+restconf}/operations` | Header `Allow` correct | ✅ Terminé — `test_08_operations.py` |
+| T-OPS-03 | POST sur un RPC avec input valide | `200 OK` avec output ou `204 No Content` | 🟡 En cours — `test_08_operations.py` accepte aussi 400, ne distingue pas strictement le cas de succès |
+| T-OPS-04 | POST sur un RPC sans output | `204 No Content` | 🟡 En cours — `test_08_operations.py` ne teste pas séparément ce cas (même test que T-OPS-03) |
+| T-OPS-05 | POST sur un RPC avec input invalide | `400 Bad Request` | ✅ Terminé — `test_08_operations.py` |
+| T-OPS-06 | POST sur un RPC inconnu | `404 Not Found` ou erreur RESTCONF pertinente | ✅ Terminé — `test_08_operations.py` |
+| T-OPS-07 | POST sur un RPC non autorisé | `403 Forbidden` | 🟡 En cours — `test_08_operations.py` teste l'absence de token (401/403/404) plutôt qu'un utilisateur authentifié mais non autorisé |
+| T-OPS-08 | POST sur une action liée à un data resource | Exécution correcte si la ressource parent existe | 🟡 En cours — `test_08_operations.py` accepte largement (200/204/400/404) faute d'action connue dans le module de test |
+| T-OPS-09 | POST action sur ressource parent inexistante | `404 Not Found` | ✅ Terminé — `test_08_operations.py` |
+| T-OPS-10 | RPC avec output partiellement masqué par NACM | Comportement validé : omission ou erreur selon la règle applicable | 🟡 En cours — `test_08_operations.py` écrit mais ne vérifie que le cas où un 403 survient spontanément |
 
 ---
 
@@ -622,16 +622,16 @@ Toutes les lignes sont initialisées avec l’avancement `⬜ À faire`.
 
 | ID | Test | Résultat attendu | Avancement |
 |---|---|---|---|
-| T-MEDIA-01 | Requête avec `Accept: application/yang-data+json` | Réponse JSON YANG | ⬜ À faire |
-| T-MEDIA-02 | Requête avec `Accept: application/yang-data+xml` | Réponse XML YANG | ⬜ À faire |
-| T-MEDIA-03 | Requête avec `Accept` non supporté | `406 Not Acceptable` | ⬜ À faire |
-| T-MEDIA-04 | Requête avec `Content-Type` non supporté | `415 Unsupported Media Type` | ⬜ À faire |
-| T-MEDIA-05 | Erreur sur requête JSON | Erreur renvoyée en `application/yang-data+json` si possible | ⬜ À faire |
-| T-MEDIA-06 | Erreur sur requête XML | Erreur renvoyée en `application/yang-data+xml` si possible | ⬜ À faire |
-| T-MEDIA-07 | Corps JSON mal formé | `400 Bad Request` avec `malformed-message` ou équivalent | ⬜ À faire |
-| T-MEDIA-08 | Corps XML mal formé | `400 Bad Request` avec `malformed-message` ou équivalent | ⬜ À faire |
-| T-MEDIA-09 | Réponse SSE | `Content-Type: text/event-stream` | ⬜ À faire |
-| T-MEDIA-10 | YANG Patch | `Content-Type` `application/yang-patch+json` ou `application/yang-patch+xml` accepté | ⬜ À faire |
+| T-MEDIA-01 | Requête avec `Accept: application/yang-data+json` | Réponse JSON YANG | ✅ Terminé — `test_09_media_types.py` |
+| T-MEDIA-02 | Requête avec `Accept: application/yang-data+xml` | Réponse XML YANG | ✅ Terminé — `test_09_media_types.py` |
+| T-MEDIA-03 | Requête avec `Accept` non supporté | `406 Not Acceptable` | ✅ Terminé — `test_09_media_types.py` |
+| T-MEDIA-04 | Requête avec `Content-Type` non supporté | `415 Unsupported Media Type` | ✅ Terminé — `test_09_media_types.py` |
+| T-MEDIA-05 | Erreur sur requête JSON | Erreur renvoyée en `application/yang-data+json` si possible | ✅ Terminé — `test_09_media_types.py` |
+| T-MEDIA-06 | Erreur sur requête XML | Erreur renvoyée en `application/yang-data+xml` si possible | ✅ Terminé — `test_09_media_types.py` |
+| T-MEDIA-07 | Corps JSON mal formé | `400 Bad Request` avec `malformed-message` ou équivalent | ✅ Terminé — `test_09_media_types.py` |
+| T-MEDIA-08 | Corps XML mal formé | `400 Bad Request` avec `malformed-message` ou équivalent | ✅ Terminé — `test_09_media_types.py` |
+| T-MEDIA-09 | Réponse SSE | `Content-Type: text/event-stream` | 🟡 En cours — `test_09_media_types.py` écrit mais tributaire de l'endpoint SSE (R24) non implementé |
+| T-MEDIA-10 | YANG Patch | `Content-Type` `application/yang-patch+json` ou `application/yang-patch+xml` accepté | 🟡 En cours — `test_09_media_types.py` écrit mais tributaire de YANG Patch (R26/A15) non implementé |
 
 ---
 
@@ -642,20 +642,20 @@ Toutes les lignes sont initialisées avec l’avancement `⬜ À faire`.
 
 | ID | Test | Résultat attendu | Avancement |
 |---|---|---|---|
-| T-ERR-01 | Erreur de protocole | Enveloppe `ietf-restconf:errors` présente | ⬜ À faire |
-| T-ERR-02 | Vérification de `error-type` | Valeur cohérente : `transport`, `rpc`, `protocol`, `application` | ⬜ À faire |
-| T-ERR-03 | Vérification de `error-tag` | Tag conforme à la table de correspondance | ⬜ À faire |
-| T-ERR-04 | Erreur avec chemin fautif | `error-path` renseigné si pertinent | ⬜ À faire |
-| T-ERR-05 | Erreur avec message lisible | `error-message` présent si activé | ⬜ À faire |
-| T-ERR-06 | `401 Unauthorized` | Header `WWW-Authenticate` présent | ⬜ À faire |
-| T-ERR-07 | `405 Method Not Allowed` | Header `Allow` présent | ⬜ À faire |
-| T-ERR-08 | `406 Not Acceptable` | Media type demandé non supporté | ⬜ À faire |
-| T-ERR-09 | `415 Unsupported Media Type` | `Content-Type` non supporté | ⬜ À faire |
-| T-ERR-10 | `412 Precondition Failed` | Échec de précondition HTTP | ⬜ À faire |
-| T-ERR-11 | `409 Conflict` avec `data-exists` | POST création sur ressource existante | ⬜ À faire |
-| T-ERR-12 | `500 Internal Server Error` avec `operation-failed` | Erreur interne ou opérationnelle | ⬜ À faire |
-| T-ERR-13 | Erreur après établissement SSE | Pas d’enveloppe RESTCONF classique ; fermeture ou mécanisme de souscription | ⬜ À faire |
-| T-ERR-14 | Erreur YANG Patch | Utilisation de `yang-patch-status`, pas de l’enveloppe générique seule | ⬜ À faire |
+| T-ERR-01 | Erreur de protocole | Enveloppe `ietf-restconf:errors` présente | ✅ Terminé — `test_10_errors.py` |
+| T-ERR-02 | Vérification de `error-type` | Valeur cohérente : `transport`, `rpc`, `protocol`, `application` | ✅ Terminé — `test_10_errors.py` |
+| T-ERR-03 | Vérification de `error-tag` | Tag conforme à la table de correspondance | ✅ Terminé — `test_10_errors.py` |
+| T-ERR-04 | Erreur avec chemin fautif | `error-path` renseigné si pertinent | ✅ Terminé — `test_10_errors.py` |
+| T-ERR-05 | Erreur avec message lisible | `error-message` présent si activé | ✅ Terminé — `test_10_errors.py` |
+| T-ERR-06 | `401 Unauthorized` | Header `WWW-Authenticate` présent | ✅ Terminé — `test_10_errors.py` |
+| T-ERR-07 | `405 Method Not Allowed` | Header `Allow` présent | ✅ Terminé — `test_10_errors.py` |
+| T-ERR-08 | `406 Not Acceptable` | Media type demandé non supporté | ✅ Terminé — `test_10_errors.py` |
+| T-ERR-09 | `415 Unsupported Media Type` | `Content-Type` non supporté | ✅ Terminé — `test_10_errors.py` |
+| T-ERR-10 | `412 Precondition Failed` | Échec de précondition HTTP | ✅ Terminé — `test_10_errors.py` |
+| T-ERR-11 | `409 Conflict` avec `data-exists` | POST création sur ressource existante | ✅ Terminé — `test_10_errors.py` |
+| T-ERR-12 | `500 Internal Server Error` avec `operation-failed` | Erreur interne ou opérationnelle | 🟡 En cours — `test_10_errors.py` écrit mais ne déclenche jamais réellement de 500 (test structurellement non concluant) |
+| T-ERR-13 | Erreur après établissement SSE | Pas d’enveloppe RESTCONF classique ; fermeture ou mécanisme de souscription | 🟡 En cours — `test_10_errors.py` écrit mais tributaire de l'endpoint SSE (R24) non implementé |
+| T-ERR-14 | Erreur YANG Patch | Utilisation de `yang-patch-status`, pas de l’enveloppe générique seule | 🟡 En cours — `test_10_errors.py` écrit mais tributaire de YANG Patch (R26/A15) non implementé |
 
 ---
 
@@ -666,21 +666,21 @@ Toutes les lignes sont initialisées avec l’avancement `⬜ À faire`.
 
 | ID | Test | Résultat attendu | Avancement |
 |---|---|---|---|
-| T-NACM-01 | Requête sans token si authentification requise | `401 Unauthorized` avec `WWW-Authenticate` | ⬜ À faire |
-| T-NACM-02 | Requête avec token valide mais utilisateur non autorisé | `403 Forbidden` | ⬜ À faire |
-| T-NACM-03 | GET sur ressource partiellement lisible | Les nœuds non autorisés sont omis | ⬜ À faire |
-| T-NACM-04 | GET sur ressource cible entièrement interdite | `403 Forbidden` | ⬜ À faire |
-| T-NACM-05 | GET sur liste avec entrées partiellement autorisées | Seules les entrées autorisées sont retournées | ⬜ À faire |
-| T-NACM-06 | GET sur feuille `config false` interdite | La feuille est omise ou erreur selon règle validée | ⬜ À faire |
-| T-NACM-07 | POST création interdite | `403 Forbidden` | ⬜ À faire |
-| T-NACM-08 | PUT/PATCH/DELETE interdits | `403 Forbidden` | ⬜ À faire |
-| T-NACM-09 | RPC interdit | `403 Forbidden` | ⬜ À faire |
-| T-NACM-10 | Action interdite | `403 Forbidden` | ⬜ À faire |
-| T-NACM-11 | Découverte de stream interdite | Stream non visible ou accès refusé | ⬜ À faire |
-| T-NACM-12 | Établissement de souscription interdit | Erreur d’autorisation | ⬜ À faire |
-| T-NACM-13 | Mapping JWT vers groupe NACM | Les règles NACM appliquées correspondent au groupe extrait du token | ⬜ À faire |
-| T-NACM-14 | Session sysrepo avec identité correcte | `sr_session_set_orig_name()` positionné avant accès données | ⬜ À faire |
-| T-NACM-15 | Règles par défaut sûres | En l’absence de règle explicite, le comportement est sécurisé | ⬜ À faire |
+| T-NACM-01 | Requête sans token si authentification requise | `401 Unauthorized` avec `WWW-Authenticate` | 🟡 En cours — `test_11_nacm.py` écrit, tributaire de l'authentification JWT (R2) |
+| T-NACM-02 | Requête avec token valide mais utilisateur non autorisé | `403 Forbidden` | 🟡 En cours — `test_11_nacm.py` écrit, nécessite `RESTCONF_TEST_JWT_RESTRICTED` + NACM (R29/A9) non implementé |
+| T-NACM-03 | GET sur ressource partiellement lisible | Les nœuds non autorisés sont omis | 🟡 En cours — `test_11_nacm.py` écrit, tributaire de NACM (R29/A9) et de variables d'environnement de configuration |
+| T-NACM-04 | GET sur ressource cible entièrement interdite | `403 Forbidden` | 🟡 En cours — `test_11_nacm.py` écrit, tributaire de NACM (R29/A9) |
+| T-NACM-05 | GET sur liste avec entrées partiellement autorisées | Seules les entrées autorisées sont retournées | 🟡 En cours — `test_11_nacm.py` écrit, tributaire de NACM (R29/A9) |
+| T-NACM-06 | GET sur feuille `config false` interdite | La feuille est omise ou erreur selon règle validée | 🟡 En cours — `test_11_nacm.py` écrit, tributaire de NACM (R29/A9) et de variables d'environnement de configuration |
+| T-NACM-07 | POST création interdite | `403 Forbidden` | 🟡 En cours — `test_11_nacm.py` écrit, tributaire de NACM (R29/A9) |
+| T-NACM-08 | PUT/PATCH/DELETE interdits | `403 Forbidden` | 🟡 En cours — `test_11_nacm.py` écrit, tributaire de NACM (R29/A9) |
+| T-NACM-09 | RPC interdit | `403 Forbidden` | 🟡 En cours — `test_11_nacm.py` écrit, tributaire de NACM (R29/A9) |
+| T-NACM-10 | Action interdite | `403 Forbidden` | 🟡 En cours — `test_11_nacm.py` écrit, tributaire de NACM (R29/A9) et d'une action interdite configurée |
+| T-NACM-11 | Découverte de stream interdite | Stream non visible ou accès refusé | 🟡 En cours — `test_11_nacm.py` écrit, tributaire des streams (R23) et de NACM (R29) |
+| T-NACM-12 | Établissement de souscription interdit | Erreur d’autorisation | 🟡 En cours — `test_11_nacm.py` écrit, tributaire des souscriptions (R31/R37) et de NACM (R29) |
+| T-NACM-13 | Mapping JWT vers groupe NACM | Les règles NACM appliquées correspondent au groupe extrait du token | 🟡 En cours — `test_11_nacm.py` écrit, tributaire de NACM (R29/A9) |
+| T-NACM-14 | Session sysrepo avec identité correcte | `sr_session_set_orig_name()` positionné avant accès données | 🟡 En cours — `test_11_nacm.py` écrit ; validation complète interne à A9, non observable en boîte noire |
+| T-NACM-15 | Règles par défaut sûres | En l’absence de règle explicite, le comportement est sécurisé | 🟡 En cours — `test_11_nacm.py` écrit, tributaire de NACM (R29/A9) et de `RESTCONF_TEST_JWT_UNKNOWN` |
 
 ---
 
@@ -691,17 +691,17 @@ Toutes les lignes sont initialisées avec l’avancement `⬜ À faire`.
 
 | ID | Test | Résultat attendu | Avancement |
 |---|---|---|---|
-| T-YLIB-01 | GET sur la YANG Library | Modules, révisions, features, deviations et `content-id` sont exposés | ⬜ À faire |
-| T-YLIB-02 | Exposition sur datastore opérationnel | La YANG Library est lue depuis l’opérationnel | ⬜ À faire |
-| T-YLIB-03 | Cohérence avec modules chargés | Les modules exposés correspondent à l’état réel sysrepo/libyang | ⬜ À faire |
-| T-YLIB-04 | URLs `location` accessibles | Les URLs de schéma retournées sont réellement accessibles | ⬜ À faire |
-| T-YLIB-05 | GET sur un module YANG | Réponse `200 OK` avec `Content-Type: application/yang` | ⬜ À faire |
-| T-YLIB-06 | GET sur module inconnu | `404 Not Found` | ⬜ À faire |
-| T-YLIB-07 | GET sur module avec révision | La bonne révision est servie | ⬜ À faire |
-| T-YLIB-08 | Installation/retrait de module à chaud | `content-id` change | ⬜ À faire |
-| T-YLIB-09 | Notification de changement YANG Library si supportée | Notification émise lors d’un changement de module set | ⬜ À faire |
-| T-YLIB-10 | RPC `get-schema` si supporté | Retourne le schéma demandé | ⬜ À faire |
-| T-YLIB-11 | NACM sur YANG Library | Accès filtré si des règles s’appliquent | ⬜ À faire |
+| T-YLIB-01 | GET sur la YANG Library | Modules, révisions, features, deviations et `content-id` sont exposés | 🟡 En cours — `test_12_yang_library.py` écrit, tributaire de la YANG Library (R16) non implementée |
+| T-YLIB-02 | Exposition sur datastore opérationnel | La YANG Library est lue depuis l’opérationnel | 🟡 En cours — `test_12_yang_library.py` écrit, tributaire de NMDA (R27) et R16 |
+| T-YLIB-03 | Cohérence avec modules chargés | Les modules exposés correspondent à l’état réel sysrepo/libyang | 🟡 En cours — `test_12_yang_library.py` écrit, tributaire de R16 |
+| T-YLIB-04 | URLs `location` accessibles | Les URLs de schéma retournées sont réellement accessibles | 🟡 En cours — `test_12_yang_library.py` écrit, tributaire de R16/R17 |
+| T-YLIB-05 | GET sur un module YANG | Réponse `200 OK` avec `Content-Type: application/yang` | 🟡 En cours — `test_12_yang_library.py` écrit, tributaire de R17 (Schema Resource) |
+| T-YLIB-06 | GET sur module inconnu | `404 Not Found` | 🟡 En cours — `test_12_yang_library.py` écrit, tributaire de R17 |
+| T-YLIB-07 | GET sur module avec révision | La bonne révision est servie | 🟡 En cours — `test_12_yang_library.py` écrit, tributaire de R17 |
+| T-YLIB-08 | Installation/retrait de module à chaud | `content-id` change | 🟡 En cours — `test_12_yang_library.py` écrit, tributaire de R48/A17 et de `RESTCONF_YLIB_HOTPLUG_COMMAND` |
+| T-YLIB-09 | Notification de changement YANG Library si supportée | Notification émise lors d’un changement de module set | 🟡 En cours — `test_12_yang_library.py` écrit, tributaire de R48 et de SSE (R24) |
+| T-YLIB-10 | RPC `get-schema` si supporté | Retourne le schéma demandé | 🟡 En cours — `test_12_yang_library.py` écrit, tributaire de R18 |
+| T-YLIB-11 | NACM sur YANG Library | Accès filtré si des règles s’appliquent | 🟡 En cours — `test_12_yang_library.py` écrit, tributaire de R16 et de NACM (R29) |
 
 ---
 
@@ -712,17 +712,17 @@ Toutes les lignes sont initialisées avec l’avancement `⬜ À faire`.
 
 | ID | Test | Résultat attendu | Avancement |
 |---|---|---|---|
-| T-NMDA-01 | GET sur `{+restconf}/ds/operational` | Retourne les données opérationnelles si supporté | ⬜ À faire |
-| T-NMDA-02 | GET sur `{+restconf}/ds/candidate` | Retourne les données candidate si supporté | ⬜ À faire |
-| T-NMDA-03 | GET sur `{+restconf}/ds/startup` | Retourne les données startup si supporté | ⬜ À faire |
-| T-NMDA-04 | GET sur `{+restconf}/ds/intended` | Retourne les données intended si supporté | ⬜ À faire |
-| T-NMDA-05 | GET sur datastore non supporté | Erreur RESTCONF pertinente | ⬜ À faire |
-| T-NMDA-06 | Comparaison `/data` et `/ds/<datastore>` | Le comportement de `/data` est conforme à la documentation et à RFC 8527 | ⬜ À faire |
-| T-NMDA-07 | Écriture via `/ds/<datastore>` si supporté | Le datastore cible est correctement modifié | ⬜ À faire |
-| T-NMDA-08 | GET avec `with-origin` | Annotations d’origine présentes si supporté | ⬜ À faire |
-| T-NMDA-09 | `with-origin` en JSON | Annotations JSON conformes RFC 7952 | ⬜ À faire |
-| T-NMDA-10 | NACM sur datastores | Les règles NACM s’appliquent aussi via `/ds/<datastore>` | ⬜ À faire |
-| T-NMDA-11 | Conditional requests sur datastores | ETag/Last-Modified cohérents par datastore si implémenté | ⬜ À faire |
+| T-NMDA-01 | GET sur `{+restconf}/ds/operational` | Retourne les données opérationnelles si supporté | 🟡 En cours — `test_13_nmda.py` écrit, tributaire de NMDA (R27) non implementé |
+| T-NMDA-02 | GET sur `{+restconf}/ds/candidate` | Retourne les données candidate si supporté | 🟡 En cours — `test_13_nmda.py` écrit, tributaire de NMDA (R27) |
+| T-NMDA-03 | GET sur `{+restconf}/ds/startup` | Retourne les données startup si supporté | 🟡 En cours — `test_13_nmda.py` écrit, tributaire de NMDA (R27) |
+| T-NMDA-04 | GET sur `{+restconf}/ds/intended` | Retourne les données intended si supporté | 🟡 En cours — `test_13_nmda.py` écrit, tributaire de NMDA (R27) |
+| T-NMDA-05 | GET sur datastore non supporté | Erreur RESTCONF pertinente | 🟡 En cours — `test_13_nmda.py` écrit, tributaire de NMDA (R27) |
+| T-NMDA-06 | Comparaison `/data` et `/ds/<datastore>` | Le comportement de `/data` est conforme à la documentation et à RFC 8527 | 🟡 En cours — `test_13_nmda.py` écrit, tributaire de NMDA (R27/R46) |
+| T-NMDA-07 | Écriture via `/ds/<datastore>` si supporté | Le datastore cible est correctement modifié | 🟡 En cours — `test_13_nmda.py` écrit, tributaire de NMDA (R27) |
+| T-NMDA-08 | GET avec `with-origin` | Annotations d’origine présentes si supporté | 🟡 En cours — `test_13_nmda.py` écrit, tributaire de R28/NMDA |
+| T-NMDA-09 | `with-origin` en JSON | Annotations JSON conformes RFC 7952 | 🟡 En cours — `test_13_nmda.py` écrit, tributaire de R28/NMDA |
+| T-NMDA-10 | NACM sur datastores | Les règles NACM s’appliquent aussi via `/ds/<datastore>` | 🟡 En cours — `test_13_nmda.py` écrit, tributaire de NMDA (R27) et NACM (R29) |
+| T-NMDA-11 | Conditional requests sur datastores | ETag/Last-Modified cohérents par datastore si implémenté | 🟡 En cours — `test_13_nmda.py` écrit, tributaire de NMDA (R27) et A11 |
 
 ---
 
@@ -733,19 +733,19 @@ Toutes les lignes sont initialisées avec l’avancement `⬜ À faire`.
 
 | ID | Test | Résultat attendu | Avancement |
 |---|---|---|---|
-| T-YPATCH-01 | PATCH avec `application/yang-patch+json` | Requête acceptée | ⬜ À faire |
-| T-YPATCH-02 | PATCH avec `application/yang-patch+xml` | Requête acceptée | ⬜ À faire |
-| T-YPATCH-03 | Opération `create` | Ressource créée | ⬜ À faire |
-| T-YPATCH-04 | Opération `delete` | Ressource supprimée | ⬜ À faire |
-| T-YPATCH-05 | Opération `merge` | Fusion réussie | ⬜ À faire |
-| T-YPATCH-06 | Opération `replace` | Remplacement réussi | ⬜ À faire |
-| T-YPATCH-07 | Opération `remove` | Suppression si présente, sans erreur si absente selon sémantique | ⬜ À faire |
-| T-YPATCH-08 | Opération `insert`/`move` | Ordre respecté pour nœuds `ordered-by user` | ⬜ À faire |
-| T-YPATCH-09 | Plusieurs sous-opérations dans un même PATCH | Réponse `yang-patch-status` cohérente | ⬜ À faire |
-| T-YPATCH-10 | Erreur sur une sous-opération | `edit-status` contient l’erreur par opération | ⬜ À faire |
-| T-YPATCH-11 | Erreur globale de requête | `global-errors` renseigné | ⬜ À faire |
-| T-YPATCH-12 | YANG Patch non autorisé | Erreur NACM | ⬜ À faire |
-| T-YPATCH-13 | YANG Patch avec media type incorrect | `415 Unsupported Media Type` | ⬜ À faire |
+| T-YPATCH-01 | PATCH avec `application/yang-patch+json` | Requête acceptée | 🟡 En cours — `test_14_yang_patch.py` écrit, tributaire de YANG Patch (R26/A15) non implementé |
+| T-YPATCH-02 | PATCH avec `application/yang-patch+xml` | Requête acceptée | 🟡 En cours — `test_14_yang_patch.py` écrit, tributaire de R26/A15 |
+| T-YPATCH-03 | Opération `create` | Ressource créée | 🟡 En cours — `test_14_yang_patch.py` écrit, tributaire de R26/A15 |
+| T-YPATCH-04 | Opération `delete` | Ressource supprimée | 🟡 En cours — `test_14_yang_patch.py` écrit, tributaire de R26/A15 |
+| T-YPATCH-05 | Opération `merge` | Fusion réussie | 🟡 En cours — `test_14_yang_patch.py` écrit, tributaire de R26/A15 |
+| T-YPATCH-06 | Opération `replace` | Remplacement réussi | 🟡 En cours — `test_14_yang_patch.py` écrit, tributaire de R26/A15 |
+| T-YPATCH-07 | Opération `remove` | Suppression si présente, sans erreur si absente selon sémantique | 🟡 En cours — `test_14_yang_patch.py` écrit, tributaire de R26/A15 |
+| T-YPATCH-08 | Opération `insert`/`move` | Ordre respecté pour nœuds `ordered-by user` | 🟡 En cours — `test_14_yang_patch.py` écrit, tributaire de R26/A15 |
+| T-YPATCH-09 | Plusieurs sous-opérations dans un même PATCH | Réponse `yang-patch-status` cohérente | 🟡 En cours — `test_14_yang_patch.py` écrit, tributaire de R26/A15 |
+| T-YPATCH-10 | Erreur sur une sous-opération | `edit-status` contient l’erreur par opération | 🟡 En cours — `test_14_yang_patch.py` écrit, tributaire de R26/A15 |
+| T-YPATCH-11 | Erreur globale de requête | `global-errors` renseigné | 🟡 En cours — `test_14_yang_patch.py` écrit, tributaire de R26/A15 |
+| T-YPATCH-12 | YANG Patch non autorisé | Erreur NACM | 🟡 En cours — `test_14_yang_patch.py` écrit, tributaire de R26/A15 et NACM (R29) |
+| T-YPATCH-13 | YANG Patch avec media type incorrect | `415 Unsupported Media Type` | ✅ Terminé — `test_14_yang_patch.py` (assertion stricte 415, indépendante du support effectif de YANG Patch) |
 
 ---
 
@@ -756,21 +756,21 @@ Toutes les lignes sont initialisées avec l’avancement `⬜ À faire`.
 
 | ID | Test | Résultat attendu | Avancement |
 |---|---|---|---|
-| T-SSE-01 | GET sur la liste des streams | Liste des flux disponibles | ⬜ À faire |
-| T-SSE-02 | Vérification des métadonnées de stream | Nom, description, replay-support, URL d’accès présents | ⬜ À faire |
-| T-SSE-03 | GET sur un stream avec `Accept: text/event-stream` | `200 OK` et `Content-Type: text/event-stream` | ⬜ À faire |
-| T-SSE-04 | Réception d’une notification YANG | Événement SSE formaté correctement | ⬜ À faire |
-| T-SSE-05 | Vérification de `eventTime` | Horodatage présent et cohérent | ⬜ À faire |
-| T-SSE-06 | Encodage JSON/XML des notifications | Conforme au media type négocié | ⬜ À faire |
-| T-SSE-07 | Heartbeat SSE | Commentaire ou événement maintenant la connexion active | ⬜ À faire |
-| T-SSE-08 | Stream avec replay supporté | `start-time` accepté | ⬜ À faire |
-| T-SSE-09 | Stream sans replay mais avec `start-time` | Erreur RESTCONF | ⬜ À faire |
-| T-SSE-10 | `stop-time` atteint | Fin de replay ou fermeture conforme | ⬜ À faire |
-| T-SSE-11 | Notification `replay-completed` si applicable | Émise à la fin du replay | ⬜ À faire |
-| T-SSE-12 | Fermeture du flux par le client | La souscription sysrepo est nettoyée | ⬜ À faire |
-| T-SSE-13 | Flux SSE sous HTTP/2 avec flow control | Les DATA frames respectent la fenêtre de crédit | ⬜ À faire |
-| T-SSE-14 | WINDOW_UPDATE après blocage | L’envoi reprend via `nghttp2_session_resume_data()` | ⬜ À faire |
-| T-SSE-15 | Stream interdit par NACM | Accès refusé ou stream non visible | ⬜ À faire |
+| T-SSE-01 | GET sur la liste des streams | Liste des flux disponibles | 🟡 En cours — `test_15_event_streams.py` écrit, tributaire de la découverte de streams (R23) |
+| T-SSE-02 | Vérification des métadonnées de stream | Nom, description, replay-support, URL d’accès présents | 🟡 En cours — `test_15_event_streams.py` écrit, tributaire de R23 |
+| T-SSE-03 | GET sur un stream avec `Accept: text/event-stream` | `200 OK` et `Content-Type: text/event-stream` | 🟡 En cours — `test_15_event_streams.py` écrit, tributaire de R24/A4 |
+| T-SSE-04 | Réception d’une notification YANG | Événement SSE formaté correctement | 🟡 En cours — `test_15_event_streams.py` écrit, tributaire de R25 et de `RESTCONF_SSE_NOTIFICATION_COMMAND` |
+| T-SSE-05 | Vérification de `eventTime` | Horodatage présent et cohérent | 🟡 En cours — `test_15_event_streams.py` écrit, tributaire de R25 |
+| T-SSE-06 | Encodage JSON/XML des notifications | Conforme au media type négocié | 🟡 En cours — `test_15_event_streams.py` écrit, tributaire de R25/R41 |
+| T-SSE-07 | Heartbeat SSE | Commentaire ou événement maintenant la connexion active | 🟡 En cours — `test_15_event_streams.py` écrit, tributaire de R24/A16 |
+| T-SSE-08 | Stream avec replay supporté | `start-time` accepté | 🟡 En cours — `test_15_event_streams.py` écrit, tributaire de R21/R24 |
+| T-SSE-09 | Stream sans replay mais avec `start-time` | Erreur RESTCONF | 🟡 En cours — `test_15_event_streams.py` écrit, tributaire de R21 |
+| T-SSE-10 | `stop-time` atteint | Fin de replay ou fermeture conforme | 🟡 En cours — `test_15_event_streams.py` écrit, tributaire de R21 |
+| T-SSE-11 | Notification `replay-completed` si applicable | Émise à la fin du replay | 🟡 En cours — `test_15_event_streams.py` écrit, tributaire de R25 (Errata EID 8725 pour `subscription-completed`, sans lien direct ici) |
+| T-SSE-12 | Fermeture du flux par le client | La souscription sysrepo est nettoyée | 🟡 En cours — `test_15_event_streams.py` écrit ; ne vérifie que la ré-ouverture, pas le nettoyage sysrepo interne (A6) |
+| T-SSE-13 | Flux SSE sous HTTP/2 avec flow control | Les DATA frames respectent la fenêtre de crédit | ⬜ À faire — `test_15_event_streams.py` : test toujours `skip`, non observable en boîte noire (A3) |
+| T-SSE-14 | WINDOW_UPDATE après blocage | L’envoi reprend via `nghttp2_session_resume_data()` | ⬜ À faire — `test_15_event_streams.py` : test toujours `skip`, non observable en boîte noire (A3) |
+| T-SSE-15 | Stream interdit par NACM | Accès refusé ou stream non visible | 🟡 En cours — `test_15_event_streams.py` écrit, tributaire de R23/R24 et NACM (R29) |
 
 ---
 

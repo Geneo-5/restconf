@@ -1063,13 +1063,10 @@ class TestT_YPATCH_10_EditError:
             )
             skip_if_yang_patch_unsupported(response)
 
-            if response.status_code == 400:
-                pytest.skip(
-                    "Le serveur a retourné 400 ; l'erreur par opération n'est "
-                    "pas démontrable."
-                )
-
-            assert response.status_code == 200
+            # RFC 8072 §2.2, corrigée par EID 5131 : delete sur une cible
+            # inexistante doit retourner 404 et un yang-patch-status doit
+            # identifier l'edit invalide.
+            assert response.status_code == 404
 
             body = response.json()
             status = get_patch_status(body)
@@ -1099,6 +1096,10 @@ class TestT_YPATCH_10_EditError:
                     "Erreur d'édition détectée mais pas sur l'edit attendu ; "
                     "le comportement n'est pas démontrable."
                 )
+
+            assert "data-missing" in flatten_error_tags(edit_errors), (
+                "delete sur une cible inexistante doit signaler data-missing"
+            )
 
         finally:
             delete_path(http2_client, api_url, auth_headers, SYSTEM_DATA_PATH)
