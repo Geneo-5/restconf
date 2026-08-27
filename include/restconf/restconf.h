@@ -25,6 +25,7 @@ struct restconf_ctx {
 	sr_session_ctx_t   *session;
 	char               *xpath;
 	sr_error_info_t    *errors;
+	int                 accepted;
 	LYD_FORMAT          input_format;
 	LYD_FORMAT          output_format;
 	char               *options;
@@ -37,17 +38,31 @@ restconf_parse_path(struct restconf_ctx *ctx, const char *path)
 	__rest_nonull(1, 2);
 
 int
+restconf_parse_query(struct restconf_ctx *ctx, char *query)
+	__rest_nonull(1, 2);
+
+int
 restconf_parse_accept(struct restconf_ctx *ctx, const char *accept)
 	__rest_nonull(1, 2);
 
+int
+restconf_parse_content(struct restconf_ctx *ctx, const char *content)
+	__rest_nonull(1, 2);
+
 void
-restconf_check_accept(struct restconf_ctx *ctx)
-	__rest_nonull(1);
+restconf_check_accept(struct restconf_ctx *ctx, struct evbuffer *body)
+	__rest_nonull(1, 2);
 
 static inline LYD_FORMAT __rest_nonull(1)
 restconf_get_format(struct restconf_ctx *ctx)
 {
 	return ctx->output_format;
+}
+
+static inline LYD_FORMAT __rest_nonull(1)
+restconf_post_format(struct restconf_ctx *ctx)
+{
+	return ctx->input_format;
 }
 
 int
@@ -64,6 +79,10 @@ restconf_send_error(struct restconf_ctx *ctx, const sr_error_info_t *errors)
 
 int
 restconf_send_answer(struct restconf_ctx *ctx, const struct lyd_node *root)
+	__rest_nonull(1);
+
+int
+restconf_not_content_answer(struct restconf_ctx *ctx)
 	__rest_nonull(1);
 
 #endif /* _RESTCONF_H */

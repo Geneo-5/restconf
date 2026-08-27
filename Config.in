@@ -163,3 +163,15 @@ config RESTCONF_TEST
 
 	  Say Y here to enable the RESTCONF pytest suite. Without this
 	  option, most RESTCONF tests will be skipped.
+
+config PREFIX_RESTCONF_DATA
+	bool "Prefix data answer"
+	default y
+	help
+	  Prefix by ietf-restconf the data of request GET {+resconf}/data
+
+config PREFIX_RESTCONF_OPERATIONS
+	bool "Prefix operations answer"
+	default y
+	help
+	  Prefix by ietf-restconf the data of request GET {+resconf}/operations

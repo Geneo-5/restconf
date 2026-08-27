@@ -30,6 +30,7 @@ restconf_init(void               *priv,
 	ctx->options     = NULL;
 	ctx->lyd_options = LYD_PRINT_WD_ALL;
 
+	ctx->accepted    = 0;
 	ctx->input_format = LYD_UNKNOWN;
 	ctx->output_format = LYD_UNKNOWN;
 
@@ -38,6 +39,14 @@ restconf_init(void               *priv,
 
 	ret = restconf_parse_path(ctx, path);
 	curl_free(path);
+	if (ret)
+		return ret;
+
+	if (!curl_url_get(url, CURLUPART_QUERY, &path, CURLU_URLDECODE)) {
+		ret = restconf_parse_query(ctx, path);
+		curl_free(path);
+	}
+
 	return ret;
 }
 
@@ -65,6 +74,9 @@ restconf_header(void          *priv,
 
 	if (strcmp((const char *)vname.base, "accept") == 0)
 		return restconf_parse_accept(ctx, (const char *)vvalue.base);
+
+	if (strcmp((const char *)vname.base, "content-type") == 0)
+		return restconf_parse_content(ctx, (const char *)vvalue.base);
 
 	return 0;
 }
@@ -123,7 +135,7 @@ restconf_dispatch(void            *priv,
 			"access-denied", NULL, NULL, "access-denied", 0);
 	}
 
-	restconf_check_accept(ctx);
+	restconf_check_accept(ctx, body);
 
 	if (ctx->errors)
 		return restconf_send_error(ctx, ctx->errors);

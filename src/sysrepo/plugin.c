@@ -23,6 +23,15 @@ struct plugin_ctx {
 #error Invalid Capability defaults mode
 #endif
 
+#define CAPA_DEPTH         "urn:ietf:params:restconf:capability:depth:1.0"
+#define CAPA_FIELDS        "urn:ietf:params:restconf:capability:fields:1.0"
+#define CAPA_FILTER        "urn:ietf:params:restconf:capability:filter:1.0"
+#define CAPA_REPLAY        "urn:ietf:params:restconf:capability:replay:1.0"
+#define CAPA_WITH_DEFAULTS "urn:ietf:params:restconf:capability:with-defaults:1.0"
+#define CAPA_WITH_ORIGIN   "urn:ietf:params:restconf:capability:with-origin:1.0"
+#define CAPA_START_TIME    "urn:ietf:params:restconf:capability:start-time:1.0"
+#define CAPA_STOP_TIME     "urn:ietf:params:restconf:capability:stop-time:1.0"
+
 static int
 plugin_capabilities_cb(sr_session_ctx_t  *session __unused,
                    uint32_t           sub_id __unused,
@@ -33,12 +42,15 @@ plugin_capabilities_cb(sr_session_ctx_t  *session __unused,
                    struct lyd_node  **parent,
                    void              *private_data __unused)
 {
-	const struct ly_ctx *ly_ctx;
-
-	ly_ctx = sr_session_acquire_context(session);
-	lyd_new_path(NULL, ly_ctx, XPATH_CAPABILITY, DEFAULTS_MODE, 0, parent);
-	// lyd_print_fd(1, *parent, LYD_JSON, 0);
-	sr_session_release_context(session);
+	lyd_new_path(*parent, NULL, XPATH_CAPABILITY, DEFAULTS_MODE, 0, NULL);
+	lyd_new_path(*parent, NULL, XPATH_CAPABILITY, CAPA_DEPTH, 0, NULL);
+	lyd_new_path(*parent, NULL, XPATH_CAPABILITY, CAPA_FIELDS, 0, NULL);
+	lyd_new_path(*parent, NULL, XPATH_CAPABILITY, CAPA_FILTER, 0, NULL);
+	lyd_new_path(*parent, NULL, XPATH_CAPABILITY, CAPA_REPLAY, 0, NULL);
+	lyd_new_path(*parent, NULL, XPATH_CAPABILITY, CAPA_WITH_DEFAULTS, 0, NULL);
+	lyd_new_path(*parent, NULL, XPATH_CAPABILITY, CAPA_WITH_ORIGIN, 0, NULL);
+	lyd_new_path(*parent, NULL, XPATH_CAPABILITY, CAPA_START_TIME, 0, NULL);
+	lyd_new_path(*parent, NULL, XPATH_CAPABILITY, CAPA_STOP_TIME, 0, NULL);
 	return SR_ERR_OK;
 }
 

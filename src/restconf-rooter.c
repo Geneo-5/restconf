@@ -61,19 +61,21 @@ resconf_root_data_answer(struct restconf_ctx *ctx, struct evbuffer *body __unuse
 	sr_data_t *data = NULL;
 	int ret;
 
-	ly_ctx = sr_acquire_context(h2c_stream_get_conn(ctx->stream));
+#ifndef CONFIG_PREFIX_RESTCONF_DATA
+	ctx->lyd_options |= LYD_PRINT_JSON_NO_NESTED_PREFIX;
+#endif
+
+	restconf_start_session(ctx);
+	ly_ctx = sr_session_acquire_context(ctx->session);
 	lyd_new_path(NULL, ly_ctx, "/ietf-restconf:restconf", NULL, 0, &root);
 	lyd_new_inner(root, NULL, "data", 0, &restconf_data);
 
-	restconf_start_session(ctx);
 	sr_get_data(ctx->session, "/*", 0, 0, 0, &data);
 	lyd_dup_siblings(data->tree, restconf_data, LYD_DUP_RECURSIVE, NULL);
 	sr_release_data(data);
 
-	// lyd_print_fd(1, root, LYD_JSON, LYD_PRINT_SIBLINGS | LYD_PRINT_WD_ALL);
-
-	sr_release_context(h2c_stream_get_conn(ctx->stream));
-	ret = restconf_send_answer(ctx, restconf_data);
+	sr_session_release_context(ctx->session);
+	ret = restconf_send_answer(ctx, root);
 	lyd_free_siblings(root);
 	return ret;
 }
@@ -81,28 +83,21 @@ resconf_root_data_answer(struct restconf_ctx *ctx, struct evbuffer *body __unuse
 static int
 resconf_root_operations_answer(struct restconf_ctx *ctx __unused, struct evbuffer *body __unused)
 {
+	struct lyd_node *root = NULL;
 	const struct ly_ctx *ly_ctx;
-	char length[64];
-	const char *sep = "";
-	uint32_t idx = 0;
+	struct lyd_node *operations = NULL;
 	const struct lys_module *module;
-	LYD_FORMAT ly_fmt = restconf_get_format(ctx);
-	nghttp2_nv hdrs[] = {
-		MAKE_NV_OK,
-		MAKE_NV_TEMP("content-type"),
-		MAKE_NV_TEMP("content-length"),
-	};
+	uint32_t idx = 0;
+	int ret;
+	char *value = restconf_get_format(ctx) == LYD_JSON ? "[null]" : "";
 
-	set_nv(&hdrs[1], ly_fmt == LYD_JSON ? CONTENT_JSON : CONTENT_XML);
-	rest_assert(!ctx->output);
-	ctx->output = evbuffer_new();
-	if (!ctx->output)
-		return -ENOMEM;
+#ifndef CONFIG_PREFIX_RESTCONF_OPERATIONS
+	ctx->lyd_options |= LYD_PRINT_JSON_NO_NESTED_PREFIX;
+#endif
 
-	evbuffer_add_printf(ctx->output, "%s", ly_fmt == LYD_JSON ?
-		"{\"operations\":[" :
-		"<operations xmlns=\"urn:ietf:params:xml:ns:yang:ietf-restconf\">");
 	ly_ctx = sr_acquire_context(h2c_stream_get_conn(ctx->stream));
+	lyd_new_path(NULL, ly_ctx, "/ietf-restconf:restconf", NULL, 0, &root);
+	lyd_new_inner(root, NULL, "operations", 0, &operations);
 
 	while ((module = ly_ctx_get_module_iter(ly_ctx, &idx))) {
 		const struct lysc_node_action *node = NULL;
@@ -110,27 +105,15 @@ resconf_root_operations_answer(struct restconf_ctx *ctx __unused, struct evbuffe
 		if (!module->implemented)
 			continue;
 
-		LY_LIST_FOR(module->compiled->rpcs, node) {
-			if (node->nodetype == LYS_RPC) {
-				if (ly_fmt == LYD_JSON)
-					evbuffer_add_printf(ctx->output,
-						"%s{\"%s:%s\":[null]}",
-						sep, module->name, node->name);
-				else
-					evbuffer_add_printf(ctx->output,
-						"<%s xmlns='urn:ietf:params:xml:ns:yang:%s'/>",
-						node->name, module->name);
-				sep = ",";
-			}
-		}
+		LY_LIST_FOR(module->compiled->rpcs, node)
+			lyd_new_opaq(operations, NULL, node->name, value,
+				module->name, module->name, NULL);
 	}
 
 	sr_release_context(h2c_stream_get_conn(ctx->stream));
-	evbuffer_add_printf(ctx->output, "%s", ly_fmt == LYD_JSON ? "]}" : "</operations>");
-	snprintf(length, sizeof(length), "%zu", evbuffer_get_length(ctx->output));
-	set_nv(&hdrs[2], length);
-	return h2c_send_answer(ctx->stream, hdrs, stroll_array_nr(hdrs),
-	                       ctx->method == METHOD_HEAD ? NULL : ctx->output);
+	ret = restconf_send_answer(ctx, root);
+	lyd_free_siblings(root);
+	return ret;
 }
 
 static int
@@ -169,9 +152,60 @@ resconf_update_data(struct restconf_ctx *ctx __unused, struct evbuffer *body __u
 }
 
 static int
-resconf_rpc(struct restconf_ctx *ctx __unused, struct evbuffer *body __unused)
+resconf_rpc(struct restconf_ctx *ctx, struct evbuffer *body)
 {
-	return 0;
+	const struct ly_ctx *ly_ctx;
+	const sr_error_info_t *errors;
+	struct lyd_node *input;
+	sr_data_t *output = NULL;
+	struct lyd_node *parent = NULL;
+	int ret;
+
+	restconf_start_session(ctx);
+	ly_ctx = sr_session_acquire_context(ctx->session);
+	ret = lyd_new_path(NULL, ly_ctx, ctx->xpath, NULL, 0, &parent);
+
+	if (evbuffer_get_length(body)) {
+		struct ly_in *lin = NULL;
+		size_t len = evbuffer_get_length(body);
+		char *in = malloc(len + 1);
+
+		evbuffer_remove(body, in, len);
+		in[len] = '\0';
+		pr_dbg("input: %s", in);
+		ly_in_new_memory(in, &lin);
+		ret = lyd_parse_op(ly_ctx, parent, lin, restconf_post_format(ctx),
+			LYD_TYPE_RPC_RESTCONF, LYD_PARSE_STRICT, &input, NULL);
+		ly_in_free(lin, 0);
+		lyd_free_all(input);
+		free(in);
+
+		if (ret) {
+			sr_session_release_context(ctx->session);
+			srplg_errinfo_set_netconf_error(&ctx->errors, "transport",
+				"invalid-value", NULL, NULL, "Invalid input data", 0);
+			errors = ctx->errors;
+			goto error;
+		}
+	}
+
+	ret = sr_rpc_send_tree(ctx->session, parent, 0, &output);
+	lyd_free_all(parent);
+	sr_session_release_context(ctx->session);
+	if (ret) {
+		sr_session_get_error(ctx->session, &errors);
+		goto error;
+	}
+
+	if (output)
+		ret = restconf_send_answer(ctx, output->tree);
+	else
+		ret = restconf_not_content_answer(ctx);
+	sr_release_data(output);
+	return ret;
+
+error:
+	return restconf_send_error(ctx, errors);
 }
 
 static int
@@ -246,8 +280,12 @@ parse_segment(struct restconf_ctx *ctx,
 		const struct lysc_node *key = list->child;
 		char *ptr = str;
 
-		while (key && ptr) {
+		while (key) {
 			if (key->flags & LYS_KEY) {
+				if (!ptr)
+					goto err;
+
+
 				char *comma = strchr(ptr, ',');
 
 				if (comma)
@@ -256,7 +294,7 @@ parse_segment(struct restconf_ctx *ctx,
 				if (ptr == comma)
 					goto next;
 
-				decoded = curl_unescape(str, (int)strlen(str));
+				decoded = curl_unescape(ptr, (int)strlen(ptr));
 				written = snprintf(xpath, max_len, "[%s='%s']", key->name, decoded);
 				curl_free(decoded);
 				if (written < 0)
@@ -265,10 +303,8 @@ parse_segment(struct restconf_ctx *ctx,
 				length  += (size_t)written;
 				xpath   += (size_t)written;
 				max_len -= (size_t)written;
-				if (!comma)
-					break;
 next:
-				ptr = comma + 1;
+				ptr = comma ? comma + 1 : NULL;
 			}
 			key = key->next;
 		}
@@ -299,7 +335,6 @@ make_xpath(struct restconf_ctx *ctx, const char *path)
 		return;
 	}
 
-	// pr_dbg("path %s", path);
 	while(ppts[0] == '/') {
 		char *seg_end = strchr(ppts + 1, '/');
 		size_t seg_len = seg_end ? (size_t)(seg_end - ppts) : strlen(ppts);
@@ -358,6 +393,7 @@ restconf_parse_path(struct restconf_ctx *ctx, const char *path)
 	} else if ((strcmp(path, "/restconf/operations") == 0) ||
 	           (strcmp(path, "/restconf/operations/") == 0)) {
 		ctx->options = "GET, HEAD, POST, OPTIONS";
+		ctx->xpath = strdup("/ietf-restconf:restconf/operations");
 		ctx->dispatch_cd = resconf_root_operations_answer;
 		ctx->datastore = SR_DS_OPERATIONAL;
 		if (check_get_method(ctx))
@@ -366,8 +402,6 @@ restconf_parse_path(struct restconf_ctx *ctx, const char *path)
 	} else if (strncmp(path, "/restconf/data/", 15) == 0) {
 		ctx->options = "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS";
 		make_xpath(ctx, path + 14);
-		// ctx->xpath = strdup(path + 14);
-		// pr_dbg("%s -> %s", path, ctx->xpath);
 		if (check_get_method(ctx) == 0) {
 			ctx->datastore = SR_DS_OPERATIONAL;
 			ctx->dispatch_cd = resconf_get_data;
@@ -379,7 +413,7 @@ restconf_parse_path(struct restconf_ctx *ctx, const char *path)
 		ctx->options = "POST, OPTIONS";
 		ctx->datastore = SR_DS_OPERATIONAL;
 		ctx->dispatch_cd = resconf_rpc;
-		ctx->xpath = strdup(path + 20);
+		make_xpath(ctx, path + 20);
 		if (check_post_method(ctx))
 			goto invalid_method;
 	} else

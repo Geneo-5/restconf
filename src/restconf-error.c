@@ -22,6 +22,7 @@ restconf_write_cb(void *priv, const void *buf, size_t count)
 static void
 restconf_set_status(struct restconf_ctx *ctx,
                     const char          *tag,
+                    const char          *msg,
                     nghttp2_nv          *nv,
                     size_t              *nb)
 {
@@ -60,7 +61,11 @@ restconf_set_status(struct restconf_ctx *ctx,
 			// 400, parfois 404 ou 406 selon contexte
 			// Valeur invalide, ressource inexistante,
 			// représentation invalide
-			if (!ctx->xpath)
+			if (strstr(msg, "Content-Type"))
+				set_nv(nv, "415");
+			else if (strcmp(msg, "Media not supported") == 0)
+				set_nv(nv, "406");
+			else if (!ctx->xpath)
 				set_nv(nv, "404");
 			else
 				set_nv(nv, "400");
@@ -311,7 +316,8 @@ static void
 rest_err_create(struct restconf_ctx        *ctx,
                 const sr_error_info_err_t  *err,
                 struct lyd_node           **root,
-                char                      **tag)
+                char                      **tag,
+                char                      **msg)
 {
 	const char *err_type;
 	const char *err_tag;
@@ -345,6 +351,8 @@ rest_err_create(struct restconf_ctx        *ctx,
 
 	if (tag)
 		*tag = strdup(err_tag);
+	if (msg)
+		*msg = strdup(err_msg);
 
 	ly_ctx = sr_acquire_context(h2c_stream_get_conn(ctx->stream));
 	nc_mod = ly_ctx_get_module_implemented(ly_ctx, "ietf-restconf");
@@ -403,6 +411,7 @@ restconf_send_error(struct restconf_ctx *ctx, const sr_error_info_t *errors)
 	uint32_t options = LYD_PRINT_SIBLINGS | LYD_PRINT_SHRINK;
 	size_t nb = 2;
 	char *err_tag = NULL;
+	char *err_msg = NULL;
 	struct lyd_node *root = NULL;
 	nghttp2_nv hdrs[3] = {
 		MAKE_NV_TEMP(":status"),
@@ -410,12 +419,13 @@ restconf_send_error(struct restconf_ctx *ctx, const sr_error_info_t *errors)
 	};
 
 	set_nv(&hdrs[1], ly_fmt == LYD_JSON ? CONTENT_JSON : CONTENT_XML);
-	rest_err_create(ctx, &errors->err[0], &root, &err_tag);
+	rest_err_create(ctx, &errors->err[0], &root, &err_tag, &err_msg);
 	rest_assert(root);
-	restconf_set_status(ctx, err_tag, hdrs, &nb);
+	restconf_set_status(ctx, err_tag, err_msg, hdrs, &nb);
 	free(err_tag);
+	free(err_msg);
 	for (size_t i = 1; i < errors->err_count; i++)
-		rest_err_create(ctx, &errors->err[i], &root, NULL);
+		rest_err_create(ctx, &errors->err[i], &root, NULL, NULL);
 
 	rest_assert(!ctx->output);
 	ctx->output = evbuffer_new();
@@ -431,7 +441,10 @@ int
 restconf_send_answer(struct restconf_ctx *ctx, const struct lyd_node *root)
 {
 	LYD_FORMAT ly_fmt = restconf_get_format(ctx);
-	uint32_t options = LYD_PRINT_SIBLINGS | LYD_PRINT_SHRINK;
+	uint32_t options = LYD_PRINT_SHRINK | LYD_PRINT_SIBLINGS;
+	struct ly_set *set = NULL;
+	int fixup_json = 0;
+	const struct lyd_node *node;
 	char length[64];
 	nghttp2_nv hdrs[] = {
 		MAKE_NV_OK,
@@ -439,30 +452,69 @@ restconf_send_answer(struct restconf_ctx *ctx, const struct lyd_node *root)
 		MAKE_NV_TEMP("content-length"),
 	};
 
+	node = root;
+	if (node && ctx->xpath) {
+
+		lyd_find_xpath(node, ctx->xpath, &set);
+		if (!set)
+			goto err;
+
+		if ((ly_fmt == LYD_XML) && (set->count != 1)) {
+			ly_set_free(set, NULL);
+			goto err;
+		}
+
+		node = set->dnodes[0];
+		fixup_json = (ly_fmt == LYD_JSON) &&
+		             (set->count == 1) &&
+		             (ctx->xpath[strlen(ctx->xpath) - 1] == ']');
+	}
+
 	set_nv(&hdrs[1], ly_fmt == LYD_JSON ? CONTENT_JSON : CONTENT_XML);
 	rest_assert(!ctx->output);
 	ctx->output = evbuffer_new();
 	if (!ctx->output)
 		return -ENOMEM;
 
-	// pr_dbg("xpath %s", ctx->xpath);
 	options |= ctx->lyd_options;
-	if (root && ctx->xpath) {
-		struct ly_set *set = NULL;
-
-		lyd_find_xpath(root, ctx->xpath, &set);
-		if (!set)
-			goto show_all;
-
-		lyd_print_clb(restconf_write_cb, ctx, set->dnodes[0], ly_fmt, options);
+	lyd_print_clb(restconf_write_cb, ctx, node, ly_fmt, options);
+	if (set)
 		ly_set_free(set, NULL);
-	} else {
-show_all:
-		lyd_print_clb(restconf_write_cb, ctx, root, ly_fmt, options);
+
+	if (fixup_json) {
+		struct evbuffer_ptr first;
+		struct evbuffer_ptr last;
+		struct evbuffer_iovec iovec[1];
+
+		first = evbuffer_search(ctx->output, "[", 1, NULL);
+		evbuffer_peek(ctx->output, 1, &first, iovec, 1);
+		((char *)(iovec[0].iov_base))[0] = ' ';
+
+		while (first.pos != -1) {
+			evbuffer_ptr_set(ctx->output, &first, 1, EVBUFFER_PTR_ADD);
+			first = evbuffer_search(ctx->output, "]", 1, &first);
+			if (first.pos != -1)
+				last = first;
+
+		}
+		evbuffer_peek(ctx->output, 1, &last, iovec, 1);
+		((char *)(iovec[0].iov_base))[0] = ' ';
 	}
 
 	snprintf(length, sizeof(length), "%zu", evbuffer_get_length(ctx->output));
 	set_nv(&hdrs[2], length);
 	return h2c_send_answer(ctx->stream, hdrs, stroll_array_nr(hdrs),
 	                       ctx->method == METHOD_HEAD ? NULL : ctx->output);
+err:
+	srplg_errinfo_set_netconf_error(&ctx->errors, "protocol", "invalid-value", NULL, NULL, "More than one instance", 0);
+	return restconf_send_error(ctx, ctx->errors);
+}
+
+int
+restconf_not_content_answer(struct restconf_ctx *ctx) {
+	nghttp2_nv hdrs[] = {
+		MAKE_NV(":status", "204", 3),
+	};
+
+	return h2c_send_answer(ctx->stream, hdrs, stroll_array_nr(hdrs), NULL);
 }
