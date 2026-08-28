@@ -8,6 +8,7 @@
 #include "restconf/h2c.h"
 #include "restconf/restconf.h"
 #include <errno.h>
+#include <utils/string.h>
 
 #define REST_QUERY_CONTENT        0x001
 #define REST_QUERY_DEPTH          0x002
@@ -37,15 +38,55 @@ struct query_cb_list {
 };
 
 static int
-content_query(struct restconf_ctx *ctx __unused, const char *value __unused)
+content_query(struct restconf_ctx *ctx, const char *value)
 {
+	if (!value)
+		goto error;
+
+	ctx->oper_opts &= (uint32_t)~(SR_OPER_NO_STATE | SR_OPER_NO_CONFIG);
+	if (strcmp(value, "all") == 0)
+		ctx->oper_opts |= 0;
+	else if (strcmp(value, "config") == 0)
+		ctx->oper_opts |= SR_OPER_NO_STATE;
+	else if (strcmp(value, "nonconfig") == 0)
+		ctx->oper_opts |= SR_OPER_NO_CONFIG;
+	else
+		goto error;
+
 	return 0;
+error:
+	srplg_errinfo_set_netconf_error(&ctx->errors, "protocol", "invalid-value",
+		NULL, NULL, "Queriy content must be a string \"config\", \"nonconfig\" or \"all\"", 0);
+	return -EINVAL;
 }
 
 static int
-depth_query(struct restconf_ctx *ctx __unused, const char *value __unused)
+depth_query(struct restconf_ctx *ctx, const char *value)
 {
+	int err;
+	unsigned long depth;
+
+	if (!value)
+		goto error;
+
+	if (strcmp(value, "unbounded") == 0) {
+		ctx->depth = 0;
+		return 0;
+	}
+
+	err = ustr_parse_base_ulong(value, &depth, 10);
+	if (err)
+		goto error;
+
+	if ((depth < 1) || (depth > 65535))
+		goto error;
+
+	ctx->depth = (uint32_t)depth;
 	return 0;
+error:
+	srplg_errinfo_set_netconf_error(&ctx->errors, "protocol", "invalid-value",
+		NULL, NULL, "Queriy depth must be an integer between 1 and 65535 or the string \"unbounded\"", 0);
+	return -EINVAL;
 }
 
 static int
@@ -87,13 +128,40 @@ stop_query(struct restconf_ctx *ctx __unused, const char *value __unused)
 static int
 defaults_query(struct restconf_ctx *ctx __unused, const char *value __unused)
 {
+	if (!value)
+		goto error;
+
+	ctx->lyd_options &= (uint32_t)~LYD_PRINT_WD_MASK;
+	if (strcmp(value, "report-all") == 0)
+		ctx->lyd_options |= LYD_PRINT_WD_ALL;
+	else if (strcmp(value, "trim") == 0)
+		ctx->lyd_options |= LYD_PRINT_WD_TRIM;
+	else if (strcmp(value, "explicit") == 0)
+		ctx->lyd_options |= LYD_PRINT_WD_EXPLICIT;
+	else if (strcmp(value, "report-all-tagged") == 0)
+		ctx->lyd_options |= LYD_PRINT_WD_ALL_TAG;
+	else
+		goto error;
+
 	return 0;
+error:
+	srplg_errinfo_set_netconf_error(&ctx->errors, "protocol", "invalid-value",
+		NULL, NULL, "Queriy with-defaults must be a string \"report-all\", \"trim\", \"explicit\" or \"report-all-tagged\"", 0);
+	return -EINVAL;
 }
 
 static int
-origin_query(struct restconf_ctx *ctx __unused, const char *value __unused)
+origin_query(struct restconf_ctx *ctx, const char *value)
 {
+	if (value || (ctx->datastore != SR_DS_OPERATIONAL))
+		goto error;
+
+	ctx->oper_opts |= SR_OPER_WITH_ORIGIN;
 	return 0;
+error:
+	srplg_errinfo_set_netconf_error(&ctx->errors, "protocol", "invalid-value",
+		NULL, NULL, "Invalid query with-origin", 0);
+	return -EINVAL;
 }
 
 static const struct query_cb_list query_list[] = {
@@ -117,7 +185,6 @@ restconf_parse_one_query(struct restconf_ctx *ctx, char *query, uint32_t *mask)
 	char *key = strtok_r(query, "=", &tokens);
 	char *value = strtok_r(NULL, "=", &tokens);
 
-	pr_dbg("\t %s : %s", key, value);
 	for (size_t i = 0; i < stroll_array_nr(query_list); i++) {
 		if (strcmp(query, query_list[i].key))
 			continue;
@@ -133,7 +200,6 @@ restconf_parse_one_query(struct restconf_ctx *ctx, char *query, uint32_t *mask)
 
 	asprintf(&msg, "unkown query %s", key);
 err:
-	pr_dbg("query error %s", msg);
 	srplg_errinfo_set_netconf_error(&ctx->errors, "protocol", "invalid-value",
 		NULL, NULL, msg, 0);
 	free(msg);

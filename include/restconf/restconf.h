@@ -31,6 +31,9 @@ struct restconf_ctx {
 	char               *options;
 	uint32_t            lyd_options;
 	int (*dispatch_cd)(struct restconf_ctx *ctx, struct evbuffer *body);
+	uint32_t            depth;
+	uint32_t            nb_segment;
+	uint32_t            oper_opts;
 };
 
 int
@@ -84,5 +87,28 @@ restconf_send_answer(struct restconf_ctx *ctx, const struct lyd_node *root)
 int
 restconf_not_content_answer(struct restconf_ctx *ctx)
 	__rest_nonull(1);
+
+static inline uint32_t
+restconf_get_depth(struct restconf_ctx *ctx, uint32_t shift)
+{
+	uint32_t depth = 0;
+
+	if (!ctx->depth)
+		return depth;
+
+	if (ctx->depth <= shift)
+		return (uint32_t)-1;
+
+	return ctx->depth - shift + ctx->nb_segment;
+}
+
+static inline uint32_t
+restconf_get_oper_opts(struct restconf_ctx *ctx)
+{
+	if (ctx->datastore != SR_DS_OPERATIONAL)
+		return 0;
+
+	return ctx->oper_opts;
+}
 
 #endif /* _RESTCONF_H */

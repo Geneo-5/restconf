@@ -7,6 +7,7 @@
 
 #include "restconf/h2c.h"
 #include "restconf/restconf.h"
+#include "restconf/libyang.h"
 #include <errno.h>
 
 static void
@@ -60,6 +61,8 @@ resconf_root_data_answer(struct restconf_ctx *ctx, struct evbuffer *body __unuse
 	struct lyd_node *restconf_data = NULL;
 	sr_data_t *data = NULL;
 	int ret;
+	uint32_t depth = restconf_get_depth(ctx, 1);
+	uint32_t opts = restconf_get_oper_opts(ctx);
 
 #ifndef CONFIG_PREFIX_RESTCONF_DATA
 	ctx->lyd_options |= LYD_PRINT_JSON_NO_NESTED_PREFIX;
@@ -70,9 +73,11 @@ resconf_root_data_answer(struct restconf_ctx *ctx, struct evbuffer *body __unuse
 	lyd_new_path(NULL, ly_ctx, "/ietf-restconf:restconf", NULL, 0, &root);
 	lyd_new_inner(root, NULL, "data", 0, &restconf_data);
 
-	sr_get_data(ctx->session, "/*", 0, 0, 0, &data);
-	lyd_dup_siblings(data->tree, restconf_data, LYD_DUP_RECURSIVE, NULL);
-	sr_release_data(data);
+	if (depth != (uint32_t)-1) {
+		sr_get_data(ctx->session, "/*", depth, 0, opts, &data);
+		lyd_dup_siblings(data->tree, restconf_data, LYD_DUP_RECURSIVE, NULL);
+		sr_release_data(data);
+	}
 
 	sr_session_release_context(ctx->session);
 	ret = restconf_send_answer(ctx, root);
@@ -127,12 +132,14 @@ resconf_get_data(struct restconf_ctx *ctx, struct evbuffer *body __unused)
 {
 	sr_data_t *data = NULL;
 	const sr_error_info_t *errors;
+	uint32_t depth = restconf_get_depth(ctx, 0);
+	uint32_t opts = restconf_get_oper_opts(ctx);
 	int ret;
 
 	if (restconf_start_session(ctx))
 		goto error;
 
-	ret = sr_get_data(ctx->session, ctx->xpath, 0, 0, 0, &data);
+	ret = sr_get_data(ctx->session, ctx->xpath, depth, 0, opts, &data);
 	if (ret)
 		goto error;
 
@@ -166,20 +173,13 @@ resconf_rpc(struct restconf_ctx *ctx, struct evbuffer *body)
 	ret = lyd_new_path(NULL, ly_ctx, ctx->xpath, NULL, 0, &parent);
 
 	if (evbuffer_get_length(body)) {
-		struct ly_in *lin = NULL;
-		size_t len = evbuffer_get_length(body);
-		char *in = malloc(len + 1);
+		struct ly_in *in = NULL;
 
-		evbuffer_remove(body, in, len);
-		in[len] = '\0';
-		pr_dbg("input: %s", in);
-		ly_in_new_memory(in, &lin);
-		ret = lyd_parse_op(ly_ctx, parent, lin, restconf_post_format(ctx),
+		ly_in_new_evbuffer(body, &in);
+		ret = lyd_parse_op(ly_ctx, parent, in, restconf_post_format(ctx),
 			LYD_TYPE_RPC_RESTCONF, LYD_PARSE_STRICT, &input, NULL);
-		ly_in_free(lin, 0);
+		ly_in_free(in, 0);
 		lyd_free_all(input);
-		free(in);
-
 		if (ret) {
 			sr_session_release_context(ctx->session);
 			srplg_errinfo_set_netconf_error(&ctx->errors, "transport",
@@ -335,11 +335,12 @@ make_xpath(struct restconf_ctx *ctx, const char *path)
 		return;
 	}
 
-	while(ppts[0] == '/') {
+	while (ppts[0] == '/') {
 		char *seg_end = strchr(ppts + 1, '/');
 		size_t seg_len = seg_end ? (size_t)(seg_end - ppts) : strlen(ppts);
 		ssize_t len;
 
+		ctx->nb_segment++;
 		if (seg_len == 0)
 			goto error_404;
 

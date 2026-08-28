@@ -1,3 +1,6 @@
+#yang for AI
+*.yang.txt
+
 # Build directories (CMake out-of-source)
 build/
 build-ext/

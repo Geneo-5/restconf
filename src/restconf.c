@@ -9,6 +9,16 @@
 #include "restconf/restconf.h"
 #include <errno.h>
 
+#if defined(CONFIG_CAPABILITY_REPORT_ALL)
+#define DEFAULTS_LYD_MODE LYD_PRINT_WD_ALL
+#elif defined(CONFIG_CAPABILITY_TRIM)
+#define DEFAULTS_LYD_MODE LYD_PRINT_WD_TRIM
+#elif defined(CONFIG_CAPABILITY_EXPLICIT)
+#define DEFAULTS_LYD_MODE LYD_PRINT_WD_EXPLICIT
+#else
+#error Invalid Capability defaults mode
+#endif
+
 static int
 restconf_init(void               *priv,
               struct rest_stream *stream,
@@ -19,20 +29,24 @@ restconf_init(void               *priv,
 	char *path;
 	int ret;
 
-	ctx->stream      = stream;
-	ctx->method      = method;
-	ctx->output      = NULL;
-	ctx->session     = NULL;
-	ctx->xpath       = NULL;
-	ctx->username    = NULL;
-	ctx->errors      = NULL;
-	ctx->dispatch_cd = NULL;
-	ctx->options     = NULL;
-	ctx->lyd_options = LYD_PRINT_WD_ALL;
+	ctx->stream        = stream;
+	ctx->method        = method;
+	ctx->output        = NULL;
+	ctx->session       = NULL;
+	ctx->xpath         = NULL;
+	ctx->username      = NULL;
+	ctx->errors        = NULL;
+	ctx->dispatch_cd   = NULL;
+	ctx->options       = NULL;
+	ctx->lyd_options   = DEFAULTS_LYD_MODE;
 
-	ctx->accepted    = 0;
-	ctx->input_format = LYD_UNKNOWN;
+	ctx->accepted      = 0;
+	ctx->input_format  = LYD_UNKNOWN;
 	ctx->output_format = LYD_UNKNOWN;
+
+	ctx->depth         = 0;
+	ctx->nb_segment    = 0;
+	ctx->oper_opts     = 0;
 
 	if (curl_url_get(url, CURLUPART_PATH, &path, 0))
 		return -1;

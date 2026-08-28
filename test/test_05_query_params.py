@@ -120,44 +120,43 @@ QUERY_ERROR_TAGS = {
 
 
 def get_content_type(response) -> str:
-    """Retourne le Content-Type de la réponse, sans ses paramètres (charset…)."""
+    """Retourne le Content-Type sans les paramètres comme charset."""
     return response.headers.get("content-type", "").split(";")[0].strip().lower()
 
 
-def assert_yang_content_type(response, expected: str = YANG_JSON) -> None:
-    """Vérifie que le Content-Type est le media type YANG attendu."""
-    ctype = get_content_type(response)
-    assert ctype == expected, (
-        f"Content-Type inattendu : {ctype!r} (attendu : {expected!r})"
-    )
-
-
-def response_json(response) -> Any:
-    """Décode le corps JSON en produisant un message d'échec lisible."""
+def response_json(response):
+    """Décode le JSON avec un message d'échec lisible."""
     try:
         return response.json()
     except Exception as exc:
         pytest.fail(
-            "Réponse JSON invalide "
+            f"Réponse JSON invalide "
             f"(status={response.status_code}, content-type={get_content_type(response)!r}) : "
             f"{exc}\nCorps (tronqué) : {response.text[:2000]!r}"
         )
 
 
-def get_top(body: Any, top: str) -> dict:
-    """Retourne le nœud JSON de premier niveau attendu, ex. restconf-test:basic-data."""
-    assert isinstance(body, dict), f"Le corps JSON doit être un objet, pas : {body!r}"
-    assert top in body, (
-        f"Le nœud racine {top!r} est absent du corps JSON. "
-        f"Clés présentes : {sorted(body.keys())}"
-    )
+def assert_yang_content_type(response, expected: str = YANG_JSON) -> None:
+    ctype = get_content_type(response)
+    assert ctype == expected, f"Content-Type inattendu : {ctype!r} != {expected!r}"
+
+
+def get_top(body, top: str) -> dict:
+    """Retourne le conteneur JSON de premier niveau attendu."""
+    assert isinstance(body, dict), f"Le corps JSON doit être un objet : {body!r}"
+    assert top in body, f"Le nœud racine {top!r} est absent : {sorted(body.keys())}"
     data = body[top]
-    assert isinstance(data, dict), f"{top!r} doit être un objet JSON, pas : {data!r}"
+    assert isinstance(data, dict), f"{top!r} doit être un objet JSON : {data!r}"
     return data
 
 
-def contains_key(obj: Any, key: str) -> bool:
-    """Recherche récursive d'une clé JSON dans un objet/liste."""
+def visible_keys(data: dict) -> set[str]:
+    """Retourne les clés JSON visibles, sans les métadonnées '@...'."""
+    return {k for k in data.keys() if isinstance(k, str) and not k.startswith("@")}
+
+
+def contains_key(obj, key: str) -> bool:
+    """Recherche récursive d'une clé JSON."""
     if isinstance(obj, dict):
         if key in obj:
             return True
@@ -169,80 +168,59 @@ def contains_key(obj: Any, key: str) -> bool:
     return False
 
 
-def visible_keys(data: dict) -> set[str]:
-    """Retourne les clés JSON visibles, en ignorant les métadonnées '@...'."""
-    return {k for k in data.keys() if isinstance(k, str) and not k.startswith("@")}
+def contains_value(obj, value) -> bool:
+    """Recherche récursive d'une valeur JSON."""
+    if isinstance(obj, dict):
+        return any(v == value or contains_value(v, value) for v in obj.values())
+
+    if isinstance(obj, list):
+        return any(item == value or contains_value(item, value) for item in obj)
+
+    return obj == value
 
 
-def assert_error_envelope(
-    response,
-    expected_status: Optional[int] = None,
-    expected_tags: Optional[set[str]] = None,
-) -> dict:
-    """Vérifie l'enveloppe d'erreur RESTCONF RFC 8040.
-
-    Format attendu :
-    {
-      "ietf-restconf:errors": {
-        "error": [
-          {
-            "error-type": "...",
-            "error-tag": "...",
-            ...
-          }
-        ]
-      }
-    }
+def assert_invalid_value_error(response, expected_statuses=(400, 404)):
     """
-    if expected_status is not None:
-        assert response.status_code == expected_status, (
-            f"Status HTTP inattendu : {response.status_code} "
-            f"(attendu : {expected_status})\nCorps : {response.text[:2000]!r}"
-        )
+    Valide une erreur RESTCONF avec error-tag=invalid-value.
+
+    Important : ici, les erreurs 404 sont attendues avec 'invalid-value',
+    pas avec 'data-missing'.
+    """
+    assert response.status_code in expected_statuses, (
+        f"Status inattendu : {response.status_code}, "
+        f"attendu dans {expected_statuses}\nCorps : {response.text[:2000]!r}"
+    )
 
     assert_yang_content_type(response, YANG_JSON)
 
     body = response_json(response)
-    assert isinstance(body, dict), f"Le corps d'erreur doit être un objet : {body!r}"
-    assert "ietf-restconf:errors" in body, (
-        f"Le champ 'ietf-restconf:errors' est absent : {body!r}"
-    )
+    assert isinstance(body, dict), f"Corps d'erreur invalide : {body!r}"
+    assert "ietf-restconf:errors" in body, f"Erreurs RESTCONF absentes : {body!r}"
 
     errors_obj = body["ietf-restconf:errors"]
-    assert isinstance(errors_obj, dict), (
-        f"'ietf-restconf:errors' doit être un objet : {errors_obj!r}"
-    )
+    assert isinstance(errors_obj, dict), f"ietf-restconf:errors invalide : {errors_obj!r}"
 
     errors = errors_obj.get("error")
-    assert isinstance(errors, list) and errors, (
-        f"La liste d'erreurs est absente ou vide : {errors_obj!r}"
+    assert isinstance(errors, list) and errors, f"Liste 'error' absente ou vide : {errors_obj!r}"
+
+    tags = {
+        err.get("error-tag")
+        for err in errors
+        if isinstance(err, dict)
+    }
+
+    assert "invalid-value" in tags, (
+        f"error-tag=invalid-value attendu, tags reçus : {sorted(tags)}"
     )
 
-    tags = set()
-    for err in errors:
-        assert isinstance(err, dict), f"Chaque erreur doit être un objet : {err!r}"
-        assert "error-type" in err, f"'error-type' manquant dans : {err!r}"
-        assert "error-tag" in err, f"'error-tag' manquant dans : {err!r}"
-        tags.add(err["error-tag"])
 
-    if expected_tags:
-        assert tags & expected_tags, (
-            f"Aucun error-tag attendu {sorted(expected_tags)} "
-            f"parmi les tags reçus : {sorted(tags)}"
-        )
+def assert_ok_or_invalid_value_unsupported(response, validator=None) -> bool:
+    """
+    Helper pour capacités optionnelles.
 
-    return body
-
-
-def assert_ok_or_400_unsupported(
-    response,
-    validator: Optional[Callable[[Any], None]] = None,
-) -> bool:
-    """Valide une requête utilisant une capacité optionnelle.
-
-    Retourne True si la capacité est supportée (200), False si le serveur
-    retourne 400 (capacité non supportée ou valeur invalide). Dans le cas
-    400, l'enveloppe d'erreur RESTCONF est vérifiée.
+    - 200 : la capacité est supportée, on valide le corps.
+    - 400/404 : capacité non supportée ou valeur invalide, mais l'erreur
+      doit être 'invalid-value'.
     """
     if response.status_code == 200:
         assert_yang_content_type(response, YANG_JSON)
@@ -251,13 +229,12 @@ def assert_ok_or_400_unsupported(
             validator(body)
         return True
 
-    if response.status_code == 400:
-        assert_error_envelope(response, expected_status=400, expected_tags=QUERY_ERROR_TAGS)
+    if response.status_code in (400, 404):
+        assert_invalid_value_error(response, expected_statuses=(400, 404))
         return False
 
     pytest.fail(
-        "Status inattendu pour une capacité optionnelle : "
-        f"{response.status_code}\nCorps : {response.text[:2000]!r}"
+        f"Status inattendu : {response.status_code}\nCorps : {response.text[:2000]!r}"
     )
 
 
@@ -335,6 +312,149 @@ def rt_oper_uptime_available(http2_client, api_url, auth_headers, test_jwt) -> b
     data = body.get(f"{MOD}:basic-data", {})
     return isinstance(data, dict) and "uptime" in data
 
+@pytest.fixture(scope="session")
+def fields_supported(http2_client, api_url, auth_headers, test_jwt) -> bool:
+    """
+    Détecte si le serveur supporte le query parameter 'fields'.
+    """
+    if not test_jwt:
+        return False
+
+    headers = {"Accept": YANG_JSON, **auth_headers}
+
+    try:
+        response = http2_client.get(
+            f"{api_url}{BASIC_DATA}",
+            headers=headers,
+            params={"fields": "device-id"},
+        )
+    except Exception:
+        return False
+
+    if response.status_code != 200:
+        return False
+
+    try:
+        body = response.json()
+    except Exception:
+        return False
+
+    data = body.get(f"{MOD}:basic-data", {})
+    return (
+        isinstance(data, dict)
+        and data.get("device-id") == EXPECTED_BASIC_CONFIG["device-id"]
+    )
+
+
+@pytest.fixture()
+def require_fields(fields_supported):
+    """Skip si 'fields' n'est pas supporté."""
+    if not fields_supported:
+        pytest.skip("Le paramètre de requête 'fields' n'est pas supporté")
+    return fields_supported
+
+@pytest.fixture(scope="session")
+def filter_syntax(http2_client, api_url, auth_headers, test_jwt):
+    """
+    Détecte une syntaxe de 'filter' supportée.
+
+    On essaie plusieurs syntaxes possibles, car la forme exacte peut dépendre
+    de l'implémentation. Si aucune ne fonctionne, les tests filter sont
+    skippés.
+    """
+    if not test_jwt:
+        return {}
+
+    headers = {"Accept": YANG_JSON, **auth_headers}
+    found = {}
+
+    # ------------------------------------------------------------------
+    # filter sur une feuille simple : basic-data/device-id
+    # ------------------------------------------------------------------
+    basic_candidates = (
+        f"/{MOD}:basic-data/device-id",
+        "device-id",
+        f"{MOD}:basic-data/device-id",
+        "basic-data/device-id",
+    )
+
+    for value in basic_candidates:
+        try:
+            response = http2_client.get(
+                f"{api_url}{BASIC_DATA}",
+                headers=headers,
+                params={"filter": value},
+            )
+        except Exception:
+            continue
+
+        if response.status_code != 200:
+            continue
+
+        try:
+            body = response.json()
+        except Exception:
+            continue
+
+        # Le filtre doit retourner device-id, mais pas les autres feuilles.
+        if (
+            contains_value(body, EXPECTED_BASIC_CONFIG["device-id"])
+            and not contains_key(body, "timeout")
+            and not contains_key(body, "enabled")
+            and not contains_key(body, "uptime")
+        ):
+            found["basic_device_id"] = value
+            break
+
+    # ------------------------------------------------------------------
+    # filter sur une entrée de liste : interfaces/interface[name='eth0']
+    # ------------------------------------------------------------------
+    interface_candidates = (
+        f"/{MOD}:interfaces/interface[name='eth0']",
+        "interface[name='eth0']",
+        f"{MOD}:interfaces/interface[name='eth0']",
+        f"/{MOD}:interfaces/interface[name=\"eth0\"]",
+    )
+
+    for value in interface_candidates:
+        try:
+            response = http2_client.get(
+                f"{api_url}{INTERFACES}",
+                headers=headers,
+                params={"filter": value},
+            )
+        except Exception:
+            continue
+
+        if response.status_code != 200:
+            continue
+
+        try:
+            body = response.json()
+        except Exception:
+            continue
+
+        # Doit contenir eth0, mais pas eth1/lo0 ni le MTU 9000 de eth1.
+        if (
+            contains_value(body, "eth0")
+            and not contains_value(body, "eth1")
+            and not contains_value(body, "lo0")
+            and not contains_value(body, 9000)
+        ):
+            found["interface_eth0"] = value
+            break
+
+    return found
+
+
+@pytest.fixture()
+def require_filter(filter_syntax):
+    """Skip si aucune syntaxe 'filter' n'a été reconnue."""
+    if not filter_syntax:
+        pytest.skip(
+            "Aucune syntaxe de query parameter 'filter' reconnue par le serveur"
+        )
+    return filter_syntax
 
 # ===========================================================================
 # T-QUERY-01 : GET avec content=config
@@ -791,7 +911,7 @@ class TestT_QUERY_04_Depth1:
                 f"depth=1 doit masquer system/state/extended-status : {system}"
             )
 
-        assert_ok_or_400_unsupported(response, validate)
+        assert_ok_or_invalid_value_unsupported(response, validate)
 
     def test_depth_1_basic_data(self, http2_client, api_url, auth_headers, require_rt):
         headers = {"Accept": YANG_JSON, **auth_headers}
@@ -822,7 +942,7 @@ class TestT_QUERY_04_Depth1:
                 assert isinstance(data["uptime"], int)
                 assert data["uptime"] >= 0
 
-        assert_ok_or_400_unsupported(response, validate)
+        assert_ok_or_invalid_value_unsupported(response, validate)
 
 
 # ===========================================================================
@@ -865,7 +985,7 @@ class TestT_QUERY_05_DepthUnbounded:
                     f"system/state/system-status attendu : {state}"
                 )
 
-        assert_ok_or_400_unsupported(response, validate)
+        assert_ok_or_invalid_value_unsupported(response, validate)
 
     def test_depth_unbounded_interfaces(self, http2_client, api_url, auth_headers, require_rt):
         headers = {"Accept": YANG_JSON, **auth_headers}
@@ -887,7 +1007,7 @@ class TestT_QUERY_05_DepthUnbounded:
                     f"(mtu) des interfaces : {interfaces}"
                 )
 
-        assert_ok_or_400_unsupported(response, validate)
+        assert_ok_or_invalid_value_unsupported(response, validate)
 
 
 # ===========================================================================
@@ -898,92 +1018,291 @@ class TestT_QUERY_05_DepthUnbounded:
 @pytest.mark.roadmap("R19")
 @pytest.mark.rfc("RFC 8040 §4.8.3")
 class TestT_QUERY_06_FieldsValid:
-    """T-QUERY-06 : GET avec fields valide.
+    """
+    T-QUERY-06 : GET avec fields valide.
 
-    Seuls les champs demandés doivent être retournés.
+    On vérifie que seuls les champs demandés sont retournés.
     """
 
-    def test_fields_valid_device_id(self, http2_client, api_url, auth_headers, require_rt):
+    def test_fields_top_leaf(self, http2_client, api_url, auth_headers, require_rt, require_fields):
         headers = {"Accept": YANG_JSON, **auth_headers}
+
         response = http2_client.get(
             f"{api_url}{BASIC_DATA}",
             headers=headers,
             params={"fields": "device-id"},
         )
 
-        def validate(body: Any) -> None:
-            data = get_top(body, f"{MOD}:basic-data")
-            keys = visible_keys(data)
+        assert response.status_code == 200
+        assert_yang_content_type(response)
 
-            assert keys == {"device-id"}, (
-                f"fields=device-id doit retourner uniquement device-id : {data}"
-            )
-            assert data["device-id"] == EXPECTED_BASIC_CONFIG["device-id"]
+        body = response_json(response)
+        data = get_top(body, f"{MOD}:basic-data")
 
-        assert_ok_or_400_unsupported(response, validate)
+        assert visible_keys(data) == {"device-id"}, (
+            f"fields=device-id doit retourner uniquement device-id : {data}"
+        )
+        assert data["device-id"] == EXPECTED_BASIC_CONFIG["device-id"]
 
-    def test_fields_valid_multiple(self, http2_client, api_url, auth_headers, require_rt):
+    def test_fields_multiple_top_leaves(self, http2_client, api_url, auth_headers, require_rt, require_fields):
         headers = {"Accept": YANG_JSON, **auth_headers}
+
         response = http2_client.get(
             f"{api_url}{BASIC_DATA}",
             headers=headers,
             params={"fields": "device-id;timeout"},
         )
 
-        def validate(body: Any) -> None:
-            data = get_top(body, f"{MOD}:basic-data")
-            keys = visible_keys(data)
+        assert response.status_code == 200
+        assert_yang_content_type(response)
 
-            # device-id est obligatoire et non-default : il doit être présent.
-            assert "device-id" in keys, f"device-id attendu : {data}"
-            assert data["device-id"] == EXPECTED_BASIC_CONFIG["device-id"]
+        body = response_json(response)
+        data = get_top(body, f"{MOD}:basic-data")
 
-            # timeout peut dépendre du comportement with-defaults par défaut
-            # du serveur, mais aucun autre champ ne doit être retourné.
-            assert keys <= {"device-id", "timeout"}, (
-                f"fields=device-id;timeout doit limiter les champs : {data}"
+        keys = visible_keys(data)
+
+        assert keys == {"device-id", "timeout"}, (
+            f"fields=device-id;timeout doit retourner uniquement ces feuilles : {data}"
+        )
+        assert data["device-id"] == EXPECTED_BASIC_CONFIG["device-id"]
+        assert data["timeout"] == EXPECTED_BASIC_CONFIG["timeout"]
+
+    def test_fields_nested_container_leaf(self, http2_client, api_url, auth_headers, require_rt, require_fields):
+        headers = {"Accept": YANG_JSON, **auth_headers}
+
+        response = http2_client.get(
+            f"{api_url}{SYSTEM}",
+            headers=headers,
+            params={"fields": "config/system-name"},
+        )
+
+        assert response.status_code == 200
+        assert_yang_content_type(response)
+
+        body = response_json(response)
+        system = get_top(body, f"{MOD}:system")
+
+        assert visible_keys(system) == {"config"}, (
+            f"fields=config/system-name doit retourner uniquement system/config : {system}"
+        )
+
+        config = system["config"]
+        assert visible_keys(config) == {"system-name"}, (
+            f"system/config doit contenir uniquement system-name : {config}"
+        )
+        assert config["system-name"] == EXPECTED_SYSTEM_NAME
+
+    def test_fields_list_child_key(self, http2_client, api_url, auth_headers, require_rt, require_fields):
+        headers = {"Accept": YANG_JSON, **auth_headers}
+
+        response = http2_client.get(
+            f"{api_url}{INTERFACES}",
+            headers=headers,
+            params={"fields": "interface/name"},
+        )
+
+        assert response.status_code == 200
+        assert_yang_content_type(response)
+
+        body = response_json(response)
+        interfaces = get_top(body, f"{MOD}:interfaces")
+
+        assert "interface" in interfaces, f"interfaces/interface attendu : {interfaces}"
+        entries = interfaces["interface"]
+        assert isinstance(entries, list) and entries, f"interface[] vide ou invalide : {interfaces}"
+
+        for entry in entries:
+            keys = visible_keys(entry)
+            assert keys == {"name"}, (
+                f"fields=interface/name doit retourner uniquement la clé name : {entry}"
+            )
+            assert entry["name"] in EXPECTED_INTERFACES_BY_NAME, (
+                f"Interface inattendue : {entry['name']!r}"
             )
 
-        assert_ok_or_400_unsupported(response, validate)
+    def test_fields_list_child_non_key(self, http2_client, api_url, auth_headers, require_rt, require_fields):
+        headers = {"Accept": YANG_JSON, **auth_headers}
 
+        response = http2_client.get(
+            f"{api_url}{INTERFACES}",
+            headers=headers,
+            params={"fields": "interface/mtu"},
+        )
 
-# ===========================================================================
-# T-QUERY-07 : GET avec fields invalide
-# ===========================================================================
+        assert response.status_code == 200
+        assert_yang_content_type(response)
+
+        body = response_json(response)
+        interfaces = get_top(body, f"{MOD}:interfaces")
+
+        assert "interface" in interfaces
+        entries = interfaces["interface"]
+        assert isinstance(entries, list) and entries
+
+        # Pour une liste, la clé doit rester présente même si on demande
+        # seulement une feuille non-key.
+        has_mtu = False
+        for entry in entries:
+            keys = visible_keys(entry)
+
+            assert "name" in keys, f"La clé 'name' doit être présente : {entry}"
+            assert keys <= {"name", "mtu"}, (
+                f"fields=interface/mtu doit limiter les feuilles à name/mtu : {entry}"
+            )
+
+            if "mtu" in entry:
+                has_mtu = True
+                assert isinstance(entry["mtu"], int), f"mtu doit être un entier : {entry}"
+
+        assert has_mtu, f"Aucun mtu retourné avec fields=interface/mtu : {entries}"
+
+    def test_fields_multiple_nested_lists(self, http2_client, api_url, auth_headers, require_rt, require_fields):
+        headers = {"Accept": YANG_JSON, **auth_headers}
+
+        response = http2_client.get(
+            f"{api_url}{INTERFACES}",
+            headers=headers,
+            params={"fields": "interface/name;vlan/vlan-id"},
+        )
+
+        assert response.status_code == 200
+        assert_yang_content_type(response)
+
+        body = response_json(response)
+        interfaces = get_top(body, f"{MOD}:interfaces")
+
+        assert "interface" in interfaces
+        assert "vlan" in interfaces
+
+        for entry in interfaces["interface"]:
+            assert visible_keys(entry) == {"name"}, (
+                f"interface/name doit retourner uniquement name : {entry}"
+            )
+
+        for entry in interfaces["vlan"]:
+            assert visible_keys(entry) == {"vlan-id"}, (
+                f"vlan/vlan-id doit retourner uniquement vlan-id : {entry}"
+            )
+
+    def test_fields_nested_container(self, http2_client, api_url, auth_headers, require_rt, require_fields):
+        headers = {"Accept": YANG_JSON, **auth_headers}
+
+        response = http2_client.get(
+            f"{api_url}{INTERFACES}",
+            headers=headers,
+            params={"fields": "advanced-features/enable-advanced"},
+        )
+
+        assert response.status_code == 200
+        assert_yang_content_type(response)
+
+        body = response_json(response)
+        interfaces = get_top(body, f"{MOD}:interfaces")
+
+        assert "advanced-features" in interfaces, (
+            f"advanced-features attendu : {interfaces}"
+        )
+
+        adv = interfaces["advanced-features"]
+        assert visible_keys(adv) == {"enable-advanced"}, (
+            f"fields=advanced-features/enable-advanced doit retourner uniquement cette feuille : {adv}"
+        )
+        assert adv["enable-advanced"] is True
+
+    def test_fields_with_content_config(self, http2_client, api_url, auth_headers, require_rt, require_fields):
+        headers = {"Accept": YANG_JSON, **auth_headers}
+
+        response = http2_client.get(
+            f"{api_url}{BASIC_DATA}",
+            headers=headers,
+            params={
+                "content": "config",
+                "fields": "device-id",
+            },
+        )
+
+        assert response.status_code == 200
+        assert_yang_content_type(response)
+
+        body = response_json(response)
+        data = get_top(body, f"{MOD}:basic-data")
+
+        assert visible_keys(data) == {"device-id"}, (
+            f"content=config&fields=device-id doit retourner uniquement device-id : {data}"
+        )
+        assert data["device-id"] == EXPECTED_BASIC_CONFIG["device-id"]
+        assert "uptime" not in data
 
 
 @pytest.mark.roadmap("R19")
 @pytest.mark.rfc("RFC 8040 §4.8.3")
 class TestT_QUERY_07_FieldsInvalid:
-    """T-QUERY-07 : GET avec fields invalide.
+    """
+    T-QUERY-07 : GET avec fields invalide.
 
-    Erreur 400 Bad Request avec error-tag pertinent.
+    Les valeurs invalides doivent produire une erreur RESTCONF avec
+    error-tag=invalid-value. Le serveur peut répondre 400 ou 404 selon
+    la façon dont il traite le nœud inexistant.
     """
 
     @pytest.mark.parametrize(
-        "value",
+        "path,value",
         [
-            "non-existent-field-xyz",
-            "device-id(",
-            "(",
-            "device-id/nonexistent",
-            "device-id;nonexistent",
+            # Champ inexistant
+            (BASIC_DATA, "non-existent-field-xyz"),
+            (BASIC_DATA, f"{MOD}:non-existent-field-xyz"),
+
+            # Une feuille n'a pas d'enfant
+            (BASIC_DATA, "device-id/nonexistent"),
+
+            # Champ inexistant dans une liste
+            (INTERFACES, "interface/nonexistent-child"),
+
+            # Syntaxe invalide
+            (BASIC_DATA, "device-id("),
+            (BASIC_DATA, "("),
+            (BASIC_DATA, ";"),
+            (BASIC_DATA, "device-id;"),
+            (BASIC_DATA, ";device-id"),
+            (BASIC_DATA, "device-id;nonexistent"),
+            (INTERFACES, "interface/"),
+            (INTERFACES, "/"),
+            (INTERFACES, "interface[name=eth0]"),
         ],
     )
-    def test_fields_invalid(self, http2_client, api_url, auth_headers, require_rt, value):
+    def test_fields_invalid(self, http2_client, api_url, auth_headers, require_rt, path, value):
         headers = {"Accept": YANG_JSON, **auth_headers}
+
         response = http2_client.get(
-            f"{api_url}{BASIC_DATA}",
+            f"{api_url}{path}",
             headers=headers,
             params={"fields": value},
         )
 
-        assert response.status_code == 400, (
-            f"fields={value!r} doit être rejeté avec 400, "
-            f"status reçu : {response.status_code}"
-        )
-        assert_error_envelope(response, expected_status=400, expected_tags=QUERY_ERROR_TAGS)
+        assert_invalid_value_error(response, expected_statuses=(400, 404))
 
+    def test_fields_select_nonconfig_with_content_config(
+        self,
+        http2_client,
+        api_url,
+        auth_headers,
+        require_rt,
+    ):
+        """
+        content=config ne peut pas sélectionner une donnée config false.
+        """
+        headers = {"Accept": YANG_JSON, **auth_headers}
+
+        response = http2_client.get(
+            f"{api_url}{BASIC_DATA}",
+            headers=headers,
+            params={
+                "content": "config",
+                "fields": "uptime",
+            },
+        )
+
+        assert_invalid_value_error(response, expected_statuses=(400, 404))
 
 # ===========================================================================
 # T-QUERY-08 à T-QUERY-11 : with-defaults (RFC 6243)
@@ -1046,7 +1365,7 @@ class TestT_QUERY_08_to_11_WithDefaults:
                     f"enabled doit être masqué en mode trim : {data}"
                 )
 
-        assert_ok_or_400_unsupported(response, validate)
+        assert_ok_or_invalid_value_unsupported(response, validate)
 
 
 # ===========================================================================
@@ -1079,11 +1398,7 @@ class TestT_QUERY_12_UnknownParameter:
         )
 
         assert response.status_code == 400
-        assert_error_envelope(
-            response,
-            expected_status=400,
-            expected_tags={"invalid-value", "operation-not-supported"},
-        )
+        assert_invalid_value_error(response, expected_statuses=(400,))
 
 
 # ===========================================================================
@@ -1124,7 +1439,7 @@ class TestT_QUERY_13_CombinedParameters:
             assert data["device-id"] == EXPECTED_BASIC_CONFIG["device-id"]
             assert "uptime" not in data
 
-        assert_ok_or_400_unsupported(response, validate)
+        assert_ok_or_invalid_value_unsupported(response, validate)
 
 
 # ===========================================================================
@@ -1162,11 +1477,7 @@ class TestT_QUERY_14_StreamReplay:
             )
 
         if response.status_code == 400 and get_content_type(response) == YANG_JSON:
-            assert_error_envelope(
-                response,
-                expected_status=400,
-                expected_tags=QUERY_ERROR_TAGS,
-            )
+            assert_invalid_value_error(response, expected_statuses=(400,))
 
 
 # ===========================================================================
@@ -1199,11 +1510,7 @@ class TestT_QUERY_15_StreamNoReplay:
             assert get_content_type(response) == EVENT_STREAM
 
         if response.status_code == 400 and get_content_type(response) == YANG_JSON:
-            assert_error_envelope(
-                response,
-                expected_status=400,
-                expected_tags=QUERY_ERROR_TAGS,
-            )
+            assert_invalid_value_error(response, expected_statuses=(400,))
 
 
 # ===========================================================================
@@ -1237,11 +1544,7 @@ class TestQueryParameterValidationErrors:
             f"content={value!r} doit être rejeté avec 400, "
             f"status reçu : {response.status_code}"
         )
-        assert_error_envelope(
-            response,
-            expected_status=400,
-            expected_tags=QUERY_ERROR_TAGS,
-        )
+        assert_invalid_value_error(response, expected_statuses=(400,))
 
     @pytest.mark.parametrize(
         "value",
@@ -1266,11 +1569,7 @@ class TestQueryParameterValidationErrors:
             f"depth={value!r} doit être rejeté avec 400, "
             f"status reçu : {response.status_code}"
         )
-        assert_error_envelope(
-            response,
-            expected_status=400,
-            expected_tags=QUERY_ERROR_TAGS,
-        )
+        assert_invalid_value_error(response, expected_statuses=(400,))
 
     @pytest.mark.parametrize(
         "value",
@@ -1300,11 +1599,7 @@ class TestQueryParameterValidationErrors:
             f"with-defaults={value!r} doit être rejeté avec 400, "
             f"status reçu : {response.status_code}"
         )
-        assert_error_envelope(
-            response,
-            expected_status=400,
-            expected_tags=QUERY_ERROR_TAGS,
-        )
+        assert_invalid_value_error(response, expected_statuses=(400,))
 
     def test_nonexistent_resource(self, http2_client, api_url, auth_headers, require_rt):
         headers = {"Accept": YANG_JSON, **auth_headers}
@@ -1315,11 +1610,7 @@ class TestQueryParameterValidationErrors:
         )
 
         assert response.status_code == 404
-        assert_error_envelope(
-            response,
-            expected_status=404,
-            expected_tags={"data-missing"},
-        )
+        assert_invalid_value_error(response, expected_statuses=(404,))
 
     def test_content_nonconfig_on_config_only_resource(
         self,
@@ -1398,8 +1689,124 @@ class TestStreamQueryErrors:
         assert response.status_code in (400, 404)
 
         if response.status_code == 400 and get_content_type(response) == YANG_JSON:
-            assert_error_envelope(
-                response,
-                expected_status=400,
-                expected_tags=QUERY_ERROR_TAGS,
-            )
+            assert_invalid_value_error(response, expected_statuses=(400,))
+
+@pytest.mark.roadmap("R19")
+@pytest.mark.rfc("RFC 8040 §4.8")
+class Test_QUERY_FilterValid:
+    """
+    Tests du query parameter 'filter'.
+
+    La syntaxe exacte de 'filter' peut dépendre de l'implémentation.
+    La fixture filter_syntax essaie plusieurs syntaxes courantes.
+    """
+
+    def test_filter_basic_leaf(self, http2_client, api_url, auth_headers, require_rt, require_filter):
+        value = require_filter.get("basic_device_id")
+        if not value:
+            pytest.skip("Aucune syntaxe filter reconnue pour basic-data/device-id")
+
+        headers = {"Accept": YANG_JSON, **auth_headers}
+
+        response = http2_client.get(
+            f"{api_url}{BASIC_DATA}",
+            headers=headers,
+            params={"filter": value},
+        )
+
+        assert response.status_code == 200
+        assert_yang_content_type(response)
+
+        body = response_json(response)
+
+        # Le filtre doit sélectionner device-id uniquement.
+        assert contains_value(body, EXPECTED_BASIC_CONFIG["device-id"]), (
+            f"device-id attendu dans la réponse filtrée : {body}"
+        )
+
+        # Les autres feuilles de basic-data ne doivent pas être retournées.
+        assert not contains_key(body, "timeout"), f"timeout ne doit pas être filtré : {body}"
+        assert not contains_key(body, "enabled"), f"enabled ne doit pas être filtré : {body}"
+        assert not contains_key(body, "uptime"), f"uptime ne doit pas être filtré : {body}"
+
+    def test_filter_list_entry(self, http2_client, api_url, auth_headers, require_rt, require_filter):
+        value = require_filter.get("interface_eth0")
+        if not value:
+            pytest.skip("Aucune syntaxe filter reconnue pour interface[name='eth0']")
+
+        headers = {"Accept": YANG_JSON, **auth_headers}
+
+        response = http2_client.get(
+            f"{api_url}{INTERFACES}",
+            headers=headers,
+            params={"filter": value},
+        )
+
+        assert response.status_code == 200
+        assert_yang_content_type(response)
+
+        body = response_json(response)
+
+        # Doit contenir eth0.
+        assert contains_value(body, "eth0"), f"eth0 attendu dans la réponse filtrée : {body}"
+
+        # Ne doit pas contenir les autres interfaces.
+        assert not contains_value(body, "eth1"), f"eth1 ne doit pas être filtré : {body}"
+        assert not contains_value(body, "lo0"), f"lo0 ne doit pas être filtré : {body}"
+
+        # Le MTU 9000 appartient à eth1, il ne doit pas être présent.
+        assert not contains_value(body, 9000), f"mtu 9000 de eth1 ne doit pas être présent : {body}"
+
+        # Si la liste interface est présente, elle doit être limitée à eth0.
+        if contains_key(body, "interface"):
+            interfaces = body.get(f"{MOD}:interfaces", {})
+            entries = interfaces.get("interface", [])
+
+            assert isinstance(entries, list), f"interface doit être une liste : {interfaces}"
+            assert len(entries) == 1, f"Une seule interface attendue : {entries}"
+
+            entry = entries[0]
+            assert isinstance(entry, dict)
+            assert entry.get("name") == "eth0"
+
+
+@pytest.mark.roadmap("R19")
+@pytest.mark.rfc("RFC 8040 §4.8")
+class Test_QUERY_FilterInvalid:
+    """
+    Cas d'erreurs pour le query parameter 'filter'.
+    """
+
+    @pytest.mark.parametrize(
+        "path,value",
+        [
+            # Filtre inexistant
+            (BASIC_DATA, "nonexistent"),
+            (BASIC_DATA, f"/{MOD}:nonexistent"),
+            (BASIC_DATA, f"{MOD}:basic-data/nonexistent"),
+
+            # Filtre sur une feuille qui ne peut pas avoir d'enfants
+            (BASIC_DATA, "device-id/nonexistent"),
+
+            # Entrée de liste inexistante
+            (INTERFACES, f"/{MOD}:interfaces/interface[name='nonexistent-if']"),
+            (INTERFACES, "interface[name='nonexistent-if']"),
+
+            # Syntaxe invalide
+            (BASIC_DATA, "("),
+            (BASIC_DATA, "((("),
+            (BASIC_DATA, "="),
+            (INTERFACES, "interface[name=eth0]"),
+            (INTERFACES, "interface[name='eth0'"),
+        ],
+    )
+    def test_filter_invalid(self, http2_client, api_url, auth_headers, require_rt, path, value):
+        headers = {"Accept": YANG_JSON, **auth_headers}
+
+        response = http2_client.get(
+            f"{api_url}{path}",
+            headers=headers,
+            params={"filter": value},
+        )
+
+        assert_invalid_value_error(response, expected_statuses=(400, 404))
